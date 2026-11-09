@@ -6,6 +6,7 @@ import androidx.compose.runtime.remember
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.app.features.p2p.P2pSettingsRepository
 import com.nuvio.app.features.player.PlayerSettingsRepository
+import com.nuvio.app.isDesktop
 import com.nuvio.app.isIos
 import org.jetbrains.compose.resources.stringResource
 
@@ -31,6 +32,10 @@ internal fun LazyListScope.playbackSettingsContent(
                             isTablet = isTablet,
                             onClick = { onPageChange(section.page) },
                         )
+                    }
+                    if (isDesktop) {
+                        SettingsGroupDivider(isTablet = isTablet)
+                        DownloadSpeedSetting(isTablet)
                     }
                 }
             }
