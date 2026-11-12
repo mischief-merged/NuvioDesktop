@@ -58,6 +58,11 @@ data class DownloadItem(
     /** What the finished file was checked against. Null for a download that finished before this was recorded. */
     val verifiedBy: DownloadVerification? = null,
     /**
+     * What a look at decoded frames from the start and the end of the finished file came to. Not
+     * checked for a download that finished before this was recorded and where nothing could look.
+     */
+    val framesCheck: DownloadFramesCheck = DownloadFramesCheck.NotChecked,
+    /**
      * The audio language playback of this file starts on: set when the language chosen for the
      * download is in the file but another track comes first.
      */

@@ -667,6 +667,7 @@
     <string name="downloads_section_shows">Shows</string>
     <string name="downloads_show_downloads">Show Downloads</string>
     <string name="downloads_status_completed">Completed • %1$s</string>
+    <string name="downloads_status_completed_suspect">Completed • %1$s • The title of the file names another episode</string>
     <string name="downloads_status_downloading">Downloading • %1$s</string>
     <string name="downloads_status_failed">Failed</string>
     <string name="downloads_status_paused">Paused • %1$s</string>
@@ -2015,6 +2016,11 @@
     <string name="downloads_error_file_incomplete">The downloaded file is incomplete</string>
     <string name="downloads_error_file_not_video">The downloaded file is not a video</string>
     <string name="downloads_error_file_checksum">The downloaded file does not match its checksum</string>
+    <string name="downloads_error_frames_undecodable">The downloaded video could not be decoded</string>
+    <string name="downloads_error_frames_broken_end">The downloaded video breaks off before its end</string>
+    <string name="downloads_error_frames_broken_start">The downloaded video does not start properly</string>
+    <string name="downloads_error_frames_blank">The downloaded video is blank</string>
+    <string name="downloads_error_frames_still">The downloaded video shows only a still picture</string>
     <string name="downloads_season_button">Download season</string>
     <string name="downloads_season_stop">Stop (%1$d/%2$d)</string>
     <string name="downloads_season_dialog_title">Download %1$s</string>

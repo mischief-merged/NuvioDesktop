@@ -20,6 +20,7 @@ import kotlin.concurrent.Volatile
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import nuvio.composeapp.generated.resources.*
+import org.jetbrains.compose.resources.StringResource
 import org.jetbrains.compose.resources.getString
 
 object DownloadsRepository {
@@ -413,39 +414,7 @@ object DownloadsRepository {
                     }
                 }
             },
-            { localFileUri, totalBytes ->
-                ifCurrent(item.id, transfer) {
-                    activeTransfers.remove(item.id)
-                    // A download is finished only when its file is there, has the size the server
-                    // announced and is a video. Anything else is a failed download without a file.
-                    val facts = backend.inspectFile(localFileUri)
-                    val problem = facts?.problem(announcedBytes = totalBytes, expectedVideoHash = item.expectedVideoHash)
-                    if (problem != null) backend.removeFile(localFileUri)
-                    mutateItem(item.id) { current ->
-                        if (current.status != DownloadStatus.Downloading) return@mutateItem current
-                        if (problem != null) return@mutateItem current.failedBecauseOf(problem)
-                        current.copy(
-                            verifiedBy = facts?.verification(
-                                // Only a size the server announced while the transfer ran counts.
-                                announcedBytes = current.totalBytes,
-                                expectedVideoHash = item.expectedVideoHash,
-                                expectedSizeBytes = item.expectedSizeBytes,
-                                digestVerified = transfer.digestVerified,
-                            ) ?: if (transfer.digestVerified) DownloadVerification.Digest else null,
-                            status = DownloadStatus.Completed,
-                            localFileUri = localFileUri,
-                            downloadedBytes = if (totalBytes != null && totalBytes > 0L) {
-                                totalBytes
-                            } else {
-                                current.downloadedBytes
-                            },
-                            totalBytes = totalBytes?.takeIf { it > 0L } ?: current.totalBytes,
-                            errorMessage = null,
-                            updatedAtEpochMs = DownloadsClock.nowEpochMs(),
-                        )
-                    }
-                }
-            },
+            { localFileUri, totalBytes -> finishTransfer(item, transfer, localFileUri, totalBytes) },
             { message ->
                 ifCurrent(item.id, transfer) {
                     activeTransfers.remove(item.id)
@@ -479,6 +448,73 @@ object DownloadsRepository {
         )
         transfer.attach(handle)
     }
+
+    /**
+     * A transfer reported that its file is complete. The file is accepted only if its checks pass:
+     * first the look at the file itself, then, for what that passed, a look at decoded frames. The
+     * frame look takes seconds, so it runs outside the state lock, while the transfer still owns the
+     * download; the result is applied under the lock, and only if the transfer still owns it.
+     */
+    private fun finishTransfer(item: DownloadItem, transfer: ActiveTransfer, localFileUri: String, totalBytes: Long?) {
+        // A download is finished only when its file is there, has the size the server
+        // announced and is a video. Anything else is a failed download without a file.
+        val inspection = synchronized(stateLock) {
+            if (activeTransfers[item.id] !== transfer) return
+            val facts = backend.inspectFile(localFileUri)
+            FileInspection(facts, facts?.problem(announcedBytes = totalBytes, expectedVideoHash = item.expectedVideoHash))
+        }
+        val facts = inspection.facts
+        val problem = inspection.problem
+
+        // Null samples: the platform cannot look, which is no fault and is not recorded as a check.
+        val samples = if (problem == null) runCatching { backend.sampleFrames(localFileUri) }.getOrNull() else null
+        val verdict = samples?.let { first ->
+            runCatching {
+                confirmedFramesProblem(first) { backend.sampleConfirmingFrames(localFileUri, first.durationMs) }
+            }.getOrNull()
+        }
+        val framesProblem = verdict?.problem
+        val framesCheck = when {
+            verdict == null || !verdict.conclusive || framesProblem != null -> DownloadFramesCheck.NotChecked
+            samples.titleNamesAnotherEpisode(
+                expectedSeason = item.seasonNumber.takeIf { item.isEpisode },
+                expectedEpisode = item.episodeNumber.takeIf { item.isEpisode },
+            ) -> DownloadFramesCheck.Suspect
+            else -> DownloadFramesCheck.Passed
+        }
+
+        ifCurrent(item.id, transfer) {
+            activeTransfers.remove(item.id)
+            if (problem != null || framesProblem != null) backend.removeFile(localFileUri)
+            mutateItem(item.id) { current ->
+                if (current.status != DownloadStatus.Downloading) return@mutateItem current
+                if (problem != null) return@mutateItem current.failedBecauseOf(problem)
+                if (framesProblem != null) return@mutateItem current.failedBecauseOf(framesProblem)
+                current.copy(
+                    verifiedBy = facts?.verification(
+                        // Only a size the server announced while the transfer ran counts.
+                        announcedBytes = current.totalBytes,
+                        expectedVideoHash = item.expectedVideoHash,
+                        expectedSizeBytes = item.expectedSizeBytes,
+                        digestVerified = transfer.digestVerified,
+                    ) ?: if (transfer.digestVerified) DownloadVerification.Digest else null,
+                    framesCheck = framesCheck,
+                    status = DownloadStatus.Completed,
+                    localFileUri = localFileUri,
+                    downloadedBytes = if (totalBytes != null && totalBytes > 0L) {
+                        totalBytes
+                    } else {
+                        current.downloadedBytes
+                    },
+                    totalBytes = totalBytes?.takeIf { it > 0L } ?: current.totalBytes,
+                    errorMessage = null,
+                    updatedAtEpochMs = DownloadsClock.nowEpochMs(),
+                )
+            }
+        }
+    }
+
+    private class FileInspection(val facts: DownloadedFileFacts?, val problem: DownloadedFileProblem?)
 
     /** The downloads that went on by themselves when the list was loaded. Each is handed out once. */
     internal fun takeDownloadsResumedAtLoad(): Set<String> = synchronized(stateLock) {
@@ -532,19 +568,30 @@ object DownloadsRepository {
         return failedBecauseOf(problem)
     }
 
-    private fun DownloadItem.failedBecauseOf(problem: DownloadedFileProblem): DownloadItem = copy(
+    private fun DownloadItem.failedBecauseOf(problem: DownloadedFileProblem): DownloadItem = failedWith(
+        when (problem) {
+            DownloadedFileProblem.Missing -> Res.string.downloads_error_file_missing
+            DownloadedFileProblem.Incomplete -> Res.string.downloads_error_file_incomplete
+            DownloadedFileProblem.NotVideo -> Res.string.downloads_error_file_not_video
+            DownloadedFileProblem.ChecksumMismatch -> Res.string.downloads_error_file_checksum
+        },
+    )
+
+    private fun DownloadItem.failedBecauseOf(problem: DownloadedFramesProblem): DownloadItem = failedWith(
+        when (problem) {
+            DownloadedFramesProblem.Undecodable -> Res.string.downloads_error_frames_undecodable
+            DownloadedFramesProblem.BrokenEnd -> Res.string.downloads_error_frames_broken_end
+            DownloadedFramesProblem.BrokenStart -> Res.string.downloads_error_frames_broken_start
+            DownloadedFramesProblem.Blank -> Res.string.downloads_error_frames_blank
+            DownloadedFramesProblem.StillPicture -> Res.string.downloads_error_frames_still
+        },
+    )
+
+    private fun DownloadItem.failedWith(message: StringResource): DownloadItem = copy(
         status = DownloadStatus.Failed,
         localFileUri = null,
-        errorMessage = runBlocking {
-            getString(
-                when (problem) {
-                    DownloadedFileProblem.Missing -> Res.string.downloads_error_file_missing
-                    DownloadedFileProblem.Incomplete -> Res.string.downloads_error_file_incomplete
-                    DownloadedFileProblem.NotVideo -> Res.string.downloads_error_file_not_video
-                    DownloadedFileProblem.ChecksumMismatch -> Res.string.downloads_error_file_checksum
-                },
-            )
-        },
+        framesCheck = DownloadFramesCheck.NotChecked,
+        errorMessage = runBlocking { getString(message) },
         updatedAtEpochMs = DownloadsClock.nowEpochMs(),
     )
 
@@ -765,6 +812,12 @@ internal interface DownloadsBackend {
     /** Looks at the file of a download. Null where that cannot be done. */
     fun inspectFile(localFileUri: String): DownloadedFileFacts? = null
 
+    /** Takes decoded frames of the file of a download. Slow: seconds. Null where that cannot be done. */
+    fun sampleFrames(localFileUri: String): FrameSamples? = null
+
+    /** Takes more frames of a file whose first frames looked blank or still. Slow. Null where that cannot be done. */
+    fun sampleConfirmingFrames(localFileUri: String, durationMs: Long): FrameSamples? = null
+
     /** Moves a file out of the downloads folder without deleting it at once. True when it is out, or was gone. */
     fun trashFile(localFileUri: String): Boolean = false
 
@@ -812,6 +865,11 @@ private object PlatformDownloadsBackend : DownloadsBackend {
         DownloadsPlatformDownloader.resolveLocalFileUri(localFileUri, destinationFileName)
 
     override fun inspectFile(localFileUri: String): DownloadedFileFacts? = inspectDownloadedFile(localFileUri)
+
+    override fun sampleFrames(localFileUri: String): FrameSamples? = sampleDownloadedFrames(localFileUri)
+
+    override fun sampleConfirmingFrames(localFileUri: String, durationMs: Long): FrameSamples? =
+        sampleConfirmingDownloadedFrames(localFileUri, durationMs)
 
     override fun trashFile(localFileUri: String): Boolean = DownloadsTrash.moveAway(localFileUri)
 
