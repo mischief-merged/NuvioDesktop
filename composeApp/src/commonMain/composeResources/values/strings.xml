@@ -2026,6 +2026,12 @@
     <string name="downloads_season_quality_1080">1080p</string>
     <string name="downloads_season_quality_720">720p</string>
     <string name="downloads_season_quality_480">480p</string>
+    <string name="downloads_season_max_bitrate">Maximum bitrate</string>
+    <string name="downloads_season_max_bitrate_description">Skips sources above this</string>
+    <string name="downloads_season_bitrate_no_limit">No limit</string>
+    <string name="downloads_season_bitrate_value">%1$d Mbps</string>
+    <string name="downloads_season_audio_language">Audio language</string>
+    <string name="downloads_season_audio_language_any">Any language</string>
     <string name="downloads_season_started">Adding season to downloads</string>
     <string name="downloads_season_nothing">No released episodes to download</string>
     <string name="downloads_season_already_running">This season is already being added</string>

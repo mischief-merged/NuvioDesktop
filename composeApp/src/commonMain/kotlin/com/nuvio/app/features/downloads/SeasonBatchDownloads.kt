@@ -68,6 +68,8 @@ internal object SeasonBatchDownloads {
         onFinished = { _, summary -> NuvioToastController.show(summary.toastMessage()) },
         discard = { item -> DownloadsRepository.cancelDownload(item.id) },
         verifyCompleted = { item -> DownloadsRepository.verifyCompletedDownload(item.id) },
+        inspect = DownloadsRepository::inspectCompletedDownload,
+        preferAudioLanguage = { item, language -> DownloadsRepository.setPreferredAudioLanguage(item.id, language) },
     )
 
     val running: StateFlow<Map<String, SeasonBatchProgress>> get() = downloader.running

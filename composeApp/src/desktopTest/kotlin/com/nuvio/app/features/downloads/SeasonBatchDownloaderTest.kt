@@ -1,5 +1,6 @@
 package com.nuvio.app.features.downloads
 
+import com.nuvio.app.features.debrid.DebridStreamLanguage
 import com.nuvio.app.features.details.MetaDetails
 import com.nuvio.app.features.details.MetaVideo
 import com.nuvio.app.features.streams.StreamBehaviorHints
@@ -164,8 +165,10 @@ class SeasonBatchDownloaderTest {
         prepare: suspend (StreamItem, SeasonBatchEpisode) -> StreamItem? = { s, _ -> s },
         downloads: StateFlow<DownloadsUiState> = fake.state,
         enqueue: (SeasonBatchRequest, SeasonBatchEpisode, StreamItem) -> DownloadEnqueueResult = fake::enqueue,
-        minVideoBytes: (SeasonBatchEpisode) -> Long = { minPlausibleVideoBytes() },
+        minVideoBytes: (SeasonBatchEpisode) -> Long = { minPlausibleVideoBytes(it.runtimeMinutes) },
         verifyCompleted: (DownloadItem) -> Boolean = { true },
+        inspect: (DownloadItem) -> DownloadedFileFacts? = { null },
+        preferAudioLanguage: (DownloadItem, String) -> Unit = { _, _ -> },
     ) = SeasonBatchDownloader(
         // Not backgroundScope: advanceUntilIdle() ignores tasks that belong to background work.
         scope = CoroutineScope(StandardTestDispatcher(testScheduler) + SupervisorJob()),
@@ -178,6 +181,8 @@ class SeasonBatchDownloaderTest {
         maxConcurrent = max,
         discard = fake::discard,
         verifyCompleted = verifyCompleted,
+        inspect = inspect,
+        preferAudioLanguage = preferAudioLanguage,
         minVideoBytes = minVideoBytes,
     )
 
@@ -1066,6 +1071,169 @@ class SeasonBatchDownloaderTest {
 
         assertEquals(emptyList(), fake.discarded)
         assertEquals(SeasonBatchEpisodeResult.Completed, summary?.results?.values?.single())
+    }
+
+    @Test
+    fun a_file_far_too_small_for_the_runtime_of_its_episode_is_a_failed_source() = runTest {
+        val fake = Fake()
+        val d = downloader(fake, fetch = { threeSources() })
+        d.start(request(listOf(SeasonBatchEpisode("tt1:1:1", 1, 1, "Ep 1", null, runtimeMinutes = 45))))
+        advanceUntilIdle()
+
+        fake.finishedBytes = 5_000_000
+        fake.setStatus(1, DownloadStatus.Completed)
+        advanceUntilIdle()
+
+        assertEquals(listOf("http://x/a.mp4"), fake.discarded)
+        assertEquals(2, fake.enqueued.size)
+    }
+
+    @Test
+    fun a_short_item_may_be_smaller_than_two_megabytes() = runTest {
+        val fake = Fake()
+        var summary: SeasonBatchSummary? = null
+        val d = downloader(fake, fetch = { threeSources() }, onFinished = { _, s -> summary = s })
+        d.start(request(listOf(SeasonBatchEpisode("tt1:1:1", 1, 1, "Ep 1", null, runtimeMinutes = 2))))
+        advanceUntilIdle()
+
+        fake.finishedBytes = 1_000_000
+        fake.setStatus(1, DownloadStatus.Completed)
+        advanceUntilIdle()
+
+        assertEquals(emptyList(), fake.discarded)
+        assertEquals(SeasonBatchEpisodeResult.Completed, summary?.results?.values?.single())
+    }
+
+    private fun clip(durationSeconds: Long?) =
+        DownloadedFileFacts(exists = true, sizeBytes = 40_000_000, isVideoContainer = true, durationMs = durationSeconds?.let { it * 1_000 })
+
+    private suspend fun kotlinx.coroutines.test.TestScope.finishWith(durationSeconds: Long?, runtimeMinutes: Int?): Fake {
+        val fake = Fake()
+        val d = downloader(fake, fetch = { threeSources() }, inspect = { clip(durationSeconds) })
+        d.start(request(listOf(SeasonBatchEpisode("tt1:1:1", 1, 1, "Ep 1", null, runtimeMinutes = runtimeMinutes))))
+        advanceUntilIdle()
+        fake.finishedBytes = 40_000_000
+        fake.setStatus(1, DownloadStatus.Completed)
+        advanceUntilIdle()
+        return fake
+    }
+
+    @Test
+    fun a_valid_video_that_lasts_a_few_seconds_in_place_of_a_long_episode_is_a_failed_source() = runTest {
+        val fake = finishWith(durationSeconds = 30, runtimeMinutes = 45)
+
+        assertEquals(listOf("http://x/a.mp4"), fake.discarded)
+        assertEquals(2, fake.enqueued.size)
+    }
+
+    @Test
+    fun a_video_that_is_shorter_than_its_stated_runtime_but_not_a_fraction_of_it_is_kept() = runTest {
+        val fake = finishWith(durationSeconds = 6 * 60, runtimeMinutes = 45)
+
+        assertEquals(emptyList(), fake.discarded)
+        assertEquals(1, fake.enqueued.size)
+    }
+
+    @Test
+    fun a_video_is_kept_when_its_duration_or_the_runtime_is_not_known() = runTest {
+        assertEquals(emptyList(), finishWith(durationSeconds = null, runtimeMinutes = 45).discarded)
+        assertEquals(emptyList(), finishWith(durationSeconds = 5, runtimeMinutes = null).discarded)
+    }
+
+    private val preferredAudio = mutableListOf<Pair<String, String>>()
+
+    /** Downloads episode 1 with [chosen] as the language; each finished file has [audioLanguages]. */
+    private suspend fun kotlinx.coroutines.test.TestScope.finishWithAudio(audioLanguages: List<String>?, chosen: DebridStreamLanguage?): Fake {
+        val fake = Fake()
+        val d = downloader(
+            fake,
+            fetch = { threeSources() },
+            inspect = { clip(durationSeconds = null).copy(audioLanguages = audioLanguages) },
+            preferAudioLanguage = { item, language -> preferredAudio += item.sourceUrl to language },
+        )
+        d.start(request(episodes.take(1)).copy(audioLanguage = chosen))
+        advanceUntilIdle()
+        fake.finishedBytes = 40_000_000
+        fake.setStatus(1, DownloadStatus.Completed)
+        advanceUntilIdle()
+        return fake
+    }
+
+    @Test
+    fun a_file_with_audio_only_in_another_language_than_the_chosen_one_is_a_failed_source() = runTest {
+        val fake = finishWithAudio(listOf("rus"), chosen = DebridStreamLanguage.EN)
+
+        assertEquals(listOf("http://x/a.mp4"), fake.discarded)
+        assertEquals(2, fake.enqueued.size)
+        assertEquals(emptyList(), preferredAudio)
+    }
+
+    @Test
+    fun a_file_with_the_chosen_language_on_its_second_audio_track_is_kept_and_starts_on_that_language() = runTest {
+        val fake = finishWithAudio(listOf("lit", "eng"), chosen = DebridStreamLanguage.EN)
+
+        assertEquals(emptyList(), fake.discarded)
+        assertEquals(1, fake.enqueued.size)
+        assertEquals(listOf("http://x/a.mp4" to "en"), preferredAudio)
+    }
+
+    @Test
+    fun a_file_whose_first_audio_track_is_in_the_chosen_language_is_kept_as_it_is() = runTest {
+        val fake = finishWithAudio(listOf("eng", "lit"), chosen = DebridStreamLanguage.EN)
+
+        assertEquals(emptyList(), fake.discarded)
+        assertEquals(emptyList(), preferredAudio)
+    }
+
+    @Test
+    fun a_file_is_kept_when_its_audio_tracks_cannot_be_read_or_carry_no_language() = runTest {
+        assertEquals(emptyList(), finishWithAudio(null, chosen = DebridStreamLanguage.EN).discarded)
+        assertEquals(emptyList(), finishWithAudio(listOf(""), chosen = DebridStreamLanguage.EN).discarded)
+    }
+
+    @Test
+    fun the_audio_tracks_of_a_file_are_not_held_against_it_when_no_language_was_chosen() = runTest {
+        assertEquals(emptyList(), finishWithAudio(listOf("rus"), chosen = null).discarded)
+    }
+
+    @Test
+    fun a_finished_download_that_is_a_short_clip_on_disk_does_not_count_as_downloaded() = runTest {
+        val existing = item(1, DownloadStatus.Completed)
+        val fake = Fake(listOf(existing))
+        val d = downloader(fake, inspect = { clip(durationSeconds = 30) })
+        d.start(request(listOf(SeasonBatchEpisode("tt1:1:1", 1, 1, "Ep 1", null, runtimeMinutes = 45))))
+        advanceUntilIdle()
+
+        assertEquals(listOf(1), fake.enqueued.map { it.first })
+    }
+
+    @Test
+    fun a_finished_download_whose_file_has_shrunk_on_disk_does_not_count_as_downloaded() = runTest {
+        val fake = Fake(listOf(item(1, DownloadStatus.Completed)))
+        val d = downloader(fake, inspect = { DownloadedFileFacts(exists = true, sizeBytes = 73_615, isVideoContainer = true) })
+        d.start(request(episodes.take(1)))
+        advanceUntilIdle()
+
+        assertEquals(listOf(1), fake.enqueued.map { it.first })
+    }
+
+    @Test
+    fun a_finished_download_that_is_a_real_video_on_disk_counts_as_downloaded() = runTest {
+        val fake = Fake(listOf(item(1, DownloadStatus.Completed)))
+        val d = downloader(fake, inspect = { clip(durationSeconds = 44 * 60) })
+        d.start(request(listOf(SeasonBatchEpisode("tt1:1:1", 1, 1, "Ep 1", null, runtimeMinutes = 45))))
+        advanceUntilIdle()
+
+        assertEquals(emptyList(), fake.enqueued)
+    }
+
+    @Test
+    fun a_duration_counts_as_a_placeholder_below_a_tenth_of_the_runtime() {
+        assertEquals(true, isFarShorterThanRuntime(durationMs = 269_999, runtimeMinutes = 45))
+        assertEquals(false, isFarShorterThanRuntime(durationMs = 270_000, runtimeMinutes = 45))
+        assertEquals(false, isFarShorterThanRuntime(durationMs = null, runtimeMinutes = 45))
+        assertEquals(false, isFarShorterThanRuntime(durationMs = 1_000, runtimeMinutes = null))
+        assertEquals(false, isFarShorterThanRuntime(durationMs = 1_000, runtimeMinutes = 0))
     }
 
     @Test

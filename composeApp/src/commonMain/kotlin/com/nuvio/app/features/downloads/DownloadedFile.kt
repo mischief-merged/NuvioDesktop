@@ -12,6 +12,8 @@ internal data class DownloadedFileFacts(
     val durationMs: Long? = null,
     /** The OpenSubtitles hash of the file, the one a source can state as its videoHash. */
     val videoHash: String? = null,
+    /** The languages of the audio tracks in track order, where the container could be read. */
+    val audioLanguages: List<String>? = null,
 )
 
 /** Looks at the file of a download. Null where the platform cannot look, which is never a fault. */

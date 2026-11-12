@@ -26,6 +26,7 @@ internal actual fun inspectDownloadedFile(localFileUri: String): DownloadedFileF
                 sizeBytes = size,
                 isVideoContainer = startsLikeVideoContainer(read(0, VideoContainerHeaderBytes) ?: ByteArray(0)),
                 durationMs = mp4DurationMs(size, ::read),
+                audioLanguages = runCatching { audioTrackLanguages(size, ::read) }.getOrNull(),
                 videoHash = if (size >= 2L * VideoHashChunkBytes) {
                     val head = read(0, VideoHashChunkBytes)
                     val tail = read(size - VideoHashChunkBytes, VideoHashChunkBytes)

@@ -1,5 +1,6 @@
 package com.nuvio.app.features.downloads
 
+import com.nuvio.app.features.debrid.DebridStreamLanguage
 import com.nuvio.app.features.debrid.DebridStreamMetadata
 import com.nuvio.app.features.debrid.DebridStreamPreferences
 import com.nuvio.app.features.debrid.DebridStreamResolution
@@ -26,8 +27,10 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
 
 /** Resolution the user picks once for a whole season download. */
+@Serializable
 internal enum class BatchQuality(val resolution: DebridStreamResolution?) {
     BestAvailable(null),
     P2160(DebridStreamResolution.P2160),
@@ -42,6 +45,7 @@ internal data class SeasonBatchEpisode(
     val episodeNumber: Int,
     val title: String?,
     val thumbnail: String?,
+    val runtimeMinutes: Int? = null,
 )
 
 internal data class SeasonBatchRequest(
@@ -55,6 +59,10 @@ internal data class SeasonBatchRequest(
     val seasonNumber: Int,
     val episodes: List<SeasonBatchEpisode>,
     val quality: BatchQuality,
+    /** Sources above this bitrate are skipped. Null means no limit. */
+    val maxBitrateMbps: Int? = null,
+    /** Sources tagged only with other languages are skipped. Null means any language. */
+    val audioLanguage: DebridStreamLanguage? = null,
 )
 
 internal enum class SeasonBatchEpisodeResult {
@@ -96,7 +104,7 @@ internal enum class SeasonBatchStart {
     AlreadyRunning,
 }
 
-private val resolutionOnlyPreferences = DebridStreamPreferences()
+private val parsingPreferences = DebridStreamPreferences()
 
 /**
  * The smallest size a downloaded episode or movie can plausibly have. Some sources answer with a
@@ -129,20 +137,68 @@ internal fun minPlausibleVideoBytes(runtimeMinutes: Int? = null): Long =
 internal val DownloadItem.finishedSizeBytes: Long
     get() = downloadedBytes.takeIf { it > 0L } ?: totalBytes ?: 0L
 
+/**
+ * Whether a video that lasts [durationMs] cannot be the one that is [runtimeMinutes] long: less than
+ * a tenth of it, which leaves room for a runtime that is wrong and still catches a clip of a few
+ * seconds or minutes in place of an episode or a movie. False when either is not known.
+ */
+internal fun isFarShorterThanRuntime(durationMs: Long?, runtimeMinutes: Int?): Boolean {
+    val runtimeMs = runtimeMinutes?.takeIf { it > 0 }?.let { it * 60_000L } ?: return false
+    return durationMs != null && durationMs * MinPlausibleDurationDivisor < runtimeMs
+}
+
+internal const val MinPlausibleDurationDivisor = 10
+
 /** The size the source says its file has, when it says so. */
 internal fun StreamItem.announcedSizeBytes(): Long? =
-    DebridStreamMetadata.facts(this, resolutionOnlyPreferences).size?.takeIf { it > 0L }
+    DebridStreamMetadata.facts(this, parsingPreferences).size?.takeIf { it > 0L }
 
-internal fun StreamItem.batchResolution(): DebridStreamResolution =
-    DebridStreamMetadata.facts(this, resolutionOnlyPreferences).resolution
+private enum class LanguageMatch { Chosen, Unspecified, Other }
+
+private class BatchCandidate(
+    val stream: StreamItem,
+    val resolution: DebridStreamResolution,
+    val language: LanguageMatch,
+    /** File size, kept only when the episode runtime is known so a bitrate can be worked out from it. */
+    val sizeBytes: Long?,
+)
+
+private fun languageMatch(languages: List<DebridStreamLanguage>, chosen: DebridStreamLanguage?): LanguageMatch = when {
+    chosen == null || chosen in languages -> LanguageMatch.Chosen
+    languages.isEmpty() ||
+        DebridStreamLanguage.MULTI in languages ||
+        DebridStreamLanguage.UNKNOWN in languages -> LanguageMatch.Unspecified
+    else -> LanguageMatch.Other
+}
 
 /**
- * Orders the sources worth trying for one episode: only formats the downloader can save and only the
- * chosen resolution. [BatchQuality.BestAvailable] keeps every resolution and tries the highest first.
- * Within one resolution, ready direct links come before ones that still need a debrid lookup.
+ * Orders the sources worth trying for one episode and drops the ones the choices rule out.
+ *
+ * Dropped: formats the downloader cannot save, resolutions other than the chosen one, sources tagged
+ * only with languages other than [audioLanguage], and sources whose bitrate (file size over
+ * [runtimeMinutes]) is above [maxBitrateMbps].
+ *
+ * Order: the highest resolution first ([BatchQuality.BestAvailable] keeps them all), sources tagged
+ * with the chosen language before untagged ones, and ready direct links before ones that still need
+ * a debrid lookup. Only when a bitrate limit is set does bitrate matter for the order: sources whose
+ * bitrate is unknown come after every source known to fit, and among those that fit the higher
+ * bitrate comes before a direct link. Without any preference the order is by resolution and direct
+ * link alone.
  */
-internal fun rankBatchCandidates(streams: List<StreamItem>, quality: BatchQuality): List<StreamItem> {
-    val usable = streams
+internal fun rankBatchCandidates(
+    streams: List<StreamItem>,
+    quality: BatchQuality,
+    maxBitrateMbps: Int? = null,
+    audioLanguage: DebridStreamLanguage? = null,
+    runtimeMinutes: Int? = null,
+): List<StreamItem> {
+    val runtimeSeconds = runtimeMinutes?.takeIf { it > 0 }?.let { it * 60L }
+    val maxBitsPerEpisode = if (maxBitrateMbps != null && runtimeSeconds != null) {
+        maxBitrateMbps * 1_000_000L * runtimeSeconds
+    } else {
+        null
+    }
+    val ordered = streams
         .filter { stream ->
             val directUrl = stream.playableDirectUrl
             if (directUrl != null) {
@@ -151,14 +207,28 @@ internal fun rankBatchCandidates(streams: List<StreamItem>, quality: BatchQualit
                 stream.isDirectDebridStream || stream.needsLocalDebridResolve
             }
         }
-        .map { it to it.batchResolution() }
-        .filter { (_, resolution) -> quality.resolution == null || resolution == quality.resolution }
-    val ordered = usable
+        .map { stream ->
+            val facts = DebridStreamMetadata.facts(stream, parsingPreferences)
+            BatchCandidate(
+                stream = stream,
+                resolution = facts.resolution,
+                language = languageMatch(facts.languages, audioLanguage),
+                sizeBytes = facts.size?.takeIf { it > 0L && runtimeSeconds != null },
+            )
+        }
+        .filter { candidate ->
+            (quality.resolution == null || candidate.resolution == quality.resolution) &&
+                candidate.language != LanguageMatch.Other &&
+                (maxBitsPerEpisode == null || candidate.sizeBytes == null || candidate.sizeBytes * 8 <= maxBitsPerEpisode)
+        }
         .sortedWith(
-            compareByDescending<Pair<StreamItem, DebridStreamResolution>> { (_, resolution) -> resolution.value }
-                .thenBy { (stream, _) -> stream.playableDirectUrl == null },
+            compareBy<BatchCandidate> { maxBitrateMbps != null && it.sizeBytes == null }
+                .thenByDescending { it.resolution.value }
+                .thenBy { it.language }
+                .thenByDescending { if (maxBitrateMbps != null) it.sizeBytes ?: -1L else 0L }
+                .thenBy { it.stream.playableDirectUrl == null },
         )
-        .map { it.first }
+        .map { it.stream }
     // Two sources with the same URL are the same request only when they also send the same headers.
     val seenRequests = mutableSetOf<Pair<String, List<Pair<String, String>>>>()
     return ordered.filter { stream ->
@@ -187,6 +257,7 @@ internal fun MetaDetails.seasonBatchEpisodes(seasonNumber: Int, todayIsoDate: St
                 episodeNumber = episode,
                 title = video.title.takeIf { it.isNotBlank() },
                 thumbnail = video.thumbnail,
+                runtimeMinutes = video.runtime,
             )
         }
 
@@ -223,10 +294,14 @@ internal class SeasonBatchDownloader(
     private val maxConcurrent: Int = DefaultMaxConcurrent,
     /** Removes a download this batch queued, with its file, because it is not the video. */
     private val discard: (DownloadItem) -> Unit = {},
+    /** Looks at the file of a finished download, for the duration and the audio tracks its container states. */
+    private val inspect: (DownloadItem) -> DownloadedFileFacts? = { null },
+    /** Notes on a download the audio language its playback is to start on. */
+    private val preferAudioLanguage: (DownloadItem, String) -> Unit = { _, _ -> },
     /** False when a finished download has lost its file. It is then no longer counted as downloaded. */
     private val verifyCompleted: (DownloadItem) -> Boolean = { true },
     /** The size below which the download of an episode is a placeholder. */
-    private val minVideoBytes: (SeasonBatchEpisode) -> Long = { minPlausibleVideoBytes() },
+    private val minVideoBytes: (SeasonBatchEpisode) -> Long = { minPlausibleVideoBytes(it.runtimeMinutes) },
 ) {
     private val _running = MutableStateFlow<Map<String, SeasonBatchProgress>>(emptyMap())
 
@@ -375,7 +450,13 @@ internal class SeasonBatchDownloader(
         for (source in listOfNotNull(fetchStreams, fetchFallbackStreams)) {
             if (attempts >= MaxSourcesPerEpisode) break
             val candidates = try {
-                rankBatchCandidates(source(episode), request.quality)
+                rankBatchCandidates(
+                    streams = source(episode),
+                    quality = request.quality,
+                    maxBitrateMbps = request.maxBitrateMbps,
+                    audioLanguage = request.audioLanguage,
+                    runtimeMinutes = episode.runtimeMinutes,
+                )
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
@@ -419,6 +500,10 @@ internal class SeasonBatchDownloader(
                             item == null -> return SeasonBatchEpisodeResult.Cancelled
                             // A placeholder clip, announced by the server or arrived: not the video.
                             item.isAnnouncedSmallerThan(minBytes) || item.isCompletedSmallerThan(minBytes) -> discard(item)
+                            // A valid video, but far too short to be this episode.
+                            item.status == DownloadStatus.Completed && isPlaceholderOnDisk(item, episode, minBytes) -> discard(item)
+                            // The video, but with no audio track in the language that was chosen.
+                            item.status == DownloadStatus.Completed && lacksChosenAudio(item, request.audioLanguage) -> discard(item)
                             item.status == DownloadStatus.Completed -> return SeasonBatchEpisodeResult.Completed
                             item.status == DownloadStatus.Paused -> return SeasonBatchEpisodeResult.Paused
                             else -> Unit // Failed: try the next matching source
@@ -492,7 +577,7 @@ internal class SeasonBatchDownloader(
     ): Boolean {
         val item = itemFor(request, episode) ?: return false
         return when (item.status) {
-            DownloadStatus.Completed -> !item.isCompletedSmallerThan(minBytes) && verifyCompleted(item)
+            DownloadStatus.Completed -> !item.isCompletedSmallerThan(minBytes) && verifyCompleted(item) && !isPlaceholderOnDisk(item, episode, minBytes)
             DownloadStatus.Downloading, DownloadStatus.Paused -> true
             DownloadStatus.Failed -> false
         }
@@ -504,6 +589,30 @@ internal class SeasonBatchDownloader(
                 item.seasonNumber == episode.seasonNumber &&
                 item.episodeNumber == episode.episodeNumber
         }
+
+    /** Whether the file of a finished download, looked at now, is too small or far too short to be the episode. */
+    private fun isPlaceholderOnDisk(item: DownloadItem, episode: SeasonBatchEpisode, minBytes: Long): Boolean {
+        val facts = inspect(item)?.takeIf { it.exists } ?: return false
+        return facts.sizeBytes < minBytes || isFarShorterThanRuntime(facts.durationMs, episode.runtimeMinutes)
+    }
+
+    /**
+     * Whether the file of a download that has just finished states a language for every audio track
+     * and none is [chosen]. Source names often carry no language, so this is where a file in another
+     * language is caught. A track in the chosen language that is not the first is noted on the
+     * download, so that playback starts on it.
+     */
+    private fun lacksChosenAudio(item: DownloadItem, chosen: DebridStreamLanguage?): Boolean {
+        if (chosen == null) return false
+        return when (val check = checkAudioTracks(inspect(item)?.audioLanguages, chosen)) {
+            AudioTrackCheck.Missing -> true
+            is AudioTrackCheck.Later -> {
+                preferAudioLanguage(item, check.language)
+                false
+            }
+            AudioTrackCheck.First, AudioTrackCheck.Unknown -> false
+        }
+    }
 
     private fun DownloadItem?.isSettledOrGone(): Boolean =
         this == null || status != DownloadStatus.Downloading
