@@ -206,9 +206,14 @@ object MetaDetailsRepository {
         _uiState.value = MetaDetailsUiState()
     }
 
-    suspend fun fetch(type: String, id: String, cacheResult: Boolean = true): MetaDetails? {
+    suspend fun fetch(
+        type: String,
+        id: String,
+        cacheResult: Boolean = true,
+        useCached: Boolean = true,
+    ): MetaDetails? {
         val requestKey = "$type:$id"
-        cachedMetaByRequestKey[requestKey]?.let { return it.baseMeta }
+        if (useCached) cachedMetaByRequestKey[requestKey]?.let { return it.baseMeta }
         ServerItemRef.parse(id)?.let { ref ->
             return runCatching { ServerCatalog.details(ref).meta }
                 .onFailure { if (it is CancellationException) throw it }

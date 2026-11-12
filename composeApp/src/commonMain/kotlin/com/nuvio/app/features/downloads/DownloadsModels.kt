@@ -62,6 +62,8 @@ data class DownloadItem(
      * download is in the file but another track comes first.
      */
     val preferredAudioLanguage: String? = null,
+    /** The automatic-download rule that queued this item. Null for a download the user started. */
+    val autoDownloadRuleKey: String? = null,
 ) {
     val isEpisode: Boolean
         get() = seasonNumber != null && episodeNumber != null

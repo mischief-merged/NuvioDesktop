@@ -42,6 +42,7 @@ import com.nuvio.app.core.ui.NuvioScreen
 import com.nuvio.app.core.ui.NuvioScreenHeader
 import com.nuvio.app.core.ui.NuvioStatusModal
 import com.nuvio.app.core.ui.NuvioToastController
+import com.nuvio.app.isDesktop
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.stringResource
 
@@ -110,6 +111,9 @@ fun DownloadsScreen(
         }
 
         if (selectedShowId == null) {
+            if (isDesktop) {
+                item { AutoDownloadSection() }
+            }
             downloadsRootContent(
                 uiState = uiState,
                 onOpenDownload = onOpenDownload,

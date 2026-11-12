@@ -1,5 +1,6 @@
 package com.nuvio.app.features.player
 
+import com.nuvio.app.features.downloads.AutoDownloads
 import com.nuvio.app.features.servers.ServerItemRef
 import com.nuvio.app.features.servers.ServerStreams
 import com.nuvio.app.features.tmdb.TmdbService
@@ -12,6 +13,7 @@ import com.nuvio.app.features.watchprogress.WatchProgressClock
 import com.nuvio.app.features.watchprogress.WatchProgressPlaybackSession
 import com.nuvio.app.features.watchprogress.WatchProgressRepository
 import com.nuvio.app.features.watchprogress.buildPlaybackVideoId
+import com.nuvio.app.features.watchprogress.isWatchProgressComplete
 import com.nuvio.app.features.watching.domain.isShortPlaceholderDuration
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -390,13 +392,27 @@ internal fun PlayerScreenRuntime.flushWatchProgress(
 ) {
     when (scrobbleAction) {
         TrackingScrobbleAction.PAUSE -> emitTrackingScrobblePause()
-        TrackingScrobbleAction.STOP -> emitStopScrobbleForCurrentProgress()
+        TrackingScrobbleAction.STOP -> {
+            reportLocalPlaybackCompleted()
+            emitStopScrobbleForCurrentProgress()
+        }
         TrackingScrobbleAction.START -> Unit
     }
     WatchProgressRepository.flushPlaybackProgress(
         session = playbackSession,
         snapshot = playbackSnapshot,
     )
+}
+
+/** Tells automatic downloads that a downloaded file was played to the point that counts as watched. */
+private fun PlayerScreenRuntime.reportLocalPlaybackCompleted() {
+    if (!activeSourceUrl.startsWith("file:")) return
+    val completed = isWatchProgressComplete(
+        positionMs = playbackSnapshot.positionMs,
+        durationMs = playbackSnapshot.durationMs,
+        isEnded = playbackSnapshot.isEnded,
+    )
+    if (completed) AutoDownloads.onLocalPlaybackCompleted(activeSourceUrl)
 }
 
 internal fun PlayerScreenRuntime.scheduleProgressSyncAfterSeek() {

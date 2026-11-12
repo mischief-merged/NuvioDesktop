@@ -43,6 +43,7 @@ import com.nuvio.app.features.addons.enabledAddons
 import com.nuvio.app.features.auth.AuthScreen
 import com.nuvio.app.features.collection.CollectionRepository
 import com.nuvio.app.features.collection.CollectionSyncService
+import com.nuvio.app.features.downloads.AutoDownloads
 import com.nuvio.app.features.downloads.DownloadsRepository
 import com.nuvio.app.features.home.HomeCatalogSettingsRepository
 import com.nuvio.app.features.library.LibraryRepository
@@ -74,6 +75,7 @@ internal suspend fun warmProfileBoundRepositories() {
         val enabledAddons = AddonRepository.uiState.value.addons.enabledAddons()
         ContinueWatchingPreferencesRepository.ensureLoaded()
         DownloadsRepository.ensureLoaded()
+        AutoDownloads.start()
         EpisodeReleaseNotificationsRepository.ensureLoaded()
         HomeCatalogSettingsRepository.syncCatalogs(enabledAddons)
         LibraryRepository.ensureLoaded()
