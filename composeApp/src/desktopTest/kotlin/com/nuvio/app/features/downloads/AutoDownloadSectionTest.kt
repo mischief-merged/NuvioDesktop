@@ -21,6 +21,7 @@ import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.nuvio.app.core.ui.NuvioTheme
@@ -29,7 +30,18 @@ import com.nuvio.app.features.details.MetaDetails
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.action_cancel
 import nuvio.composeapp.generated.resources.downloads_auto_check_now
+import nuvio.composeapp.generated.resources.downloads_auto_delete_now
+import nuvio.composeapp.generated.resources.downloads_auto_delete_now_description
+import nuvio.composeapp.generated.resources.downloads_auto_delete_now_message_held
+import nuvio.composeapp.generated.resources.downloads_auto_delete_now_message_trash
+import nuvio.composeapp.generated.resources.downloads_auto_delete_now_title
+import nuvio.composeapp.generated.resources.downloads_auto_keep_description
+import nuvio.composeapp.generated.resources.downloads_auto_pending_heading
+import nuvio.composeapp.generated.resources.downloads_auto_pending_in_hours
+import nuvio.composeapp.generated.resources.downloads_auto_pending_row
+import nuvio.composeapp.generated.resources.downloads_auto_pending_soon
 import nuvio.composeapp.generated.resources.downloads_auto_checking_toast
 import nuvio.composeapp.generated.resources.downloads_auto_keep_option
 import nuvio.composeapp.generated.resources.downloads_auto_rule_summary
@@ -67,6 +79,8 @@ class AutoDownloadSectionTest {
         override val rules = MutableStateFlow(emptyList<AutoDownloadRule>())
         override val statuses = MutableStateFlow(emptyMap<String, AutoDownloadStatus>())
         override val storageLimitGb = MutableStateFlow<Int?>(50)
+        override val removals = MutableStateFlow(emptyList<AutoDownloadRemoval>())
+        override var usesSystemTrash = true
         var checks = 0
         val limitsSet = mutableListOf<Pair<Int, Int?>>()
 
@@ -74,7 +88,18 @@ class AutoDownloadSectionTest {
             limitsSet += profileId to limitGb
         }
 
-        override fun save(profileId: Int, meta: MetaDetails, keepCount: Int, scope: AutoDownloadScope) = Unit
+        val kept = mutableListOf<Pair<Int, String>>()
+        val deletedNow = mutableListOf<Pair<Int, String>>()
+
+        override fun save(profileId: Int, meta: MetaDetails, keepCount: Int, scope: AutoDownloadScope, deleteAfterWatching: Boolean) = Unit
+
+        override fun keepDownload(profileId: Int, downloadId: String) {
+            kept += profileId to downloadId
+        }
+
+        override fun deleteDownloadNow(profileId: Int, downloadId: String) {
+            deletedNow += profileId to downloadId
+        }
 
         override fun turnOff(profileId: Int, ruleKey: String) = Unit
 
@@ -234,10 +259,137 @@ class AutoDownloadSectionTest {
         assertEquals(listOf<Pair<Int, Int?>>(profile to null), controller.limitsSet)
     }
 
+    private val hour = 3_600_000L
+    private var shownNow = 1_000L
+    private val downloads = MutableStateFlow(
+        DownloadsUiState(listOf(testDownload(4, DownloadStatus.Completed, ruleKey = rule.key, id = "watched"))),
+    )
+
+    private fun scheduleRemoval(inMs: Long) {
+        controller.rules.value = listOf(rule)
+        controller.removals.value = listOf(AutoDownloadRemoval("watched", rule.key, dueAtEpochMs = 1_000 + inMs))
+    }
+
+    private fun pendingRow(due: String) = text(Res.string.downloads_auto_pending_row, "Show", 1, 4, due)
+
+    @Test
+    fun a_watched_episode_that_will_be_removed_is_listed_with_the_hours_left() {
+        scheduleRemoval(inMs = 23 * hour + 5)
+        show()
+
+        compose.onNode(
+            hasText(text(Res.string.downloads_auto_pending_heading)) and SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading),
+        ).assertIsDisplayed()
+        val due = runBlocking { getPluralString(Res.plurals.downloads_auto_pending_in_hours, 23, 23) }
+        compose.onNodeWithText(pendingRow(due)).assertIsDisplayed()
+    }
+
+    @Test
+    fun the_hours_left_follow_the_clock_while_the_screen_stays_open() {
+        scheduleRemoval(inMs = 3 * hour)
+        show()
+        compose.onNodeWithText(pendingRow(runBlocking { getPluralString(Res.plurals.downloads_auto_pending_in_hours, 3, 3) })).assertIsDisplayed()
+
+        shownNow = 1_000 + 2 * hour
+        compose.mainClock.advanceTimeBy(60_000)
+
+        compose.onNodeWithText(pendingRow(runBlocking { getPluralString(Res.plurals.downloads_auto_pending_in_hours, 1, 1) })).assertIsDisplayed()
+    }
+
+    @Test
+    fun the_last_hour_is_shown_in_words() {
+        scheduleRemoval(inMs = hour - 1)
+        show()
+
+        compose.onNodeWithText(pendingRow(text(Res.string.downloads_auto_pending_soon))).assertIsDisplayed()
+    }
+
+    @Test
+    fun a_removal_whose_download_is_gone_is_not_listed() {
+        scheduleRemoval(inMs = hour)
+        downloads.value = DownloadsUiState()
+        show()
+
+        compose.onNodeWithText(text(Res.string.downloads_auto_pending_heading)).assertDoesNotExist()
+    }
+
+    @Test
+    fun keep_and_delete_now_are_buttons_named_with_their_episode_and_work_from_the_keyboard() {
+        scheduleRemoval(inMs = 5 * hour)
+        show()
+        val button = SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button)
+
+        compose.onNodeWithContentDescription(text(Res.string.downloads_auto_delete_now_description, "Show", 1, 4))
+            .assert(button)
+            .assertHasClickAction()
+        compose.onNodeWithContentDescription(text(Res.string.downloads_auto_keep_description, "Show", 1, 4))
+            .assert(button)
+            .requestFocus()
+            .performKeyInput { pressKey(Key.Enter) }
+
+        assertEquals(listOf(profile to "watched"), controller.kept)
+    }
+
+    @Test
+    fun keep_keeps_the_episode_without_asking() {
+        scheduleRemoval(inMs = 5 * hour)
+        show()
+
+        compose.onNodeWithContentDescription(text(Res.string.downloads_auto_keep_description, "Show", 1, 4)).performClick()
+
+        assertEquals(listOf(profile to "watched"), controller.kept)
+        assertEquals(emptyList(), controller.deletedNow)
+    }
+
+    @Test
+    fun delete_now_asks_first_and_deletes_nothing_when_it_is_cancelled() {
+        scheduleRemoval(inMs = 5 * hour)
+        show()
+
+        compose.onNodeWithContentDescription(text(Res.string.downloads_auto_delete_now_description, "Show", 1, 4)).performClick()
+
+        assertEquals(emptyList(), controller.deletedNow)
+        compose.onNodeWithText(text(Res.string.downloads_auto_delete_now_title)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_auto_delete_now_message_trash, "Show", 1, 4)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.action_cancel)).performClick()
+
+        assertEquals(emptyList(), controller.deletedNow)
+        compose.onNodeWithText(text(Res.string.downloads_auto_delete_now_title)).assertDoesNotExist()
+    }
+
+    @Test
+    fun confirming_delete_now_deletes_the_episode_for_the_profile_it_was_pressed_for() {
+        scheduleRemoval(inMs = 5 * hour)
+        show()
+        compose.onNodeWithContentDescription(text(Res.string.downloads_auto_delete_now_description, "Show", 1, 4)).performClick()
+
+        compose.runOnIdle { shownProfile = otherProfile }
+        compose.waitForIdle()
+        compose.onNode(hasText(text(Res.string.downloads_auto_delete_now)) and hasAnyAncestor(isDialog())).performClick()
+
+        assertEquals(listOf(profile to "watched"), controller.deletedNow)
+    }
+
+    @Test
+    fun the_question_says_the_file_will_be_deleted_for_good_when_there_is_no_trash() {
+        controller.usesSystemTrash = false
+        scheduleRemoval(inMs = 5 * hour)
+        show()
+
+        compose.onNodeWithContentDescription(text(Res.string.downloads_auto_delete_now_description, "Show", 1, 4)).performClick()
+
+        compose.onNodeWithText(text(Res.string.downloads_auto_delete_now_message_held, "Show", 1, 4)).assertIsDisplayed()
+    }
+
     private fun show() {
         compose.setContent {
             NuvioTheme {
-                AutoDownloadSection(controller = controller, profileId = shownProfile)
+                AutoDownloadSection(
+                    controller = controller,
+                    profileId = shownProfile,
+                    downloads = downloads,
+                    nowEpochMs = { shownNow },
+                )
             }
         }
     }

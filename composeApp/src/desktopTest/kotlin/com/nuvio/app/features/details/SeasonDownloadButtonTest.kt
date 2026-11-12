@@ -23,6 +23,7 @@ import androidx.compose.ui.test.requestFocus
 import com.nuvio.app.core.ui.NuvioTheme
 import com.nuvio.app.features.details.components.SeasonDownloadButton
 import com.nuvio.app.features.downloads.AutoDownloadController
+import com.nuvio.app.features.downloads.AutoDownloadRemoval
 import com.nuvio.app.features.downloads.AutoDownloadRule
 import com.nuvio.app.features.downloads.AutoDownloadScope
 import com.nuvio.app.features.downloads.AutoDownloadStatus
@@ -296,12 +297,18 @@ class SeasonDownloadButtonTest {
         override val rules = MutableStateFlow(emptyList<AutoDownloadRule>())
         override val statuses = MutableStateFlow(emptyMap<String, AutoDownloadStatus>())
         override val storageLimitGb = MutableStateFlow<Int?>(50)
+        override val removals = MutableStateFlow(emptyList<AutoDownloadRemoval>())
+        override val usesSystemTrash = true
+
+        override fun keepDownload(profileId: Int, downloadId: String) = Unit
+
+        override fun deleteDownloadNow(profileId: Int, downloadId: String) = Unit
 
         override fun setStorageLimit(profileId: Int, limitGb: Int?) = Unit
 
         var saves = 0
 
-        override fun save(profileId: Int, meta: MetaDetails, keepCount: Int, scope: AutoDownloadScope) {
+        override fun save(profileId: Int, meta: MetaDetails, keepCount: Int, scope: AutoDownloadScope, deleteAfterWatching: Boolean) {
             saves++
         }
 

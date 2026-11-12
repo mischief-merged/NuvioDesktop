@@ -27,6 +27,8 @@ internal data class AutoDownloadRule(
     val background: String? = null,
     val keepCount: Int = DefaultKeepCount,
     val scope: AutoDownloadScope = AutoDownloadScope.NextUnwatched,
+    /** Removes an episode this rule downloaded once it was watched to the end on this device. Off unless chosen. */
+    val deleteAfterWatching: Boolean = false,
     /**
      * Episodes ("season|episode") that were seen in Downloads as a finished download this rule
      * queued. One that is no longer there was removed, and the rule does not fetch it again.
