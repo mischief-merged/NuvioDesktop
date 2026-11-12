@@ -111,6 +111,7 @@ import com.nuvio.app.core.ui.rememberArtworkBackdrop
 import com.nuvio.app.core.ui.rememberHeroStretchState
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
+import com.nuvio.app.features.details.components.MovieSetDownloadButton
 import com.nuvio.app.features.details.components.rememberMovieDownloadAction
 import com.nuvio.app.features.details.components.DetailActions
 import com.nuvio.app.features.details.components.CommentDetailSheet
@@ -2723,6 +2724,7 @@ private fun ConfiguredMetaSections(
             }
             MetaScreenSectionKey.COLLECTION -> {
                 if (!hasEpisodes && hasCollectionSection) {
+                    MovieSetDownloadButton(setName = meta.collectionName.orEmpty(), movies = meta.collectionItems)
                     DetailPosterRailSection(
                         title = meta.collectionName.orEmpty(),
                         items = meta.collectionItems,
