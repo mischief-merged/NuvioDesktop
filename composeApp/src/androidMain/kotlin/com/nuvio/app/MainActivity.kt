@@ -50,6 +50,7 @@ import com.nuvio.app.features.search.SearchHistoryStorage
 import com.nuvio.app.features.settings.SentrySettingsStorage
 import com.nuvio.app.features.settings.AppIconPlatform
 import com.nuvio.app.features.settings.ThemeSettingsStorage
+import com.nuvio.app.features.tracking.outbox.TrackerOutboxStorage
 import com.nuvio.app.features.trakt.TraktAuthStorage
 import com.nuvio.app.features.trakt.TraktCommentsStorage
 import com.nuvio.app.features.trakt.TraktLibraryStorage
@@ -120,6 +121,7 @@ open class MainActivity : AppCompatActivity() {
         DebridSettingsStorage.initialize(applicationContext)
         TmdbSettingsStorage.initialize(applicationContext)
         MdbListSettingsStorage.initialize(applicationContext)
+        TrackerOutboxStorage.initialize(applicationContext)
         TraktAuthStorage.initialize(applicationContext)
         TraktCommentsStorage.initialize(applicationContext)
         TraktLibraryStorage.initialize(applicationContext)
