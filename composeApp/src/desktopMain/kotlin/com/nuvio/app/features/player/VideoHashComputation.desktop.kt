@@ -24,7 +24,7 @@ internal actual suspend fun computeVideoHash(
         if (fileSize < ChunkSize * 2) return@runCatching null
         val head = chunkSum(url, headers, 0) ?: return@runCatching null
         val tail = chunkSum(url, headers, fileSize - ChunkSize) ?: return@runCatching null
-        "%016x".format(fileSize + head + tail) to fileSize
+        videoHashOf(fileSize, head, tail) to fileSize
     }.getOrNull()
 }
 
@@ -52,9 +52,21 @@ private fun chunkSum(url: String, headers: Map<String, String>, offset: Long): L
         if (response.code != 206) return null
         val bytes = response.body?.byteStream()?.readNBytes(ChunkSize.toInt()) ?: return null
         if (bytes.size < ChunkSize) return null
-        val longs = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asLongBuffer()
-        var sum = 0L
-        while (longs.hasRemaining()) sum += longs.get()
-        return sum
+        return littleEndianLongSum(bytes)
     }
 }
+
+/** The sum the OpenSubtitles hash takes of one 64 KiB chunk: its bytes read as little-endian longs. */
+internal fun littleEndianLongSum(chunk: ByteArray): Long {
+    val longs = ByteBuffer.wrap(chunk).order(ByteOrder.LITTLE_ENDIAN).asLongBuffer()
+    var sum = 0L
+    while (longs.hasRemaining()) sum += longs.get()
+    return sum
+}
+
+/** The OpenSubtitles hash of a file of [fileSize] bytes from the sums of its first and last chunk. */
+internal fun videoHashOf(fileSize: Long, headSum: Long, tailSum: Long): String =
+    "%016x".format(fileSize + headSum + tailSum)
+
+/** The number of bytes at each end of a file that its OpenSubtitles hash is made of. */
+internal const val VideoHashChunkBytes = 65536

@@ -2,6 +2,8 @@ package com.nuvio.app.features.downloads
 
 internal data class DownloadPlatformRequest(
     val item: DownloadItem,
+    /** Called before success is reported when the body matched a digest the server sent with it. */
+    val onDigestVerified: () -> Unit = {},
 ) {
     val sourceUrl: String get() = item.sourceUrl
     val sourceHeaders: Map<String, String> get() = item.sourceHeaders

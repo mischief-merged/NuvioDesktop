@@ -51,6 +51,12 @@ data class DownloadItem(
     val errorMessage: String? = null,
     val createdAtEpochMs: Long,
     val updatedAtEpochMs: Long,
+    /** The OpenSubtitles hash the source stated for its file, to check the finished file against. */
+    val expectedVideoHash: String? = null,
+    /** The size in bytes the source stated for its file. */
+    val expectedSizeBytes: Long? = null,
+    /** What the finished file was checked against. Null for a download that finished before this was recorded. */
+    val verifiedBy: DownloadVerification? = null,
 ) {
     val isEpisode: Boolean
         get() = seasonNumber != null && episodeNumber != null

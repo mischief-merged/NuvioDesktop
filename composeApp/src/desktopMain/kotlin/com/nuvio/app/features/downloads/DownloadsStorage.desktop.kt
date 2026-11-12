@@ -12,4 +12,11 @@ internal actual object DownloadsStorage {
     actual fun savePayload(payload: String) {
         store.putString(ProfileScopedKey.of("downloads"), payload)
     }
+
+    actual fun loadPreviousPayload(): String? =
+        store.getPreviousString(ProfileScopedKey.of("downloads"))
+
+    actual fun saveUnreadablePayload(payload: String, atEpochMs: Long) {
+        store.putString("${ProfileScopedKey.of("downloads_unreadable")}_$atEpochMs", payload)
+    }
 }
