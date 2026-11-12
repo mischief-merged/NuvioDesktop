@@ -64,6 +64,8 @@ data class DownloadItem(
     val preferredAudioLanguage: String? = null,
     /** The automatic-download rule that queued this item. Null for a download the user started. */
     val autoDownloadRuleKey: String? = null,
+    /** The limit that paused this automatic download. Cleared when it is resumed. */
+    val autoDownloadStop: AutoDownloadStop? = null,
 ) {
     val isEpisode: Boolean
         get() = seasonNumber != null && episodeNumber != null

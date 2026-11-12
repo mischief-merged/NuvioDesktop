@@ -28,6 +28,8 @@ internal object PlatformAutoDownloadPayloads : AutoDownloadPayloads {
 @Serializable
 private data class StoredAutoDownloads(
     val rules: List<AutoDownloadRule> = emptyList(),
+    /** Null means no limit. */
+    val storageLimitGb: Int? = AutoDownloadStore.DefaultStorageLimitGb,
 )
 
 /**
@@ -54,8 +56,25 @@ internal class AutoDownloadStore(
     private var state = StoredAutoDownloads()
     private val _rules = MutableStateFlow<List<AutoDownloadRule>>(emptyList())
 
+    private val _storageLimitGb = MutableStateFlow<Int?>(DefaultStorageLimitGb)
+
     /** The rules of the profile that was active at the last read or change. */
     val rules: StateFlow<List<AutoDownloadRule>> = _rules.asStateFlow()
+
+    /** The storage limit for automatic downloads of that profile, in gigabytes. Null means no limit. */
+    val storageLimitGb: StateFlow<Int?> = _storageLimitGb.asStateFlow()
+
+    fun storageLimitBytes(): Long? = synchronized(lock) {
+        ensureLoaded()
+        state.storageLimitGb?.let { it * BytesPerGigabyte }
+    }
+
+    /** False when [profileId] is not the active profile, in which case nothing is changed. */
+    fun setStorageLimit(profileId: Int, limitGb: Int?): Boolean = synchronized(lock) {
+        if (ensureLoaded() != profileId) return false
+        save(profileId, state.copy(storageLimitGb = limitGb).normalized())
+        true
+    }
 
     /** The active profile, with its rules loaded. */
     fun profileId(): Int = synchronized(lock) { ensureLoaded() }
@@ -88,14 +107,17 @@ internal class AutoDownloadStore(
     private fun change(profileId: Int, transform: (List<AutoDownloadRule>) -> List<AutoDownloadRule>): Boolean =
         synchronized(lock) {
             if (ensureLoaded() != profileId) return false
-            val updated = transform(state.rules)
-            if (updated != state.rules) {
-                state = state.copy(rules = updated)
-                _rules.value = updated
-                payloads.save(profileId, json.encodeToString(state))
-            }
+            save(profileId, state.copy(rules = transform(state.rules)))
             true
         }
+
+    private fun save(profileId: Int, updated: StoredAutoDownloads) {
+        if (updated == state) return
+        state = updated
+        _rules.value = updated.rules
+        _storageLimitGb.value = updated.storageLimitGb
+        payloads.save(profileId, json.encodeToString(updated))
+    }
 
     private fun ensureLoaded(): Int {
         val active = activeProfileId()
@@ -103,6 +125,7 @@ internal class AutoDownloadStore(
             state = read(active)
             loadedProfileId = active
             _rules.value = state.rules
+            _storageLimitGb.value = state.storageLimitGb
         }
         return active
     }
@@ -110,11 +133,20 @@ internal class AutoDownloadStore(
     private fun read(profileId: Int): StoredAutoDownloads {
         val payload = payloads.load(profileId)?.takeIf { it.isNotBlank() } ?: return StoredAutoDownloads()
         return runCatching {
-            val stored = json.decodeFromString<StoredAutoDownloads>(payload)
-            stored.copy(rules = stored.rules.map(AutoDownloadRule::normalized).distinctBy { it.key })
+            json.decodeFromString<StoredAutoDownloads>(payload).normalized()
         }.getOrElse {
             payloads.saveUnreadable(profileId, payload)
             StoredAutoDownloads()
         }
+    }
+
+    private fun StoredAutoDownloads.normalized(): StoredAutoDownloads = copy(
+        rules = rules.map(AutoDownloadRule::normalized).distinctBy { it.key },
+        storageLimitGb = if (storageLimitGb in storageLimitOptionsGb) storageLimitGb else DefaultStorageLimitGb,
+    )
+
+    companion object {
+        const val DefaultStorageLimitGb = 50
+        val storageLimitOptionsGb: List<Int?> = listOf(null, 10, 25, 50, 100, 250)
     }
 }

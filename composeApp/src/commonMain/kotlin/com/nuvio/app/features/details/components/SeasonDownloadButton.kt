@@ -337,11 +337,11 @@ internal fun <T> DownloadChoiceDialog(
 }
 
 /**
- * One choice of the season dialog: a button named by [title] whose state is the current [value]. A
- * click opens its picker.
+ * One download choice: a button named by [title] whose state is the current [value]. A click opens
+ * its picker.
  */
 @Composable
-private fun SeasonDownloadChoiceRow(
+internal fun SeasonDownloadChoiceRow(
     title: String,
     value: String,
     onClick: () -> Unit,

@@ -11,6 +11,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
@@ -20,6 +23,9 @@ import com.nuvio.app.core.ui.NuvioSectionLabel
 import com.nuvio.app.core.ui.NuvioToastController
 import com.nuvio.app.core.ui.NuvioTokens
 import com.nuvio.app.core.ui.nuvio
+import com.nuvio.app.features.details.components.DownloadChoiceDialog
+import com.nuvio.app.features.details.components.SeasonDownloadChoiceRow
+import com.nuvio.app.features.profiles.ProfileRepository
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.pluralStringResource
 import org.jetbrains.compose.resources.stringResource
@@ -32,13 +38,17 @@ import org.jetbrains.compose.resources.stringResource
 internal fun AutoDownloadSection(
     modifier: Modifier = Modifier,
     controller: AutoDownloadController = AutoDownloads,
+    profileId: Int = ProfileRepository.activeProfileId,
 ) {
     val rules by controller.rules.collectAsState()
     val statuses by controller.statuses.collectAsState()
+    val storageLimitGb by controller.storageLimitGb.collectAsState()
     if (rules.isEmpty()) return
     val tokens = MaterialTheme.nuvio
     val checkingText = stringResource(Res.string.downloads_auto_checking_toast)
     val checkNowText = stringResource(Res.string.downloads_auto_check_now)
+    // The profile the storage limit picker was opened for, while it is open.
+    var storageLimitPickerProfileId by remember { mutableStateOf<Int?>(null) }
 
     Column(
         modifier = modifier
@@ -65,6 +75,12 @@ internal fun AutoDownloadSection(
                 Text(text = checkNowText, style = MaterialTheme.typography.labelLarge)
             }
         }
+        SeasonDownloadChoiceRow(
+            title = stringResource(Res.string.downloads_auto_storage_limit),
+            description = stringResource(Res.string.downloads_auto_storage_limit_description),
+            value = storageLimitLabel(storageLimitGb),
+            onClick = { storageLimitPickerProfileId = profileId },
+        )
         rules.forEach { rule ->
             Column(
                 modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {},
@@ -87,7 +103,29 @@ internal fun AutoDownloadSection(
             }
         }
     }
+
+    storageLimitPickerProfileId?.let { pickerProfileId ->
+        DownloadChoiceDialog(
+            title = stringResource(Res.string.downloads_auto_storage_limit),
+            options = AutoDownloadStore.storageLimitOptionsGb,
+            selected = storageLimitGb,
+            label = { storageLimitLabel(it) },
+            onSelect = {
+                controller.setStorageLimit(pickerProfileId, it)
+                storageLimitPickerProfileId = null
+            },
+            onDismiss = { storageLimitPickerProfileId = null },
+        )
+    }
 }
+
+@Composable
+private fun storageLimitLabel(limitGb: Int?): String =
+    if (limitGb == null) {
+        stringResource(Res.string.downloads_auto_storage_limit_none)
+    } else {
+        stringResource(Res.string.downloads_auto_storage_limit_value, limitGb)
+    }
 
 @Composable
 internal fun autoDownloadStatusLabel(status: AutoDownloadStatus): String = stringResource(
@@ -103,5 +141,7 @@ internal fun autoDownloadStatusLabel(status: AutoDownloadStatus): String = strin
         AutoDownloadStatus.PrivateSourcesSkipped -> Res.string.downloads_auto_status_private_sources
         AutoDownloadStatus.Failed -> Res.string.downloads_auto_status_failed
         AutoDownloadStatus.Stopped -> Res.string.downloads_auto_status_stopped
+        AutoDownloadStatus.StorageLimitReached -> Res.string.downloads_auto_status_storage_limit
+        AutoDownloadStatus.LowDiskSpace -> Res.string.downloads_auto_status_low_disk_space
     },
 )

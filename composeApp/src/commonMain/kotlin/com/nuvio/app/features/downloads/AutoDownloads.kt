@@ -45,6 +45,9 @@ internal interface AutoDownloadController {
     val rules: StateFlow<List<AutoDownloadRule>>
     val statuses: StateFlow<Map<String, AutoDownloadStatus>>
 
+    /** The storage limit for automatic downloads, in gigabytes. Null means no limit. */
+    val storageLimitGb: StateFlow<Int?>
+
     /**
      * Turns automatic downloads on for [meta], or changes its rule, and checks the show. Nothing
      * happens when [profileId] is no longer the active profile.
@@ -52,6 +55,8 @@ internal interface AutoDownloadController {
     fun save(profileId: Int, meta: MetaDetails, keepCount: Int, scope: AutoDownloadScope)
 
     fun turnOff(profileId: Int, ruleKey: String)
+
+    fun setStorageLimit(profileId: Int, limitGb: Int?)
 
     fun checkNow()
 }
@@ -110,12 +115,17 @@ internal object AutoDownloads : AutoDownloadController {
         startBatch = SeasonBatchDownloads::start,
         cancelBatch = SeasonBatchDownloads::cancel,
         nowEpochMs = { DownloadsClock.nowEpochMs() },
+        autoDownloadBytes = { DownloadsRepository.autoDownloadBytes() },
+        resumeDownload = DownloadsRepository::resumeDownload,
     )
 
     val isAvailable: Boolean get() = isDesktop && AppFeaturePolicy.downloadsEnabled
 
     override val rules: StateFlow<List<AutoDownloadRule>> get() = store.rules
     override val statuses: StateFlow<Map<String, AutoDownloadStatus>> get() = engine.statuses
+    override val storageLimitGb: StateFlow<Int?> get() = store.storageLimitGb
+
+    fun storageLimitBytes(): Long? = store.storageLimitBytes()
 
     fun start() {
         if (!isAvailable || !started.compareAndSet(expect = false, update = true)) return
@@ -173,6 +183,14 @@ internal object AutoDownloads : AutoDownloadController {
         scope.launch {
             val removed = runCatching { store.remove(profileId, ruleKey) }.getOrDefault(false)
             if (removed) engine.forget(ruleKey)
+        }
+    }
+
+    /** A higher limit may make room for what the old one held back, so the rules are checked. */
+    override fun setStorageLimit(profileId: Int, limitGb: Int?) {
+        scope.launch {
+            val saved = runCatching { store.setStorageLimit(profileId, limitGb) }.getOrDefault(false)
+            if (saved) checkSafely()
         }
     }
 

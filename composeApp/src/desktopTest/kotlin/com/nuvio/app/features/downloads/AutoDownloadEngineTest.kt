@@ -41,6 +41,8 @@ class AutoDownloadEngineTest {
         var mostAtOnce = 0
         var onEpisodesLoaded: () -> Unit = {}
         var onBatchStarting: () -> Unit = {}
+        var autoDownloadBytes = 0L
+        val resumed = mutableListOf<String>()
 
         private val downloader: SeasonBatchDownloader = SeasonBatchDownloader(
             scope = CoroutineScope(StandardTestDispatcher(scope.testScheduler) + SupervisorJob()),
@@ -65,6 +67,8 @@ class AutoDownloadEngineTest {
             },
             cancelBatch = downloader::cancel,
             nowEpochMs = { scope.currentTime },
+            autoDownloadBytes = { autoDownloadBytes },
+            resumeDownload = { resumed += it },
         )
 
         private fun enqueue(request: SeasonBatchRequest, episode: SeasonBatchEpisode, stream: StreamItem): DownloadEnqueueResult {
@@ -511,6 +515,83 @@ class AutoDownloadEngineTest {
         assertEquals(AutoDownloadStatus.Failed, harness.status())
         assertEquals(emptyList(), harness.downloads.value.items)
         assertEquals(emptySet(), harness.store.currentRules().single().ownedEpisodeKeys)
+    }
+
+    @Test
+    fun nothing_is_queued_once_automatic_downloads_take_as_much_as_the_storage_limit() = runTest {
+        val harness = harness(testRule(keepCount = 2))
+        harness.store.setStorageLimit(1, 10)
+        harness.autoDownloadBytes = 10_000_000_000L
+
+        harness.check()
+
+        assertEquals(emptyList(), harness.requests)
+        assertEquals(AutoDownloadStatus.StorageLimitReached, harness.status())
+
+        harness.autoDownloadBytes = 9_999_999_999L
+        harness.check()
+
+        assertEquals(listOf(1, 2), harness.downloading())
+        assertEquals(AutoDownloadStatus.Downloading, harness.status())
+    }
+
+    @Test
+    fun without_a_storage_limit_episodes_are_queued_whatever_automatic_downloads_take() = runTest {
+        val harness = harness(testRule(keepCount = 1))
+        harness.store.setStorageLimit(1, null)
+        harness.autoDownloadBytes = Long.MAX_VALUE
+
+        harness.check()
+
+        assertEquals(listOf(1), harness.downloading())
+    }
+
+    @Test
+    fun a_download_paused_by_the_storage_limit_is_reported_and_resumed_only_when_there_is_room() = runTest {
+        val harness = harness(testRule(keepCount = 1))
+        harness.store.setStorageLimit(1, 10)
+        harness.downloads.value = DownloadsUiState(
+            listOf(
+                testDownload(1, DownloadStatus.Paused, ruleKey = ruleKey).copy(autoDownloadStop = AutoDownloadStop.StorageLimit),
+            ),
+        )
+        harness.autoDownloadBytes = 10_000_000_000L
+
+        harness.check()
+
+        assertEquals(emptyList(), harness.resumed)
+        assertEquals(AutoDownloadStatus.StorageLimitReached, harness.status())
+
+        harness.autoDownloadBytes = 1_000_000_000L
+        harness.check()
+
+        assertEquals(listOf("tt1-1-1"), harness.resumed)
+    }
+
+    @Test
+    fun a_download_paused_for_free_space_is_reported_and_tried_again_by_a_check() = runTest {
+        val harness = harness(testRule(keepCount = 1))
+        harness.downloads.value = DownloadsUiState(
+            listOf(
+                testDownload(1, DownloadStatus.Paused, ruleKey = ruleKey).copy(autoDownloadStop = AutoDownloadStop.LowDiskSpace),
+            ),
+        )
+
+        harness.check()
+
+        assertEquals(listOf("tt1-1-1"), harness.resumed)
+        assertEquals(AutoDownloadStatus.LowDiskSpace, harness.status())
+    }
+
+    @Test
+    fun a_download_the_user_paused_is_not_resumed() = runTest {
+        val harness = harness(testRule(keepCount = 1))
+        harness.downloads.value = DownloadsUiState(listOf(testDownload(1, DownloadStatus.Paused, ruleKey = ruleKey)))
+
+        harness.check()
+
+        assertEquals(emptyList(), harness.resumed)
+        assertEquals(AutoDownloadStatus.Paused, harness.status())
     }
 
     @Test
