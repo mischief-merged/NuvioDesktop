@@ -13,8 +13,13 @@
 #include <mpv/render_gl.h>
 
 #include <atomic>
+#include <chrono>
 #include <clocale>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -3631,4 +3636,325 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setSubtitleAppeara
                                     shadowColor:[NSString stringWithUTF8String:shadow.c_str()]
                                    shadowOffset:(double)shadowOffset];
     });
+}
+
+// ---------------------------------------------------------------------------
+// Frame sampling for finished downloads.
+//
+// Takes small grey pictures of a local video file with a mpv handle of its own: nothing here
+// touches the handle, the render context or any other state of the player. The picture is drawn
+// by the software renderer (no OpenGL, no window), so it can run on any thread while a video
+// plays elsewhere. Every failure ends as "could not look" or "no picture here", never a crash.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr int kSampleSide = 32;
+constexpr int kSamplePixels = kSampleSide * kSampleSide;
+/** How far before the asked time the shown frame may be and still count as the picture there. */
+constexpr double kMaxSeekShortfallSeconds = 1.5;
+constexpr size_t kSampleStride = kSampleSide * 4;
+
+using SamplerClock = std::chrono::steady_clock;
+
+enum class GrabResult { Picture, NoPicture, GaveUp };
+
+static void samplerUpdateCallback(void *context) {
+    // Called on an mpv thread: only set a flag, never call into mpv.
+    if (context) static_cast<std::atomic<bool> *>(context)->store(true);
+}
+
+class FrameSampler {
+public:
+    FrameSampler() = default;
+    FrameSampler(const FrameSampler &) = delete;
+    FrameSampler &operator=(const FrameSampler &) = delete;
+    ~FrameSampler() { close(); }
+
+    double durationSeconds = 0.0;
+    std::string title;
+
+    /** Opens [path]; false when the file cannot be played or the budget ran out. */
+    bool open(const std::string &path, SamplerClock::time_point deadline) {
+        if (path.empty() || path[0] != '/') return false;
+        const char *current = setlocale(LC_NUMERIC, nullptr);
+        if (!current || std::string(current) != "C") {
+            // libmpv requires LC_NUMERIC=C, as the player does; the JVM formats numbers itself.
+            if (setlocale(LC_NUMERIC, "C") == nullptr) return false;
+        }
+        if (posix_memalign(&surface_, 64, kSampleStride * kSampleSide) != 0 || !surface_) {
+            surface_ = nullptr;
+            return false;
+        }
+        mpv_ = mpv_create();
+        if (!mpv_) return false;
+        const char *options[][2] = {
+            {"config", "no"}, {"terminal", "no"}, {"msg-level", "all=no"}, {"load-scripts", "no"},
+            {"ytdl", "no"}, {"osc", "no"}, {"input-default-bindings", "no"}, {"input-vo-keyboard", "no"},
+            {"resume-playback", "no"}, {"save-position-on-quit", "no"},
+            {"vo", "libmpv"}, {"ao", "null"}, {"aid", "no"}, {"sid", "no"}, {"osd-level", "0"},
+            {"pause", "yes"}, {"keep-open", "yes"}, {"hwdec", "no"}, {"hr-seek", "yes"},
+            {"keepaspect", "no"}, {"sw-fast", "yes"}, {"cache", "no"},
+            {"access-references", "no"}, {"autoload-files", "no"}, {"sub-auto", "no"}, {"audio-file-auto", "no"},
+            {"demuxer-lavf-o", "protocol_whitelist=file"}, {"stream-lavf-o", "protocol_whitelist=file"},
+        };
+        for (const auto &option : options) {
+            mpv_set_option_string(mpv_, option[0], option[1]);
+        }
+        if (mpv_initialize(mpv_) < 0) return false;
+
+        const char *apiType = MPV_RENDER_API_TYPE_SW;
+        mpv_render_param createParams[] = {
+            {MPV_RENDER_PARAM_API_TYPE, (void *)apiType},
+            {MPV_RENDER_PARAM_INVALID, nullptr},
+        };
+        if (mpv_render_context_create(&render_, mpv_, createParams) < 0) {
+            render_ = nullptr;
+            return false;
+        }
+        mpv_render_context_set_update_callback(render_, samplerUpdateCallback, &frameReady_);
+
+        const char *load[] = {"loadfile", path.c_str(), "replace", nullptr};
+        if (mpv_command(mpv_, load) < 0) return false;
+        while (!loaded_) {
+            if (ended_ || shutdown_ || SamplerClock::now() >= deadline) return false;
+            step(0.01);
+        }
+        double duration = 0.0;
+        if (mpv_get_property(mpv_, "duration", MPV_FORMAT_DOUBLE, &duration) >= 0 && std::isfinite(duration)) {
+            durationSeconds = duration;
+        }
+        char *value = mpv_get_property_string(mpv_, "metadata/by-key/title");
+        if (value) {
+            title = value;
+            mpv_free(value);
+        }
+        return true;
+    }
+
+    /** The picture at [seconds] into [out] (kSamplePixels bytes of grey, limited range). */
+    GrabResult grab(double seconds, SamplerClock::time_point positionDeadline, SamplerClock::time_point budgetDeadline,
+                    uint8_t *out) {
+        if (!mpv_ || !render_) return GrabResult::GaveUp;
+        if (shutdown_) return GrabResult::GaveUp;
+        if (ended_) return GrabResult::NoPicture;
+        char target[48];
+        snprintf(target, sizeof(target), "%.3f", seconds < 0.0 ? 0.0 : seconds);
+        const char *seek[] = {"seek", target, "absolute+exact", nullptr};
+        restarted_ = false;
+        frameReady_.store(false);
+        const uint64_t before = rendered_;
+        if (mpv_command(mpv_, seek) < 0) return GrabResult::NoPicture;
+
+        // A picture counts once the seek has finished and a frame was drawn after it was asked for;
+        // a short settle then lets a frame that was still on its way replace an older one.
+        bool settling = false;
+        SamplerClock::time_point settleUntil{};
+        SamplerClock::time_point restartedAt{};
+        while (true) {
+            const auto now = SamplerClock::now();
+            if (shutdown_) return GrabResult::GaveUp;
+            if (now >= budgetDeadline) return GrabResult::GaveUp;
+            if (ended_) return GrabResult::NoPicture;
+            if (now >= positionDeadline) return GrabResult::NoPicture;
+            if (restarted_ && restartedAt == SamplerClock::time_point{}) restartedAt = now;
+            if (restarted_ && rendered_ > before && !settling) {
+                settling = true;
+                settleUntil = now + std::chrono::milliseconds(60);
+            }
+            if (settling && now >= settleUntil) break;
+            // Seek finished but no frame follows: past the end of what the file holds.
+            if (restarted_ && rendered_ == before && now - restartedAt > std::chrono::milliseconds(1500)) {
+                return GrabResult::NoPicture;
+            }
+            step(0.01);
+        }
+        int eof = 0;
+        if (mpv_get_property(mpv_, "eof-reached", MPV_FORMAT_FLAG, &eof) >= 0 && eof) {
+            return GrabResult::NoPicture;
+        }
+        // A seek past what the file holds leaves the last frame on screen: its time is well before
+        // the one asked for, where a seek that landed is within a frame of it.
+        double shownAt = 0.0;
+        if (mpv_get_property(mpv_, "time-pos", MPV_FORMAT_DOUBLE, &shownAt) < 0 || !std::isfinite(shownAt) ||
+            seconds - shownAt > kMaxSeekShortfallSeconds) {
+            return GrabResult::NoPicture;
+        }
+        memcpy(out, grey_, kSamplePixels);
+        return GrabResult::Picture;
+    }
+
+    void close() {
+        if (render_) {
+            mpv_render_context_set_update_callback(render_, nullptr, nullptr);
+            mpv_render_context_free(render_);
+            render_ = nullptr;
+        }
+        if (mpv_) {
+            mpv_terminate_destroy(mpv_);
+            mpv_ = nullptr;
+        }
+        if (surface_) {
+            free(surface_);
+            surface_ = nullptr;
+        }
+    }
+
+private:
+    mpv_handle *mpv_ = nullptr;
+    mpv_render_context *render_ = nullptr;
+    void *surface_ = nullptr;
+    std::atomic<bool> frameReady_{false};
+    bool loaded_ = false;
+    bool ended_ = false;
+    bool shutdown_ = false;
+    bool restarted_ = false;
+    uint64_t rendered_ = 0;
+    uint8_t grey_[kSamplePixels] = {0};
+
+    /** Handles pending events for up to [timeout] seconds, then draws a frame if mpv has one. */
+    void step(double timeout) {
+        double wait = timeout;
+        while (true) {
+            mpv_event *event = mpv_wait_event(mpv_, wait);
+            wait = 0.0;
+            if (!event || event->event_id == MPV_EVENT_NONE) break;
+            switch (event->event_id) {
+                case MPV_EVENT_FILE_LOADED: loaded_ = true; break;
+                case MPV_EVENT_PLAYBACK_RESTART: restarted_ = true; break;
+                case MPV_EVENT_END_FILE: ended_ = true; break;
+                case MPV_EVENT_SHUTDOWN: shutdown_ = true; break;
+                default: break;
+            }
+        }
+        if (frameReady_.exchange(false)) {
+            const uint64_t flags = mpv_render_context_update(render_);
+            if (flags & MPV_RENDER_UPDATE_FRAME) drawFrame();
+        }
+    }
+
+    void drawFrame() {
+        int size[2] = {kSampleSide, kSampleSide};
+        size_t stride = kSampleStride;
+        int noBlock = 0;
+        mpv_render_param params[] = {
+            {MPV_RENDER_PARAM_SW_SIZE, size},
+            {MPV_RENDER_PARAM_SW_FORMAT, (void *)"rgb0"},
+            {MPV_RENDER_PARAM_SW_STRIDE, &stride},
+            {MPV_RENDER_PARAM_SW_POINTER, surface_},
+            {MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME, &noBlock},
+            {MPV_RENDER_PARAM_INVALID, nullptr},
+        };
+        if (mpv_render_context_render(render_, params) < 0) return;
+        const uint8_t *pixels = static_cast<const uint8_t *>(surface_);
+        for (int index = 0; index < kSamplePixels; index++) {
+            const uint8_t *pixel = pixels + (size_t)index * 4;
+            const int luma = (77 * pixel[0] + 150 * pixel[1] + 29 * pixel[2]) >> 8;
+            // Limited range (16 to 235), the scale the thresholds of the frame check were set on.
+            grey_[index] = (uint8_t)(16 + (luma * 219 + 127) / 255);
+        }
+        rendered_++;
+    }
+};
+
+}  // namespace
+
+/**
+ * Takes grey pictures of the local video [path] at each of [fractions] of its duration (or of
+ * [durationSeconds] when that is above 0). Returns null when the file could not be looked at (it
+ * cannot be opened, the budget of [budgetMs] ran out, or anything failed). Otherwise an array with
+ * one more element than [fractions]: element 0 is "duration seconds, newline, title" in UTF-8,
+ * the others the 32 by 32 pictures, or null where no picture could be decoded. A position that
+ * gives no picture is tried once more [retryEarlierSeconds] before it.
+ */
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_sampleFrames(
+    JNIEnv *env,
+    jobject /* bridge */,
+    jstring path,
+    jdoubleArray fractions,
+    jdouble durationSeconds,
+    jdouble retryEarlierSeconds,
+    jlong positionTimeoutMs,
+    jlong budgetMs
+) {
+    if (!path || !fractions) return nullptr;
+    std::string file = jstringToString(env, path);
+    jsize count = env->GetArrayLength(fractions);
+    if (count <= 0 || count > 64) return nullptr;
+    std::vector<double> positions((size_t)count);
+    env->GetDoubleArrayRegion(fractions, 0, count, positions.data());
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return nullptr;
+    }
+
+    std::vector<std::vector<uint8_t>> pictures((size_t)count);
+    std::vector<bool> decoded((size_t)count, false);
+    std::string header;
+    bool lookedAt = false;
+    try {
+        @try {
+            const auto start = SamplerClock::now();
+            const auto budget = start + std::chrono::milliseconds(budgetMs > 0 ? budgetMs : 120000);
+            const auto perPosition = std::chrono::milliseconds(positionTimeoutMs > 0 ? positionTimeoutMs : 20000);
+            FrameSampler sampler;
+            if (sampler.open(file, budget)) {
+                double duration = durationSeconds > 0.0 ? durationSeconds : sampler.durationSeconds;
+                if (std::isfinite(duration) && duration > 0.0) {
+                    bool gaveUp = false;
+                    for (jsize index = 0; index < count && !gaveUp; index++) {
+                        std::vector<uint8_t> picture(kSamplePixels);
+                        const double at = duration * positions[(size_t)index];
+                        auto attempt = [&](double seconds) {
+                            auto limit = SamplerClock::now() + perPosition;
+                            if (limit > budget) limit = budget;
+                            return sampler.grab(seconds, limit, budget, picture.data());
+                        };
+                        GrabResult result = attempt(at);
+                        if (result == GrabResult::NoPicture && retryEarlierSeconds > 0.0 && at > retryEarlierSeconds) {
+                            result = attempt(at - retryEarlierSeconds);
+                        }
+                        if (result == GrabResult::GaveUp) {
+                            gaveUp = true;
+                        } else if (result == GrabResult::Picture) {
+                            pictures[(size_t)index] = std::move(picture);
+                            decoded[(size_t)index] = true;
+                        }
+                    }
+                    if (!gaveUp) {
+                        char head[64];
+                        snprintf(head, sizeof(head), "%.6f\n", duration);
+                        header = head + sampler.title;
+                        lookedAt = true;
+                    }
+                }
+            }
+            // The sampler is destroyed here: render context first, then the handle.
+        } @catch (NSException *) {
+            lookedAt = false;
+        }
+    } catch (...) {
+        lookedAt = false;
+    }
+    if (!lookedAt) return nullptr;
+
+    jclass byteArrayClass = env->FindClass("[B");
+    if (!byteArrayClass) return nullptr;
+    jobjectArray result = env->NewObjectArray(count + 1, byteArrayClass, nullptr);
+    if (!result) return nullptr;
+    jbyteArray headerBytes = env->NewByteArray((jsize)header.size());
+    if (!headerBytes) return nullptr;
+    env->SetByteArrayRegion(headerBytes, 0, (jsize)header.size(), (const jbyte *)header.data());
+    env->SetObjectArrayElement(result, 0, headerBytes);
+    env->DeleteLocalRef(headerBytes);
+    for (jsize index = 0; index < count; index++) {
+        if (!decoded[(size_t)index]) continue;
+        jbyteArray bytes = env->NewByteArray(kSamplePixels);
+        if (!bytes) return nullptr;
+        env->SetByteArrayRegion(bytes, 0, kSamplePixels, (const jbyte *)pictures[(size_t)index].data());
+        env->SetObjectArrayElement(result, index + 1, bytes);
+        env->DeleteLocalRef(bytes);
+    }
+    return result;
 }

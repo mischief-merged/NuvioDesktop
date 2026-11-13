@@ -1,7 +1,9 @@
 package com.nuvio.app.features.downloads
 
+import org.junit.After
 import org.junit.Assume.assumeNotNull
 import org.junit.Assume.assumeTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.rules.TemporaryFolder
 import java.io.File
@@ -13,10 +15,26 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** Looks at real files made with ffmpeg. Skipped where ffmpeg and ffprobe are not installed. */
+/**
+ * Looks at real files made with ffmpeg through the external ffmpeg route, which is what the
+ * application falls back to; the built-in route has its own tests. Skipped where ffmpeg and
+ * ffprobe are not installed.
+ */
 class DesktopDownloadedFramesTest {
     @get:Rule
     val folder = TemporaryFolder()
+
+    private val savedBuiltIn = builtInFrameLook
+
+    @Before
+    fun useTheExternalRouteOnly() {
+        builtInFrameLook = { _, _, _ -> null }
+    }
+
+    @After
+    fun restoreTheBuiltInRoute() {
+        builtInFrameLook = savedBuiltIn
+    }
 
     private val ffmpeg: File? = findFfmpegTool("ffmpeg")
 

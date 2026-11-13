@@ -1,5 +1,7 @@
 package com.nuvio.app.features.downloads
 
+import com.nuvio.app.features.player.desktop.DesktopHostOs
+import com.nuvio.app.features.player.desktop.NativePlayerBridge
 import java.io.File
 import java.io.InputStream
 import java.net.URI
@@ -21,28 +23,86 @@ private const val RetryEarlierSeconds = 5.0
 /** A run took too long, so what it was to tell is not known. */
 private class ToolTimedOut : Exception()
 
-internal actual fun sampleDownloadedFrames(localFileUri: String): FrameSamples? = guarded(localFileUri) { file, ffprobe, ffmpeg ->
-    sampleFrames(file, ffprobe, ffmpeg)
-}
+/** What a route that takes frames is asked: [knownDurationMs] is null when the route must read the duration itself. */
+internal typealias FrameLook = (file: File, positions: List<Pair<Double, FrameWindow>>, knownDurationMs: Long?) -> FrameSamples?
+
+/** The route through the player library the application ships. Replaceable for tests. */
+@Volatile
+internal var builtInFrameLook: FrameLook = ::bundledPlayerFrameLook
+
+/** The route through an installed ffmpeg. Replaceable for tests. */
+@Volatile
+internal var externalFrameLook: FrameLook = ::ffmpegFrameLook
+
+internal actual fun sampleDownloadedFrames(localFileUri: String): FrameSamples? =
+    lookAtFrames(localFileUri, FrameSamplePositions, knownDurationMs = null)
 
 internal actual fun sampleConfirmingDownloadedFrames(localFileUri: String, durationMs: Long): FrameSamples? =
-    guarded(localFileUri) { file, _, ffmpeg ->
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TotalBudgetSeconds)
-        val seconds = durationMs / 1000.0
-        val samples = ConfirmingFramePositions.map { fraction ->
-            frameAt(file, ffmpeg, seconds * fraction, FrameWindow.Middle, deadline) ?: return@guarded null
-        }
-        FrameSamples(durationMs, samples)
-    }
+    lookAtFrames(localFileUri, ConfirmingFramePositions.map { it to FrameWindow.Middle }, durationMs)
 
-private inline fun guarded(localFileUri: String, look: (File, File, File) -> FrameSamples?): FrameSamples? = try {
+/**
+ * Tries the built-in route first and the external one only when the built-in one gave nothing: it is
+ * not there, or the file could not be looked at with it. Null when neither could.
+ */
+private fun lookAtFrames(localFileUri: String, positions: List<Pair<Double, FrameWindow>>, knownDurationMs: Long?): FrameSamples? = try {
     val file = if (localFileUri.startsWith("file:")) File(URI(localFileUri)) else File(localFileUri)
+    if (!file.isFile) {
+        null
+    } else {
+        val absolute = file.absoluteFile
+        // Nothing here may fail the download: a look that went wrong is no look.
+        runCatching { builtInFrameLook(absolute, positions, knownDurationMs) }.getOrNull()
+            ?: runCatching { externalFrameLook(absolute, positions, knownDurationMs) }.getOrNull()
+    }
+} catch (error: Throwable) {
+    null
+}
+
+internal fun bundledPlayerFrameLook(file: File, positions: List<Pair<Double, FrameWindow>>, knownDurationMs: Long?): FrameSamples? {
+    if (DesktopHostOs.current != DesktopHostOs.MACOS) return null
+    val result = try {
+        NativePlayerBridge.ensureLoaded()
+        NativePlayerBridge.sampleFrames(
+            path = file.path,
+            fractions = DoubleArray(positions.size) { positions[it].first },
+            durationSeconds = knownDurationMs?.let { it / 1000.0 } ?: 0.0,
+            retryEarlierSeconds = RetryEarlierSeconds,
+            positionTimeoutMs = ToolTimeoutSeconds * 1000L,
+            budgetMs = TotalBudgetSeconds * 1000L,
+        )
+    } catch (error: Throwable) {
+        // Library missing, not loadable or not carrying this function: this route is not there.
+        return null
+    } ?: return null
+    if (result.size != positions.size + 1) return null
+    val header = result[0]?.toString(Charsets.UTF_8)?.split('\n', limit = 2) ?: return null
+    val durationSeconds = header.firstOrNull()?.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0.0 } ?: return null
+    val title = header.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }
+    val samples = positions.mapIndexed { index, (fraction, window) ->
+        FrameSample(
+            positionMs = (durationSeconds * fraction * 1000.0).toLong(),
+            window = window,
+            pixels = result[index + 1]?.takeIf { it.size == FramePixelCount },
+        )
+    }
+    return if (knownDurationMs != null) FrameSamples(knownDurationMs, samples)
+    else FrameSamples(durationMs = (durationSeconds * 1000.0).toLong(), samples = samples, containerTitle = title)
+}
+
+private fun ffmpegFrameLook(file: File, positions: List<Pair<Double, FrameWindow>>, knownDurationMs: Long?): FrameSamples? {
     val ffprobe = findFfmpegTool("ffprobe")
     val ffmpeg = findFfmpegTool("ffmpeg")
-    if (!file.isFile || ffprobe == null || ffmpeg == null) null else look(file.absoluteFile, ffprobe, ffmpeg)
-} catch (error: Throwable) {
-    // Nothing here may fail the download: a look that went wrong is no look.
-    null
+    if (ffprobe == null || ffmpeg == null) return null
+    return if (knownDurationMs == null) {
+        sampleFrames(file, ffprobe, ffmpeg, positions)
+    } else {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TotalBudgetSeconds)
+        val seconds = knownDurationMs / 1000.0
+        val samples = positions.map { (fraction, window) ->
+            frameAt(file, ffmpeg, seconds * fraction, window, deadline) ?: return null
+        }
+        FrameSamples(knownDurationMs, samples)
+    }
 }
 
 /**
@@ -65,7 +125,7 @@ internal fun findFfmpegTool(
         .firstOrNull { it.isFile && it.canExecute() }
 }
 
-private fun sampleFrames(file: File, ffprobe: File, ffmpeg: File): FrameSamples? {
+private fun sampleFrames(file: File, ffprobe: File, ffmpeg: File, positions: List<Pair<Double, FrameWindow>>): FrameSamples? {
     val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TotalBudgetSeconds)
     val probe = try {
         runTool(
@@ -88,7 +148,7 @@ private fun sampleFrames(file: File, ffprobe: File, ffmpeg: File): FrameSamples?
         line.takeIf { it.startsWith("TAG:title=", ignoreCase = true) }?.substringAfter('=')?.trim()?.takeIf { it.isNotEmpty() }
     }
 
-    val samples = FrameSamplePositions.map { (fraction, window) ->
+    val samples = positions.map { (fraction, window) ->
         frameAt(file, ffmpeg, durationSeconds * fraction, window, deadline) ?: return null
     }
     return FrameSamples(durationMs = (durationSeconds * 1000.0).toLong(), samples = samples, containerTitle = title)
