@@ -34,6 +34,7 @@ import com.nuvio.app.features.addons.enabledAddons
 import com.nuvio.app.isIos
 import com.nuvio.app.features.player.PlayerSettingsRepository
 import com.nuvio.app.features.player.SOURCE_FALLBACK_MAX_SOURCES_RANGE
+import com.nuvio.app.features.player.engineSwitchOnErrorBlocksSourceFailover
 import com.nuvio.app.features.player.SOURCE_STARTUP_TIMEOUT_SECONDS_RANGE
 import com.nuvio.app.features.player.SOURCE_STARTUP_TIMEOUT_SECONDS_STEP
 import com.nuvio.app.features.player.STREAM_AUTO_PLAY_TIMEOUT_VALUES
@@ -112,38 +113,40 @@ internal fun PlaybackStreamSettings(
                         onClick = { showAutoPlayRegexDialog = true },
                     )
                 }
-                if (settings.streamAutoPlayMode != StreamAutoPlayMode.MANUAL) {
-                    // Excludes the engine switch on error (Android only): both react to the same failure.
-                    // Only the switch that is off is locked, so both stay reachable if both ended up on.
-                    val blockedByEngineSwitch = !isIos && settings.autoSwitchPlaybackEngineOnError &&
-                        !settings.streamAutoPlayFallbackOnFailure
+                // Moving on to the next source also applies in Manual mode, once playback has started.
+                // Excludes the engine switch on error (Android only): both react to the same failure.
+                // Only the switch that is off is locked, so both stay reachable if both ended up on.
+                val blockedByEngineSwitch = settings.engineSwitchOnErrorBlocksSourceFailover &&
+                    !settings.streamAutoPlayFallbackOnFailure
+                SettingsGroupDivider(isTablet = isTablet)
+                SettingsSwitchRow(
+                    title = stringResource(Res.string.settings_playback_fallback_next_source),
+                    description = stringResource(
+                        if (blockedByEngineSwitch) {
+                            Res.string.settings_playback_fallback_next_source_blocked_by_engine_switch
+                        } else {
+                            Res.string.settings_playback_fallback_next_source_description
+                        },
+                    ),
+                    checked = settings.streamAutoPlayFallbackOnFailure,
+                    enabled = !settings.externalPlayerEnabled && !blockedByEngineSwitch,
+                    isTablet = isTablet,
+                    onCheckedChange = PlayerSettingsRepository::setStreamAutoPlayFallbackOnFailure,
+                )
+                if (settings.streamAutoPlayFallbackOnFailure && !blockedByEngineSwitch) {
                     SettingsGroupDivider(isTablet = isTablet)
-                    SettingsSwitchRow(
-                        title = stringResource(Res.string.settings_playback_fallback_next_source),
-                        description = stringResource(
-                            if (blockedByEngineSwitch) {
-                                Res.string.settings_playback_fallback_next_source_blocked_by_engine_switch
-                            } else {
-                                Res.string.settings_playback_fallback_next_source_description
-                            },
-                        ),
-                        checked = settings.streamAutoPlayFallbackOnFailure,
-                        enabled = !settings.externalPlayerEnabled && !blockedByEngineSwitch,
+                    SettingsSliderRow(
+                        title = stringResource(Res.string.settings_playback_fallback_max_sources),
+                        value = settings.streamAutoPlayFallbackMaxSources,
+                        valueText = { count -> count.toString() },
+                        valueRange = SOURCE_FALLBACK_MAX_SOURCES_RANGE,
+                        step = 1,
                         isTablet = isTablet,
-                        onCheckedChange = PlayerSettingsRepository::setStreamAutoPlayFallbackOnFailure,
+                        enabled = !settings.externalPlayerEnabled,
+                        onValueChange = PlayerSettingsRepository::setStreamAutoPlayFallbackMaxSources,
                     )
-                    if (settings.streamAutoPlayFallbackOnFailure && !blockedByEngineSwitch) {
-                        SettingsGroupDivider(isTablet = isTablet)
-                        SettingsSliderRow(
-                            title = stringResource(Res.string.settings_playback_fallback_max_sources),
-                            value = settings.streamAutoPlayFallbackMaxSources,
-                            valueText = { count -> count.toString() },
-                            valueRange = SOURCE_FALLBACK_MAX_SOURCES_RANGE,
-                            step = 1,
-                            isTablet = isTablet,
-                            enabled = !settings.externalPlayerEnabled,
-                            onValueChange = PlayerSettingsRepository::setStreamAutoPlayFallbackMaxSources,
-                        )
+                    if (settings.streamAutoPlayMode != StreamAutoPlayMode.MANUAL) {
+                        // Only a source picked for the user can be replaced when it does not start.
                         SettingsGroupDivider(isTablet = isTablet)
                         SettingsSliderRow(
                             title = stringResource(Res.string.settings_playback_fallback_startup_timeout),
