@@ -249,7 +249,7 @@ fun MetaDetailsScreen(
         shuffleWasInactive = !active
     }
     val uiState by MetaDetailsRepository.uiState.collectAsStateWithLifecycle()
-    val displayedMeta = uiState.meta?.takeIf { it.type == type && it.id == id }
+    val loadedMeta = uiState.meta?.takeIf { it.type == type && it.id == id }
         ?: MetaDetailsRepository.peek(type, id)
     val metaScreenSettingsUiState by remember {
         MetaScreenSettingsRepository.ensureLoaded()
@@ -292,6 +292,11 @@ fun MetaDetailsScreen(
         PlayerSettingsRepository.uiState
     }.collectAsStateWithLifecycle()
     val networkStatusUiState by NetworkStatusRepository.uiState.collectAsStateWithLifecycle()
+    // When the details cannot be loaded, what downloads saved stands in for them.
+    val savedMeta by rememberSavedDetails(
+        type, id, wanted = loadedMeta == null && (uiState.errorMessage != null || networkStatusUiState.isOfflineLike),
+    )
+    val displayedMeta = loadedMeta ?: savedMeta
     var autoLoadAttempted by remember(type, id) { mutableStateOf(false) }
     var observedOfflineState by remember(type, id) { mutableStateOf(false) }
     var selectedEpisodeForActions by remember(type, id) { mutableStateOf<MetaVideo?>(null) }
@@ -446,8 +451,8 @@ fun MetaDetailsScreen(
         )
     }
 
-    LaunchedEffect(type, id, displayedMeta, uiState.isLoading, autoLoadAttempted) {
-        if (!autoLoadAttempted && displayedMeta == null && !uiState.isLoading) {
+    LaunchedEffect(type, id, loadedMeta, uiState.isLoading, autoLoadAttempted) {
+        if (!autoLoadAttempted && loadedMeta == null && !uiState.isLoading) {
             autoLoadAttempted = true
             MetaDetailsRepository.load(type, id)
         }
@@ -456,7 +461,7 @@ fun MetaDetailsScreen(
     LaunchedEffect(
         type,
         id,
-        displayedMeta?.id,
+        loadedMeta?.id,
         uiState.isLoading,
         trackingSettingsUiState.moreLikeThisSource,
         traktAuthUiState.mode,
@@ -465,12 +470,12 @@ fun MetaDetailsScreen(
         tmdbSettingsUiState.language,
         mdbListSettings,
     ) {
-        if (displayedMeta != null && !uiState.isLoading) {
+        if (loadedMeta != null && !uiState.isLoading) {
             MetaDetailsRepository.load(type, id)
         }
     }
 
-    LaunchedEffect(networkStatusUiState.condition, displayedMeta, uiState.isLoading, type, id) {
+    LaunchedEffect(networkStatusUiState.condition, loadedMeta, uiState.isLoading, type, id) {
         when (networkStatusUiState.condition) {
             NetworkCondition.NoInternet,
             NetworkCondition.ServersUnreachable,
@@ -481,7 +486,7 @@ fun MetaDetailsScreen(
             NetworkCondition.Online -> {
                 if (!observedOfflineState) return@LaunchedEffect
                 observedOfflineState = false
-                if (displayedMeta == null && !uiState.isLoading) {
+                if (loadedMeta == null && !uiState.isLoading) {
                     MetaDetailsRepository.load(type, id)
                 }
             }
@@ -772,8 +777,10 @@ fun MetaDetailsScreen(
                 val hasMoreLikeThisSection = remember(meta) {
                     meta.moreLikeThis.isNotEmpty()
                 }
-                val hasTrailersSection = remember(meta) {
-                    meta.trailers.isNotEmpty()
+                // A trailer is streamed, so none is offered while the app is offline.
+                val trailersAvailableOffline = !networkStatusUiState.isOfflineLike
+                val hasTrailersSection = remember(meta, trailersAvailableOffline) {
+                    trailersOffered(meta.trailers.size, offline = !trailersAvailableOffline)
                 }
                 val uriHandler = LocalUriHandler.current
                 val trailerPlaybackMode = AppFeaturePolicy.trailerPlaybackMode
@@ -790,6 +797,7 @@ fun MetaDetailsScreen(
                 }
                 val heroTrailerPlaybackEnabled = AppFeaturePolicy.heroTrailerPlaybackSupported &&
                     inAppTrailerPlaybackEnabled &&
+                    trailersAvailableOffline &&
                     metaScreenSettingsUiState.heroTrailerPlayback
                 var heroTrailerPlaybackSource by remember(meta.id, heroTrailerCandidate?.id) { mutableStateOf<TrailerPlaybackSource?>(null) }
                 var heroTrailerReady by remember(meta.id, heroTrailerCandidate?.id) { mutableStateOf(false) }
@@ -2038,6 +2046,10 @@ fun MetaDetailsScreen(
                     }
                 }
             }
+        }
+
+        if (loadedMeta == null && displayedMeta != null) {
+            SavedDetailsNotice(Modifier.align(Alignment.BottomCenter))
         }
 
         if (displayedMeta == null) {
