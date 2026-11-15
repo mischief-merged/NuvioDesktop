@@ -89,6 +89,13 @@ data class DownloadItem(
     val autoDownloadStop: AutoDownloadStop? = null,
     /** Why this download failed. Null for a download that is not failed, or failed before this was recorded. */
     val failureKind: DownloadFailureKind? = null,
+    /**
+     * The download location this item lives in or is going to. Null for an item written before
+     * locations existed, and on platforms without them: that is the app's own downloads folder.
+     */
+    val locationId: String? = null,
+    /** Paused because its location cannot be reached or is being moved. It resumes by itself when it can. */
+    val pausedByFolder: Boolean = false,
 ) {
     val isEpisode: Boolean
         get() = seasonNumber != null && episodeNumber != null
