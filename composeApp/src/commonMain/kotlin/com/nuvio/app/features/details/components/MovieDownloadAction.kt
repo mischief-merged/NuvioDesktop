@@ -56,6 +56,7 @@ internal fun rememberMovieDownloadAction(
             choices = choices,
             title = stringResource(Res.string.downloads_season_dialog_title, meta.name),
             message = stringResource(Res.string.downloads_movie_dialog_message),
+            confirmLabel = stringResource(Res.string.downloads_movie_button),
             onDismiss = { openChoices = null },
             onConfirm = { confirmed ->
                 openChoices = null

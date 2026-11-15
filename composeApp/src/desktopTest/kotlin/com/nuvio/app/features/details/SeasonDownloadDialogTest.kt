@@ -47,6 +47,7 @@ import nuvio.composeapp.generated.resources.downloads_season_max_bitrate_descrip
 import nuvio.composeapp.generated.resources.downloads_season_quality_1080
 import nuvio.composeapp.generated.resources.downloads_season_quality_720
 import nuvio.composeapp.generated.resources.downloads_season_quality_any
+import nuvio.composeapp.generated.resources.downloads_season_button
 import nuvio.composeapp.generated.resources.downloads_season_start
 import nuvio.composeapp.generated.resources.episodes_season
 import org.jetbrains.compose.resources.StringResource
@@ -231,9 +232,9 @@ class SeasonDownloadDialogTest {
         compose.onNodeWithContentDescription(text(Res.string.downloads_season_dialog_title, season)).performClick()
     }
 
-    /** The dialog's Download button. The button that opens the menu has the same label. */
+    /** The dialog's "Download season" button. The menu entry that opens the dialog has the same label. */
     private fun confirmButton() =
-        compose.onNode(hasText(text(Res.string.downloads_season_start)) and hasAnyAncestor(isDialog()))
+        compose.onNode(hasText(text(Res.string.downloads_season_button)) and hasAnyAncestor(isDialog()))
 
     private object NoAutoDownloads : AutoDownloadController {
         override val rules = MutableStateFlow(emptyList<AutoDownloadRule>())

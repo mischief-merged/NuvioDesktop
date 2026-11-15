@@ -199,6 +199,7 @@ internal fun SeasonDownloadButton(
             choices = choices,
             title = dialogTitle,
             message = stringResource(Res.string.downloads_season_dialog_message),
+            confirmLabel = stringResource(Res.string.downloads_season_button),
             onDismiss = { openChoices = null },
             onConfirm = { confirmed ->
                 openChoices = null

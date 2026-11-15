@@ -81,7 +81,7 @@ class MovieDownloadActionTest {
 
     private fun stopAction() = compose.onNodeWithContentDescription(text(Res.string.downloads_movie_stop))
 
-    private fun confirmButton() = compose.onNode(hasText(text(Res.string.downloads_season_start)) and hasAnyAncestor(isDialog()))
+    private fun confirmButton() = compose.onNode(hasText(text(Res.string.downloads_movie_button)) and hasAnyAncestor(isDialog()))
 
     @Before
     @After
