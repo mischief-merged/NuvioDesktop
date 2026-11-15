@@ -51,6 +51,21 @@ data class DownloadItem(
     val errorMessage: String? = null,
     val createdAtEpochMs: Long,
     val updatedAtEpochMs: Long,
+    /** The OpenSubtitles hash the source stated for its file, to check the finished file against. */
+    val expectedVideoHash: String? = null,
+    /** The size in bytes the source stated for its file. */
+    val expectedSizeBytes: Long? = null,
+    /** What the finished file was checked against. Null for a download that finished before this was recorded. */
+    val verifiedBy: DownloadVerification? = null,
+    /**
+     * The audio language playback of this file starts on: set when the language chosen for the
+     * download is in the file but another track comes first.
+     */
+    val preferredAudioLanguage: String? = null,
+    /** The automatic-download rule that queued this item. Null for a download the user started. */
+    val autoDownloadRuleKey: String? = null,
+    /** The limit that paused this automatic download. Cleared when it is resumed. */
+    val autoDownloadStop: AutoDownloadStop? = null,
 ) {
     val isEpisode: Boolean
         get() = seasonNumber != null && episodeNumber != null

@@ -193,6 +193,7 @@ fun DetailSeriesContent(
                 onSelect = { selectedSeasonOverride = it },
                 onLongPress = onSeasonLongPress,
             )
+            SeasonDownloadButton(meta = meta, seasonNumber = currentSeason)
 
             AnimatedContent(
                 targetState = currentSeason,
@@ -312,6 +313,7 @@ internal fun DetailSeriesListHeader(
                     },
                 )
             }
+            SeasonDownloadButton(meta = meta, seasonNumber = currentSeason)
         }
     }
 }

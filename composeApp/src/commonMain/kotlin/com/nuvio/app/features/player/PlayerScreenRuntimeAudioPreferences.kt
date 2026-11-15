@@ -1,5 +1,7 @@
 package com.nuvio.app.features.player
 
+import com.nuvio.app.features.downloads.DownloadsRepository
+
 internal val PlayerScreenRuntime.contentLanguage: String?
     get() {
         val metadata = listOfNotNull(metaUiState.meta, playerMeta).filter {
@@ -11,12 +13,19 @@ internal val PlayerScreenRuntime.contentLanguage: String?
     }
 
 internal val PlayerScreenRuntime.preferredAudioLanguageTargets: List<String>
-    get() = resolvePreferredAudioLanguageTargets(
-        preferredAudioLanguage = playerSettingsUiState.preferredAudioLanguage,
-        secondaryPreferredAudioLanguage = playerSettingsUiState.secondaryPreferredAudioLanguage,
-        deviceLanguages = DeviceLanguagePreferences.preferredLanguageCodes(),
-        contentOriginalLanguage = contentLanguage,
+    get() = audioLanguageTargets(
+        downloadLanguage = activeSourceUrl.takeIf { it.startsWith("file:") }?.let(DownloadsRepository::preferredAudioLanguageOfFile),
+        preferred = resolvePreferredAudioLanguageTargets(
+            preferredAudioLanguage = playerSettingsUiState.preferredAudioLanguage,
+            secondaryPreferredAudioLanguage = playerSettingsUiState.secondaryPreferredAudioLanguage,
+            deviceLanguages = DeviceLanguagePreferences.preferredLanguageCodes(),
+            contentOriginalLanguage = contentLanguage,
+        ),
     )
+
+/** The language that was noted for a downloaded file comes before the languages of the settings. */
+internal fun audioLanguageTargets(downloadLanguage: String?, preferred: List<String>): List<String> =
+    (listOfNotNull(downloadLanguage) + preferred).distinct()
 
 internal data class AppliedAudioPreferences(
     val controller: PlayerEngineController,

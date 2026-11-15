@@ -21,9 +21,11 @@ import com.nuvio.app.features.addons.AddonStorage
 import com.nuvio.app.features.collection.CollectionMobileSettingsStorage
 import com.nuvio.app.features.collection.CollectionStorage
 import com.nuvio.app.features.debrid.DebridSettingsStorage
+import com.nuvio.app.features.downloads.AutoDownloadStorage
 import com.nuvio.app.features.downloads.DownloadsLiveStatusPlatform
 import com.nuvio.app.features.downloads.DownloadsPlatformDownloader
 import com.nuvio.app.features.downloads.DownloadsStorage
+import com.nuvio.app.features.downloads.SeasonDownloadDefaultsStorage
 import com.nuvio.app.features.library.LibraryDisplaySettingsStorage
 import com.nuvio.app.features.membership.MemberAssetStorage
 import com.nuvio.app.features.library.LibraryStorage
@@ -142,6 +144,8 @@ open class MainActivity : AppCompatActivity() {
         CollectionMobileSettingsStorage.initialize(applicationContext)
         CollectionStorage.initialize(applicationContext)
         DownloadsStorage.initialize(applicationContext)
+        SeasonDownloadDefaultsStorage.initialize(applicationContext)
+        AutoDownloadStorage.initialize(applicationContext)
         DownloadsPlatformDownloader.initialize(applicationContext)
         DownloadsLiveStatusPlatform.initialize(applicationContext)
         AndroidAppUpdaterPlatform.initialize(applicationContext)
