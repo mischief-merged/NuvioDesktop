@@ -7,6 +7,8 @@ data class MetaDetails(
     val id: String,
     val type: String,
     val name: String,
+    /** Other names of the title that releases may carry: the original title, and the addon's own name when [name] was localised. */
+    val alternativeTitles: List<String> = emptyList(),
     val imdbId: String? = null,
     val poster: String? = null,
     val background: String? = null,

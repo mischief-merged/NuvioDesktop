@@ -54,6 +54,7 @@ object StreamAutoPlaySelector {
         activeResolverProviderId: String? = null,
         preferences: SeasonDownloadDefaults = SeasonDownloadDefaults(),
         runtimeMinutes: Int? = null,
+        wanted: WantedContent? = null,
     ): StreamItem? =
         evaluateAutoPlayStream(
             streams = streams,
@@ -70,6 +71,7 @@ object StreamAutoPlaySelector {
             activeResolverProviderId = activeResolverProviderId,
             preferences = preferences,
             runtimeMinutes = runtimeMinutes,
+            wanted = wanted,
         ).stream
 
     internal fun evaluateAutoPlayStream(
@@ -89,6 +91,8 @@ object StreamAutoPlaySelector {
         preferences: SeasonDownloadDefaults = SeasonDownloadDefaults(),
         /** Length of the video, so a bitrate limit can be worked out from file sizes. Unknown: no bitrate check. */
         runtimeMinutes: Int? = null,
+        /** Used only by [StreamAutoPlayMode.PREFERRED]: the title, episode or year, so other content ranks last. Unknown: nothing is judged. */
+        wanted: WantedContent? = null,
     ): StreamAutoPlayEvaluation {
         if (streams.isEmpty()) return StreamAutoPlayEvaluation()
 
@@ -204,6 +208,7 @@ object StreamAutoPlaySelector {
                         maxBitrateMbps = preferences.maxBitrateMbps,
                         audioLanguage = preferences.audioLanguage,
                         runtimeMinutes = runtimeMinutes,
+                        wanted = wanted,
                     )
                 }
             }

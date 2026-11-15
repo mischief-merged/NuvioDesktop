@@ -7,6 +7,7 @@ import com.nuvio.app.features.debrid.DebridSettingsRepository
 import com.nuvio.app.features.debrid.DirectDebridPlayableResult
 import com.nuvio.app.features.debrid.DirectDebridPlaybackResolver
 import com.nuvio.app.features.debrid.toastMessage
+import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.details.MetaVideo
 import com.nuvio.app.features.downloads.DownloadItem
 import com.nuvio.app.features.downloads.DownloadsRepository
@@ -204,6 +205,11 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
 
         val autoPlayPreferences = StreamAutoPlayPolicy.preferencesFor(effectiveMode)
         val autoPlayRuntimeMinutes = nextVideo.runtime
+        val autoPlayWanted = if (effectiveMode == StreamAutoPlayMode.PREFERRED) {
+            MetaDetailsRepository.wantedContentFor(parentMetaId, nextVideo.season, nextVideo.episode)
+        } else {
+            null
+        }
 
         fun trySelectStream(streams: List<StreamItem>): StreamItem? =
             StreamAutoPlaySelector.selectAutoPlayStream(
@@ -221,6 +227,7 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
                 activeResolverProviderId = debridSettings.activeResolverProviderId,
                 preferences = autoPlayPreferences,
                 runtimeMinutes = autoPlayRuntimeMinutes,
+                wanted = autoPlayWanted,
             )
 
         fun tryBingeGroupOnly(streams: List<StreamItem>): StreamItem? {

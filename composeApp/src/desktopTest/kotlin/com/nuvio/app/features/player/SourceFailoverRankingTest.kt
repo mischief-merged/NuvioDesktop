@@ -74,4 +74,26 @@ class SourceFailoverRankingTest {
     fun anEmptyListGivesNoCandidates() {
         assertEquals(emptyList(), ranked(emptyList(), StreamAutoPlayMode.PREFERRED))
     }
+
+    @Test
+    fun preferredModeMovesASourceOfAnotherEpisodeBehindTheRightOne() {
+        fun named(release: String) = source(release).copy(
+            behaviorHints = com.nuvio.app.features.streams.StreamBehaviorHints(filename = "$release.mkv"),
+        )
+        val wrong = named("Show.S01E02.2160p")
+        val right = named("Show.S01E03.1080p")
+        val wanted = com.nuvio.app.features.streams.WantedContent(title = "Show", season = 1, episode = 3)
+        fun rank(wanted: com.nuvio.app.features.streams.WantedContent?) = rankedSourceFailoverCandidates(
+            streams = listOf(wrong, right),
+            settings = PlayerSettingsUiState(streamAutoPlayMode = StreamAutoPlayMode.PREFERRED),
+            failedAddonId = "test",
+            failedInfoHash = null,
+            wanted = wanted,
+            installedAddonNames = setOf("Test"),
+            debridEnabled = false,
+            activeResolverProviderId = null,
+        )
+        assertEquals(listOf(right, wrong), rank(wanted))
+        assertEquals(listOf(wrong, right), rank(null))
+    }
 }

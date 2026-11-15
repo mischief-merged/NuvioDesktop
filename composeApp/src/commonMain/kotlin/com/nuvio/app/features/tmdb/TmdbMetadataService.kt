@@ -775,6 +775,7 @@ object TmdbMetadataService {
             id = id,
             type = type,
             name = enrichment.localizedTitle ?: "TMDB $tmdbId",
+            alternativeTitles = listOfNotNull(enrichment.originalTitle?.takeIf { it != enrichment.localizedTitle }),
             poster = enrichment.poster,
             background = enrichment.backdrop,
             logo = enrichment.logo,
@@ -809,6 +810,16 @@ object TmdbMetadataService {
         if (enrichment == null && episodeMap.isEmpty()) return meta
 
         var updated = meta
+
+        if (enrichment != null) {
+            // Releases carry the original title or the addon's name, not always the localised one.
+            val localised = enrichment.localizedTitle.takeIf { settings.useBasicInfo }
+            updated = updated.copy(
+                alternativeTitles = (updated.alternativeTitles + listOfNotNull(enrichment.originalTitle, updated.name))
+                    .filter { it.isNotBlank() && it != (localised ?: updated.name) }
+                    .distinct(),
+            )
+        }
 
         if (enrichment != null && settings.useArtwork) {
             updated = updated.copy(
