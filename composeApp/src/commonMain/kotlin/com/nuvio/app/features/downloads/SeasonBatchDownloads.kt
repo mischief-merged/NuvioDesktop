@@ -21,6 +21,9 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.StateFlow
 import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.download_failed
+import nuvio.composeapp.generated.resources.downloads_movie_already_downloaded
+import nuvio.composeapp.generated.resources.downloads_movie_not_found
 import nuvio.composeapp.generated.resources.downloads_season_count_existing
 import nuvio.composeapp.generated.resources.downloads_season_count_failed
 import nuvio.composeapp.generated.resources.downloads_season_count_new
@@ -48,24 +51,8 @@ internal object SeasonBatchDownloads {
         fetchStreams = { episode -> MetaDetailsRepository.findEmbeddedStreams(episode.videoId) },
         fetchFallbackStreams = ::fetchAddonStreams,
         prepareStream = ::prepareStream,
-        enqueue = { request, episode, stream ->
-            DownloadsRepository.enqueueFromStream(
-                contentType = request.contentType,
-                videoId = episode.videoId,
-                parentMetaId = request.parentMetaId,
-                parentMetaType = request.parentMetaType,
-                title = request.title,
-                logo = request.logo,
-                poster = request.poster,
-                background = request.background,
-                seasonNumber = episode.seasonNumber,
-                episodeNumber = episode.episodeNumber,
-                episodeTitle = episode.title,
-                episodeThumbnail = episode.thumbnail,
-                stream = stream,
-            )
-        },
-        onFinished = { _, summary -> NuvioToastController.show(summary.toastMessage()) },
+        enqueue = { request, episode, stream -> enqueueEpisode(request, episode, stream) },
+        onFinished = { request, summary -> summaryToast(request, summary)?.let { NuvioToastController.show(it) } },
         discard = { item -> DownloadsRepository.cancelDownload(item.id) },
         verifyCompleted = { item -> DownloadsRepository.verifyCompletedDownload(item.id) },
         inspect = DownloadsRepository::inspectCompletedDownload,
@@ -82,8 +69,35 @@ internal object SeasonBatchDownloads {
 
     fun cancel(parentMetaId: String, seasonNumber: Int) = downloader.cancel(parentMetaId, seasonNumber)
 
+    internal fun enqueueEpisode(
+        request: SeasonBatchRequest,
+        episode: SeasonBatchEpisode,
+        stream: StreamItem,
+    ): DownloadEnqueueResult {
+        val movie = episode.movie
+        val result = DownloadsRepository.enqueueFromStream(
+            contentType = movie?.metaType ?: request.contentType,
+            videoId = episode.videoId,
+            parentMetaId = movie?.metaId ?: request.parentMetaId,
+            parentMetaType = movie?.metaType ?: request.parentMetaType,
+            title = movie?.title ?: request.title,
+            logo = if (movie != null) movie.logo else request.logo,
+            poster = if (movie != null) movie.poster else request.poster,
+            background = if (movie != null) movie.background else request.background,
+            seasonNumber = episode.seasonNumber.takeIf { movie == null },
+            episodeNumber = episode.episodeNumber.takeIf { movie == null },
+            episodeTitle = episode.title,
+            episodeThumbnail = episode.thumbnail,
+            stream = stream,
+        )
+        // A single movie has no summary worth waiting for: the user is told as soon as it is queued.
+        val queued = result == DownloadEnqueueResult.Started || result == DownloadEnqueueResult.Replaced
+        if (queued && request.isSingleMovie) NuvioToastController.show(result.toastMessage())
+        return result
+    }
+
     private suspend fun fetchAddonStreams(episode: SeasonBatchEpisode): List<StreamItem> {
-        val type = "series"
+        val type = episode.movie?.metaType ?: "series"
         return coroutineScope {
             AddonRepository.uiState.value.addons.enabledAddons()
                 .mapNotNull { addon ->
@@ -115,10 +129,24 @@ internal object SeasonBatchDownloads {
     private suspend fun prepareStream(stream: StreamItem, episode: SeasonBatchEpisode): StreamItem? {
         val resolved = DirectDebridPlaybackResolver.resolveToPlayableStream(
             stream = stream,
-            season = episode.seasonNumber,
-            episode = episode.episodeNumber,
+            season = episode.seasonNumber.takeIf { episode.movie == null },
+            episode = episode.episodeNumber.takeIf { episode.movie == null },
         )
         return (resolved as? DirectDebridPlayableResult.Success)?.stream
+    }
+
+    /** What to tell the user when a batch has ended, or null when there is nothing to tell. */
+    internal suspend fun summaryToast(request: SeasonBatchRequest, summary: SeasonBatchSummary): String? {
+        if (!request.isSingleMovie) return summary.toastMessage()
+        return when (summary.results.values.single()) {
+            SeasonBatchEpisodeResult.NoMatchingSource -> getString(Res.string.downloads_movie_not_found)
+            SeasonBatchEpisodeResult.Failed -> getString(Res.string.download_failed)
+            SeasonBatchEpisodeResult.AlreadyDownloaded -> getString(Res.string.downloads_movie_already_downloaded)
+            // Queued and finished, paused or stopped: the Downloads screen shows it.
+            SeasonBatchEpisodeResult.Completed,
+            SeasonBatchEpisodeResult.Paused,
+            SeasonBatchEpisodeResult.Cancelled -> null
+        }
     }
 
     private suspend fun SeasonBatchSummary.toastMessage(): String {

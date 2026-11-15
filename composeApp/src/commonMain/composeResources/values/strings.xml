@@ -2043,6 +2043,13 @@
     <string name="downloads_season_count_not_found">%1$d not found</string>
     <string name="downloads_season_count_paused">%1$d paused</string>
     <string name="downloads_season_count_failed">%1$d failed</string>
+    <string name="downloads_movie_button">Download movie</string>
+    <string name="downloads_movie_stop">Stop download</string>
+    <string name="downloads_movie_dialog_message">Picks a source that matches these choices and adds the movie to downloads.</string>
+    <string name="downloads_movie_started">Looking for a source</string>
+    <string name="downloads_movie_already_running">This movie is already being added</string>
+    <string name="downloads_movie_not_found">No matching source found</string>
+    <string name="downloads_movie_already_downloaded">This movie is already in downloads</string>
     <string name="downloads_error_empty_body">Empty response body</string>
     <string name="downloads_error_finalize_failed">Failed to finalize download file</string>
     <string name="downloads_error_http_failed">Request failed with HTTP %1$d</string>
