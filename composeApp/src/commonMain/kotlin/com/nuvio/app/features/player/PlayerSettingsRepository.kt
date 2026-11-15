@@ -462,9 +462,7 @@ object PlayerSettingsRepository {
             ?: PlaybackBufferSettings.DEFAULT_BACK_BUFFER_MS
         targetBufferSizeMb = PlayerSettingsStorage.loadTargetBufferSizeMb()
             ?: PlaybackBufferSettings.DEFAULT_TARGET_BUFFER_MB
-        streamAutoPlayMode = PlayerSettingsStorage.loadStreamAutoPlayMode()
-            ?.let { runCatching { StreamAutoPlayMode.valueOf(it) }.getOrNull() }
-            ?: StreamAutoPlayMode.MANUAL
+        streamAutoPlayMode = StreamAutoPlayMode.fromStored(PlayerSettingsStorage.loadStreamAutoPlayMode())
         streamAutoPlaySource = PlayerSettingsStorage.loadStreamAutoPlaySource()
             ?.let { runCatching { StreamAutoPlaySource.valueOf(it) }.getOrNull() }
             ?: StreamAutoPlaySource.ALL_SOURCES
