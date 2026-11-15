@@ -109,6 +109,8 @@ import com.nuvio.app.features.details.MetaScreenSettingsRepository
 import com.nuvio.app.features.downloads.DownloadItem
 import com.nuvio.app.features.downloads.DownloadSubtitles
 import com.nuvio.app.features.downloads.DownloadsRepository
+import com.nuvio.app.features.downloads.OfflineSkipTimes
+import com.nuvio.app.features.downloads.backfillWhenIdle
 import com.nuvio.app.features.home.HomeCatalogSection
 import com.nuvio.app.features.home.HomeCatalogSettingsRepository
 import com.nuvio.app.features.home.HomeRepository
@@ -566,6 +568,12 @@ internal fun MainAppContent(
         EpisodeReleaseNotificationsRepository.refreshAsync()
         kotlinx.coroutines.delay(5_000)
         initialHomeReady = true
+    }
+
+    // Quietly saves skip times for finished downloads that have none, once the app is online.
+    LaunchedEffect(appContentGeneration, networkStatusUiState.isOnline) {
+        if (!ownsAppRuntime || !AppFeaturePolicy.downloadsEnabled || !networkStatusUiState.isOnline) return@LaunchedEffect
+        OfflineSkipTimes.app.backfillWhenIdle()
     }
 
     LaunchedEffect(networkStatusUiState.condition) {

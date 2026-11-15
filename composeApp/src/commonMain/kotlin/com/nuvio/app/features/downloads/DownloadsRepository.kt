@@ -44,6 +44,9 @@ object DownloadsRepository {
     // Where items are persisted and transfers and files are handled. Always the platform in the app.
     internal var backend: DownloadsBackend = PlatformDownloadsBackend
 
+    // Saves the skip times of a download that finished. Always the app's in the app.
+    internal var skipTimes: () -> OfflineSkipTimes = { OfflineSkipTimes.app }
+
     // What limits automatic downloads. Always the saved setting in the app.
     internal var autoDownloadLimits: AutoDownloadLimits = SavedAutoDownloadLimits
 
@@ -588,6 +591,7 @@ object DownloadsRepository {
                     updatedAtEpochMs = DownloadsClock.nowEpochMs(),
                 )
             }
+            if (problem == null && framesProblem == null) skipTimes().saveAfterDownload(item, localFileUri)
         }
     }
 

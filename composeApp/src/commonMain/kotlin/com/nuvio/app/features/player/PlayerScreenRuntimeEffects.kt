@@ -675,6 +675,8 @@ private fun PlayerScreenRuntime.BindPlayerMetadataAndSkipEffects() {
 
         if (!playerSettingsUiState.skipIntroEnabled) return@LaunchedEffect
 
+        if (applyDownloadedSkipIntervals()) return@LaunchedEffect
+
         if ((contentType ?: parentMetaType).equals("movie", ignoreCase = true)) {
             val api = SkipIntroRepository.getMovieSkipIntervals(parentMetaId, activeVideoId)
             apiSkipIntervals = api
