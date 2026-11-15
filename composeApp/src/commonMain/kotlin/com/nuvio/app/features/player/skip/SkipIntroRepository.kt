@@ -11,13 +11,14 @@ object SkipIntroRepository {
     private val animeSkipShowIdCache = HashMap<String, String>()
     private const val NO_ID = "__none__"
 
-    private val introDbConfigured: Boolean
+    internal val introDbConfigured: Boolean
         get() = IntroDbConfig.URL.isNotBlank()
 
     suspend fun getMovieSkipIntervals(
         contentId: String?,
         videoId: String?,
         requireSkipIntroEnabled: Boolean = true,
+        useCache: Boolean = true,
     ): List<SkipInterval> {
         if (!introDbConfigured ||
             (requireSkipIntroEnabled && !PlayerSettingsRepository.uiState.value.skipIntroEnabled)
@@ -28,9 +29,9 @@ object SkipIntroRepository {
             resolveAnime = { source, id -> SimklIdResolver.resolveIds(source, id)?.imdb },
         ) ?: return emptyList()
         val cacheKey = "movie:$imdbId"
-        cache[cacheKey]?.let { return it }
+        if (useCache) cache[cacheKey]?.let { return it }
         val data = SkipIntroApi.getIntroDbMovieSegments(imdbId) ?: return emptyList()
-        return data.movieSkipIntervals().also { cache[cacheKey] = it }
+        return data.movieSkipIntervals().also { remember(cacheKey, it) }
     }
 
     suspend fun getSkipIntervals(
@@ -38,13 +39,14 @@ object SkipIntroRepository {
         season: Int,
         episode: Int,
         requireSkipIntroEnabled: Boolean = true,
+        useCache: Boolean = true,
     ): List<SkipInterval> = coroutineScope {
         if (imdbId == null) return@coroutineScope emptyList()
         val settings = PlayerSettingsRepository.uiState.value
         if (requireSkipIntroEnabled && !settings.skipIntroEnabled) return@coroutineScope emptyList()
 
         val cacheKey = "$imdbId:$season:$episode"
-        cache[cacheKey]?.let { return@coroutineScope it }
+        if (useCache) cache[cacheKey]?.let { return@coroutineScope it }
 
         val introDbDeferred = async {
             if (introDbConfigured) fetchFromIntroDb(imdbId, season, episode) else emptyList()
@@ -74,7 +76,7 @@ object SkipIntroRepository {
             introDbDeferred.await(),
             aniSkipDeferred.await(),
             animeSkipDeferred.await(),
-        ).also { cache[cacheKey] = it }
+        ).also { remember(cacheKey, it) }
     }
 
     suspend fun getSkipIntervalsForMal(
@@ -84,12 +86,13 @@ object SkipIntroRepository {
         imdbId: String? = null,
         imdbSeason: Int? = null,
         imdbEpisode: Int? = null,
+        useCache: Boolean = true,
     ): List<SkipInterval> = coroutineScope {
         val settings = PlayerSettingsRepository.uiState.value
         if (requireSkipIntroEnabled && !settings.skipIntroEnabled) return@coroutineScope emptyList()
 
         val cacheKey = "mal:$malId:$episode"
-        cache[cacheKey]?.let { return@coroutineScope it }
+        if (useCache) cache[cacheKey]?.let { return@coroutineScope it }
 
         val aniSkipDeferred = async { fetchFromAniSkip(malId, episode) }
 
@@ -120,7 +123,7 @@ object SkipIntroRepository {
         }
 
         return@coroutineScope mergeByPriority(introDb, aniSkipDeferred.await(), animeSkipDeferred.await())
-            .also { cache[cacheKey] = it }
+            .also { remember(cacheKey, it) }
     }
 
     suspend fun getSkipIntervalsForKitsu(
@@ -130,12 +133,13 @@ object SkipIntroRepository {
         imdbId: String? = null,
         imdbSeason: Int? = null,
         imdbEpisode: Int? = null,
+        useCache: Boolean = true,
     ): List<SkipInterval> = coroutineScope {
         val settings = PlayerSettingsRepository.uiState.value
         if (requireSkipIntroEnabled && !settings.skipIntroEnabled) return@coroutineScope emptyList()
 
         val cacheKey = "kitsu:$kitsuId:$episode"
-        cache[cacheKey]?.let { return@coroutineScope it }
+        if (useCache) cache[cacheKey]?.let { return@coroutineScope it }
 
         val simklIdsDeferred = async { SimklIdResolver.resolveIds("kitsu", kitsuId) }
         val simklIds = simklIdsDeferred.await()
@@ -169,7 +173,15 @@ object SkipIntroRepository {
         }
 
         return@coroutineScope mergeByPriority(introDb, aniSkipDeferred.await(), animeSkipDeferred.await())
-            .also { cache[cacheKey] = it }
+            .also { remember(cacheKey, it) }
+    }
+
+    /**
+     * Keeps a result for the rest of the session, unless a caller listening through
+     * [SkipLookupReport] saw a request go unanswered: that result may be incomplete.
+     */
+    private suspend fun remember(cacheKey: String, intervals: List<SkipInterval>) {
+        if (!skipLookupHadUnansweredRequest()) cache[cacheKey] = intervals
     }
 
     private fun mergeByPriority(vararg providerResults: List<SkipInterval>): List<SkipInterval> {

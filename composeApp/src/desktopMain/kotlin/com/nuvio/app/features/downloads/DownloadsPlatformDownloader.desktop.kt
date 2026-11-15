@@ -13,6 +13,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.downloads_error_not_enough_space
 import nuvio.composeapp.generated.resources.downloads_error_private_address
@@ -62,6 +63,9 @@ internal actual object DownloadsPlatformDownloader {
     /** A transfer that receives nothing for this long is cut off and tried again. */
     internal var stallTimeoutMs: Long = 60_000L
 
+    /** Subtitles tried at the start of a transfer are given up after this long. */
+    internal const val StartSubtitlesTimeoutMs = 60_000L
+
     actual fun restoreItem(item: DownloadItem): DownloadItem = item
 
     actual fun start(
@@ -77,6 +81,13 @@ internal actual object DownloadsPlatformDownloader {
         scope.launch {
             val destination = File(downloadsDir, request.destinationFileName)
             val tempFile = File(downloadsDir, "${request.destinationFileName}.part")
+
+            // Subtitles are tried now, beside the transfer, so that a partly watched file has them.
+            // What cannot be fetched now is tried again when the file is done (DownloadCompanions).
+            if (DownloadSubtitles.hasSources(request.item)) launch {
+                runCatching { withTimeoutOrNull(StartSubtitlesTimeoutMs) { DownloadSubtitles.prepare(request.item, destination.toURI().toString()) } }
+                    .onFailure { if (it is CancellationException) throw it }
+            }
 
             // Dropped connections are retried in place (resuming from the .part file) with backoff.
             // The retry budget resets whenever an attempt makes progress, so long downloads survive
@@ -139,6 +150,9 @@ internal actual object DownloadsPlatformDownloader {
     }
 
     actual fun removePartialFile(destinationFileName: String): Boolean {
+        // Subtitles saved at the start of a download that never became a file go with it. Never when the file exists.
+        val video = File(downloadsDir, destinationFileName)
+        if (!video.exists()) runCatching { DownloadSubtitleStorage(video.toURI().toString()).remove() }
         val tempFile = File(downloadsDir, "$destinationFileName.part")
         if (!tempFile.exists()) return true
         return runCatching { tempFile.delete() }.getOrDefault(false)

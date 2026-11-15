@@ -1,6 +1,5 @@
 package com.nuvio.app.features.player.skip
 
-import com.nuvio.app.features.addons.httpGetText
 import com.nuvio.app.features.simkl.SIMKL_API_BASE_URL
 import com.nuvio.app.features.simkl.SimklConfig
 import kotlinx.serialization.json.Json
@@ -42,13 +41,16 @@ internal object SimklIdResolver {
         return "client_id=$clientId&app-name=$appName&app-version=1.0"
     }
 
+    /** The body of a successful response, or null for "no entry" and for no answer (the latter is reported). */
+    private suspend fun simklGet(url: String): String? = (SkipHttp.get(url) as? SkipHttpResult.Ok)?.body
+
     suspend fun resolveIds(source: String, id: String, contentTypeHint: String? = null): ResolvedIds? {
         val cacheKey = if (contentTypeHint != null) "$source:$id:$contentTypeHint" else "$source:$id"
         idsCache[cacheKey]?.let { return it }
         if (SimklConfig.CLIENT_ID.isBlank()) return null
 
         return try {
-            val searchText = httpGetText("$SIMKL_API_BASE_URL/search/id?$source=$id&${commonParams()}")
+            val searchText = simklGet("$SIMKL_API_BASE_URL/search/id?$source=$id&${commonParams()}") ?: return null
             val results = json.parseToJsonElement(searchText).jsonArray
             if (results.isEmpty()) return null
 
@@ -76,7 +78,7 @@ internal object SimklIdResolver {
                 else -> "anime"
             }
 
-            val detailsText = httpGetText("$SIMKL_API_BASE_URL/$mediaType/$simklId?extended=full&${commonParams()}")
+            val detailsText = simklGet("$SIMKL_API_BASE_URL/$mediaType/$simklId?extended=full&${commonParams()}") ?: return null
             val details = json.parseToJsonElement(detailsText).jsonObject
             val ids = details["ids"]?.jsonObject
 
@@ -89,7 +91,8 @@ internal object SimklIdResolver {
                 imdb = ids?.get("imdb")?.jsonPrimitive?.content?.takeIf { it.isNotBlank() },
                 tvdbSeason = details["season"]?.jsonPrimitive?.int?.takeIf { it > 0 }
             ).also { idsCache[cacheKey] = it }
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            reportSkipLookupFailure(error)
             null
         }
     }
@@ -99,7 +102,7 @@ internal object SimklIdResolver {
         if (SimklConfig.CLIENT_ID.isBlank()) return emptyList()
 
         return try {
-            val text = httpGetText("$SIMKL_API_BASE_URL/$type/episodes/$simklId?${commonParams()}")
+            val text = simklGet("$SIMKL_API_BASE_URL/$type/episodes/$simklId?${commonParams()}") ?: return emptyList()
             val episodes = json.parseToJsonElement(text).jsonArray
             val mapping = mutableListOf<EpisodeMapping>()
             for (ep in episodes) {
@@ -113,7 +116,8 @@ internal object SimklIdResolver {
                 }
             }
             mapping.also { episodeCache[simklId] = it }
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            reportSkipLookupFailure(error)
             emptyList()
         }
     }
@@ -157,9 +161,9 @@ internal object SimklIdResolver {
         }
 
         return try {
-            val text = httpGetText(
+            val text = simklGet(
                 "$SIMKL_API_BASE_URL/$type/$parentSimklId?extended=full_anime_seasons&${commonParams()}"
-            )
+            ) ?: return null
             val details = json.parseToJsonElement(text).jsonObject
             val seasonsArray = details["mapped_tvdb_seasons"]?.jsonArray ?: return null
 
@@ -172,7 +176,8 @@ internal object SimklIdResolver {
             }
             animeSeasonCache[cacheKey] = seasons
             seasons.firstOrNull { it.tvdbSeason == tvdbSeason }?.simklId
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            reportSkipLookupFailure(error)
             null
         }
     }
@@ -182,7 +187,7 @@ internal object SimklIdResolver {
         idsCache[cacheKey]?.let { return it }
 
         return try {
-            val text = httpGetText("$SIMKL_API_BASE_URL/$type/$simklId?extended=full&${commonParams()}")
+            val text = simklGet("$SIMKL_API_BASE_URL/$type/$simklId?extended=full&${commonParams()}") ?: return null
             val details = json.parseToJsonElement(text).jsonObject
             val ids = details["ids"]?.jsonObject
 
@@ -195,7 +200,8 @@ internal object SimklIdResolver {
                 imdb = ids?.get("imdb")?.jsonPrimitive?.content?.takeIf { it.isNotBlank() },
                 tvdbSeason = details["season"]?.jsonPrimitive?.int?.takeIf { it > 0 }
             ).also { idsCache[cacheKey] = it }
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            reportSkipLookupFailure(error)
             null
         }
     }

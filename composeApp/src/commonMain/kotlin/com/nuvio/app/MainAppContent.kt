@@ -109,6 +109,8 @@ import com.nuvio.app.features.details.MetaScreenSettingsRepository
 import com.nuvio.app.features.downloads.DownloadItem
 import com.nuvio.app.features.downloads.DownloadSubtitles
 import com.nuvio.app.features.downloads.DownloadsRepository
+import com.nuvio.app.features.downloads.DownloadCompanions
+import com.nuvio.app.features.downloads.backfillWhenIdle
 import com.nuvio.app.features.home.HomeCatalogSection
 import com.nuvio.app.features.home.HomeCatalogSettingsRepository
 import com.nuvio.app.features.home.HomeRepository
@@ -566,6 +568,12 @@ internal fun MainAppContent(
         EpisodeReleaseNotificationsRepository.refreshAsync()
         kotlinx.coroutines.delay(5_000)
         initialHomeReady = true
+    }
+
+    // Quietly saves subtitles and skip times for finished downloads that lack them, once the app is online.
+    LaunchedEffect(appContentGeneration, networkStatusUiState.isOnline) {
+        if (!ownsAppRuntime || !AppFeaturePolicy.downloadsEnabled || !networkStatusUiState.isOnline) return@LaunchedEffect
+        DownloadCompanions.app.backfillWhenIdle()
     }
 
     LaunchedEffect(networkStatusUiState.condition) {

@@ -47,7 +47,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.app.core.i18n.localizedByteUnit
 import com.nuvio.app.core.network.NetworkStatusRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import com.nuvio.app.core.ui.NuvioScreen
 import com.nuvio.app.core.ui.NuvioScreenHeader
@@ -549,6 +551,16 @@ private fun DownloadRow(
     episodeLinks: DownloadEpisodeLinks? = null,
 ) {
     val rowStatus = downloadRowStatus(item, clock.nowEpochMs, clock.offline)
+    val skipTimesNote by produceState<DownloadCompanionsNote?>(null, item.localFileUri, item.status) {
+        val uri = item.localFileUri?.takeIf { item.status == DownloadStatus.Completed }
+        // Subtitles and skip times are saved a moment after a download finishes, so a missing note is looked for a few more times.
+        var looks = 0
+        while (uri != null) {
+            value = SidecarIo.read { DownloadCompanions.noteFor(uri) }?.takeIf { it.skipTimes != null || it.subtitleCount > 0 }
+            if (value != null || ++looks >= SkipTimesNoteLooks) break
+            delay(SkipTimesNoteLookIntervalMs)
+        }
+    }
     val displayTitle = item.displayTitle()
     val displaySubtitle = downloadDisplaySubtitle(
         item = item,
@@ -627,7 +639,7 @@ private fun DownloadRow(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    resultText(rowStatus)?.let { result ->
+                    resultText(rowStatus, skipTimesNote)?.let { result ->
                         Text(
                             text = result,
                             style = MaterialTheme.typography.labelSmall,
@@ -1027,16 +1039,24 @@ private fun FailedActions(failedCount: Int, retryableCount: Int) {
     }
 }
 
+private const val SkipTimesNoteLooks = 6
+private const val SkipTimesNoteLookIntervalMs = 5_000L
+
 /** What was checked about a finished file, or null for any other row. */
 @Composable
-private fun resultText(status: DownloadRowStatus): String? {
+private fun resultText(status: DownloadRowStatus, saved: DownloadCompanionsNote? = null): String? {
     val result = status.result ?: return null
-    val message = stringResource(result.message)
-    return if (status.pictureChecked) {
-        message + " • " + stringResource(Res.string.downloads_result_picture_ok)
-    } else {
-        message
+    var message = stringResource(result.message)
+    if (status.pictureChecked) message += " • " + stringResource(Res.string.downloads_result_picture_ok)
+    if (saved != null && saved.subtitleCount > 0) {
+        message += " • " + stringResource(Res.string.downloads_result_subtitles_saved, saved.subtitleCount)
     }
+    when (saved?.skipTimes) {
+        SkipTimesNote.Saved -> message += " • " + stringResource(Res.string.downloads_result_skip_times_saved)
+        SkipTimesNote.NoneFound -> message += " • " + stringResource(Res.string.downloads_result_skip_times_none)
+        null -> Unit
+    }
+    return message
 }
 
 private fun formatBytes(bytes: Long): String {

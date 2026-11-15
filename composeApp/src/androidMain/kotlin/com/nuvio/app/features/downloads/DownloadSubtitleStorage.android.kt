@@ -10,12 +10,14 @@ internal actual class DownloadSubtitleStorage actual constructor(localVideoUri: 
     actual fun read(fileName: String): String? =
         runCatching { AtomicFile(file(fileName)).readFully().decodeToString() }.getOrNull()
 
-    actual fun write(fileName: String, text: String) {
+    actual fun write(fileName: String, text: String) = writeBytes(fileName, text.toByteArray(Charsets.UTF_8))
+
+    actual fun writeBytes(fileName: String, bytes: ByteArray) {
         check(directory.isDirectory || directory.mkdirs()) { "Cannot create subtitle directory" }
         val file = AtomicFile(file(fileName))
         val output = file.startWrite()
         try {
-            output.write(text.toByteArray(Charsets.UTF_8))
+            output.write(bytes)
             file.finishWrite(output)
         } catch (error: Throwable) {
             file.failWrite(output)
