@@ -2079,6 +2079,12 @@
     <string name="downloads_auto_status_private_sources">Sources at local or private addresses are skipped for automatic downloads.</string>
     <string name="downloads_auto_status_failed">Download failed. Will try again later.</string>
     <string name="downloads_auto_status_stopped">Stopped. Will try again later.</string>
+    <string name="downloads_auto_status_storage_limit">Paused: storage limit reached</string>
+    <string name="downloads_auto_status_low_disk_space">Paused: not enough free disk space</string>
+    <string name="downloads_auto_storage_limit">Storage limit for auto-downloads</string>
+    <string name="downloads_auto_storage_limit_description">Auto-download stops adding episodes at this size. Your own downloads don't count.</string>
+    <string name="downloads_auto_storage_limit_none">No limit</string>
+    <string name="downloads_auto_storage_limit_value">%1$d GB</string>
     <string name="downloads_error_private_address">Automatic downloads can't use this address</string>
     <string name="downloads_error_empty_body">Empty response body</string>
     <string name="downloads_error_finalize_failed">Failed to finalize download file</string>

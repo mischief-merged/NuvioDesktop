@@ -191,6 +191,36 @@ class DownloadsFormatMigrationTest {
     }
 
     @Test
+    fun a_download_that_a_limit_stopped_is_read_with_the_reason_it_was_stopped_for() {
+        backend.payload = payloadOf(
+            record("a", 1, "Paused", later = ""","autoDownloadRuleKey":"series|tt0121955","autoDownloadStop":"StorageLimit""""),
+            record("b", 2, "Paused", later = ""","autoDownloadRuleKey":"series|tt0121955","autoDownloadStop":null"""),
+        )
+
+        val (stopped, paused) = load()
+
+        assertOriginalFieldsKept(stopped, 1)
+        assertEquals(AutoDownloadStop.StorageLimit, stopped.autoDownloadStop)
+        assertNull(paused.autoDownloadStop)
+        assertEquals("series|tt0121955", paused.autoDownloadRuleKey)
+    }
+
+    @Test
+    fun a_reason_for_stopping_that_this_build_does_not_know_reads_as_none_and_is_written_back_as_it_was() {
+        backend.payload = payloadOf(
+            record("a", 1, "Paused", later = ""","autoDownloadRuleKey":"series|tt0121955","autoDownloadStop":"MeteredNetwork""""),
+            record("b", 2, "Paused"),
+        )
+
+        assertNull(load().first().autoDownloadStop)
+        rewrite("b")
+
+        assertTrue(""""status":"Downloading"""" in backend.payload.orEmpty())
+        assertTrue(""""autoDownloadStop":"MeteredNetwork"""" in backend.payload.orEmpty())
+        assertEquals(emptyList(), backend.unreadable)
+    }
+
+    @Test
     fun a_download_written_now_is_read_back_with_its_rule() {
         DownloadsRepository.ensureLoaded()
         DownloadsRepository.enqueueFromStream(

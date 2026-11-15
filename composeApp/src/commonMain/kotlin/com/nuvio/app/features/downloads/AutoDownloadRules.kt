@@ -74,6 +74,12 @@ internal enum class AutoDownloadStatus {
 
     /** Adding episodes was stopped. Tried again later. */
     Stopped,
+
+    /** The storage limit for automatic downloads is reached. */
+    StorageLimitReached,
+
+    /** The downloads volume has too little free space left for automatic downloads. */
+    LowDiskSpace,
 }
 
 internal data class AutoDownloadPlan(

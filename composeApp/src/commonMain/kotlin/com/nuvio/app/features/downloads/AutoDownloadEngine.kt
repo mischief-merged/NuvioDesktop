@@ -17,8 +17,12 @@ import kotlinx.coroutines.sync.withLock
  * rule wants from them, the watched state and the downloads that exist, and hands the missing ones
  * to the season downloader with the saved season-download choices. Nothing is remembered about an
  * episode until its finished download is seen in Downloads, so an episode that found no source,
- * failed or was stopped is tried again: after 1 hour, then 3 hours, 12 hours and daily. The waiting times are
- * kept in memory and start over when the app restarts.
+ * failed or was stopped is tried again: after 1 hour, then 3 hours, 12 hours and daily. The waiting
+ * times are kept in memory and start over when the app restarts.
+ *
+ * Once automatic downloads take as much as the storage limit, no further episode is queued. A
+ * download that a limit paused is resumed by a check when there is room again; whether it then
+ * fits is decided by the transfer itself.
  *
  * The engine starts no checks itself. Its owner asks [isFullCheckDue] and [rulesWithDueRetry] from
  * time to time and calls [runCheck]. What it holds in memory belongs to one profile and is dropped
@@ -35,6 +39,9 @@ internal class AutoDownloadEngine(
     private val startBatch: (SeasonBatchRequest) -> SeasonBatchStart,
     private val cancelBatch: (parentMetaId: String, seasonNumber: Int) -> Unit,
     private val nowEpochMs: () -> Long,
+    /** The bytes automatic downloads take now. */
+    private val autoDownloadBytes: () -> Long = { 0L },
+    private val resumeDownload: (downloadId: String) -> Unit = {},
     private val fullCheckIntervalMs: Long = 6L * 60 * 60 * 1000,
 ) {
     private val checkMutex = Mutex()
@@ -96,6 +103,7 @@ internal class AutoDownloadEngine(
             isWatched = { isWatched(current, it) },
             downloads = items,
         )
+        resumeStoppedDownloads(ruleKey, items)
         val now = nowEpochMs()
         // An episode that is no longer missing has nothing left to wait for.
         synchronized(lock) {
@@ -104,7 +112,7 @@ internal class AutoDownloadEngine(
         val due = plan.toDownload.filter { episode ->
             ignoreWaiting || (retryFor(ruleKey, episode)?.notBeforeEpochMs ?: 0L) <= now
         }
-        if (due.isNotEmpty()) {
+        if (due.isNotEmpty() && !storageLimitReached()) {
             val choices = seasonDefaults(profileId)
             val startedBatches = mutableListOf<String>()
             due.groupBy { it.seasonNumber }.forEach { (seasonNumber, seasonEpisodes) ->
@@ -250,9 +258,14 @@ internal class AutoDownloadEngine(
         val windowStatuses = plan.window.map { statusByEpisode[it.autoDownloadKey] }
         val waiting = plan.toDownload.mapNotNull { retryFor(ruleKey, it) }
         val batchRunning = synchronized(lock) { runningBatches.values.any { it.autoDownloadRuleKey == ruleKey } }
+        val stops = items.filter { it.autoDownloadRuleKey == ruleKey }.mapNotNull { it.autoDownloadStop }
         setStatus(
             ruleKey,
             when {
+                AutoDownloadStop.StorageLimit in stops -> AutoDownloadStatus.StorageLimitReached
+                AutoDownloadStop.LowDiskSpace in stops -> AutoDownloadStatus.LowDiskSpace
+                plan.toDownload.isNotEmpty() && !batchRunning && storageLimitReached() ->
+                    AutoDownloadStatus.StorageLimitReached
                 batchRunning || DownloadStatus.Downloading in windowStatuses -> AutoDownloadStatus.Downloading
                 waiting.isNotEmpty() -> waiting.maxBy { it.notBeforeEpochMs }.reason
                 DownloadStatus.Paused in windowStatuses -> AutoDownloadStatus.Paused
@@ -260,6 +273,21 @@ internal class AutoDownloadEngine(
                 else -> AutoDownloadStatus.UpToDate
             },
         )
+    }
+
+    private fun storageLimitReached(): Boolean {
+        val limit = store.storageLimitBytes() ?: return false
+        return autoDownloadBytes() >= limit
+    }
+
+    /** Resumes the rule's downloads that a limit paused, unless the storage limit is still reached. */
+    private fun resumeStoppedDownloads(ruleKey: String, items: List<DownloadItem>) {
+        items
+            .filter { it.autoDownloadRuleKey == ruleKey && it.status == DownloadStatus.Paused && it.autoDownloadStop != null }
+            .forEach { item ->
+                if (item.autoDownloadStop == AutoDownloadStop.StorageLimit && storageLimitReached()) return@forEach
+                resumeDownload(item.id)
+            }
     }
 
     /** Forgets a rule that was turned off and stops the episodes it is still adding. */

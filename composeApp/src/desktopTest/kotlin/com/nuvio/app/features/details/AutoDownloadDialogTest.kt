@@ -61,6 +61,7 @@ class AutoDownloadDialogTest {
     private class FakeController : AutoDownloadController {
         override val rules = MutableStateFlow(emptyList<AutoDownloadRule>())
         override val statuses = MutableStateFlow(emptyMap<String, AutoDownloadStatus>())
+        override val storageLimitGb = MutableStateFlow<Int?>(50)
         val saved = mutableListOf<Triple<String, Int, AutoDownloadScope>>()
         val turnedOff = mutableListOf<String>()
         val profiles = mutableListOf<Int>()
@@ -74,6 +75,8 @@ class AutoDownloadDialogTest {
             profiles += profileId
             turnedOff += ruleKey
         }
+
+        override fun setStorageLimit(profileId: Int, limitGb: Int?) = Unit
 
         override fun checkNow() = Unit
     }

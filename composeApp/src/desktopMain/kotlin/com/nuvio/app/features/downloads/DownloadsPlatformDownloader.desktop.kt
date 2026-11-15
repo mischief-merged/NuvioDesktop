@@ -102,6 +102,9 @@ internal actual object DownloadsPlatformDownloader {
                 } catch (error: CancellationException) {
                     onPaused()
                     throw error
+                } catch (error: TransferStoppedByLimit) {
+                    request.limits?.onStopped?.invoke(error.reason)
+                    return@launch
                 } catch (error: IOException) {
                     if (!retries.awaitNextAttempt(madeProgress = tempFile.partialLength() > bytesBeforeAttempt)) {
                         onFailure(error.message?.takeIf { it.isNotBlank() && it != "closed" } ?: "Connection lost")
@@ -210,6 +213,13 @@ internal actual object DownloadsPlatformDownloader {
             contentLength = response.headers().firstValue("Content-Length").orElse(null)?.toLongOrNull(),
         )
         var downloadedBytes = startingBytes
+        // Checked before anything of the body is written: a file that is announced as too large for
+        // the limits of an automatic download is not started.
+        val limits = request.limits
+        limits?.stopBeforeBody(downloadedBytes, totalBytes, downloadsFreeBytes())?.let { reason ->
+            response.body().close()
+            throw TransferStoppedByLimit(reason)
+        }
         onProgress(downloadedBytes, totalBytes)
         val expectedDigest = if (statusCode == 200 && !appendToTemp) {
             expectedBodyDigest { name -> response.headers().firstValue(name).orElse(null) }
@@ -238,6 +248,7 @@ internal actual object DownloadsPlatformDownloader {
                 try {
                     FileOutputStream(tempFile, appendToTemp).use { output ->
                         val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                        var nextLimitCheckAtBytes = downloadedBytes + LimitCheckIntervalBytes
                         while (true) {
                             currentCoroutineContext().ensureActive()
                             val read = input.read(buffer)
@@ -247,6 +258,15 @@ internal actual object DownloadsPlatformDownloader {
                             digest?.update(buffer, 0, read)
                             downloadedBytes += read.toLong()
                             onProgress(downloadedBytes, totalBytes)
+                            // A body without an announced size, or one that is longer than announced, is
+                            // caught here, as is free space that other writers used up meanwhile.
+                            if (limits != null && downloadedBytes >= nextLimitCheckAtBytes) {
+                                nextLimitCheckAtBytes = downloadedBytes + LimitCheckIntervalBytes
+                                limits.stopFor(downloadedBytes, totalBytes, downloadsFreeBytes())?.let { reason ->
+                                    output.flush()
+                                    throw TransferStoppedByLimit(reason)
+                                }
+                            }
                         }
                         output.flush()
                     }
@@ -267,6 +287,12 @@ internal actual object DownloadsPlatformDownloader {
             totalBytes = totalBytes,
             digestMatched = if (digest != null && expectedDigest != null) digest.digest().contentEquals(expectedDigest.value) else null,
         )
+    }
+
+    /** Free space on the volume of the downloads folder, or null when the system does not tell. */
+    private fun downloadsFreeBytes(): Long? {
+        val directory = downloadsDir
+        return directory.usableSpace.takeIf { it > 0L || directory.totalSpace > 0L }
     }
 
     private fun sendDownloadRequest(
@@ -325,6 +351,10 @@ private class DesktopDownloadsTaskHandle(
         job.cancel()
     }
 }
+
+private class TransferStoppedByLimit(val reason: AutoDownloadStop) : RuntimeException()
+
+private const val LimitCheckIntervalBytes = 256L * 1024
 
 private fun File.partialLength(): Long =
     takeIf { it.exists() }?.length()?.coerceAtLeast(0L) ?: 0L

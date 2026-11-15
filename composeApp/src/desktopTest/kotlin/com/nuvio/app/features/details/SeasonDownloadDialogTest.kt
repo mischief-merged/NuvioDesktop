@@ -185,10 +185,13 @@ class SeasonDownloadDialogTest {
     private object NoAutoDownloads : AutoDownloadController {
         override val rules = MutableStateFlow(emptyList<AutoDownloadRule>())
         override val statuses = MutableStateFlow(emptyMap<String, AutoDownloadStatus>())
+        override val storageLimitGb = MutableStateFlow<Int?>(50)
 
         override fun save(profileId: Int, meta: MetaDetails, keepCount: Int, scope: AutoDownloadScope) = Unit
 
         override fun turnOff(profileId: Int, ruleKey: String) = Unit
+
+        override fun setStorageLimit(profileId: Int, limitGb: Int?) = Unit
 
         override fun checkNow() = Unit
     }

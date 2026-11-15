@@ -295,6 +295,9 @@ class SeasonDownloadButtonTest {
     private class FakeAutoDownloads : AutoDownloadController {
         override val rules = MutableStateFlow(emptyList<AutoDownloadRule>())
         override val statuses = MutableStateFlow(emptyMap<String, AutoDownloadStatus>())
+        override val storageLimitGb = MutableStateFlow<Int?>(50)
+
+        override fun setStorageLimit(profileId: Int, limitGb: Int?) = Unit
 
         var saves = 0
 

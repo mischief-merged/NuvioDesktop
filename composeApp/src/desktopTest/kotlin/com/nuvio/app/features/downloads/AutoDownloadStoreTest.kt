@@ -111,6 +111,46 @@ class AutoDownloadStoreTest {
     }
 
     @Test
+    fun the_storage_limit_is_fifty_gigabytes_until_it_is_changed() {
+        assertEquals(50, store.storageLimitGb.value)
+        assertEquals(50_000_000_000L, store.storageLimitBytes())
+    }
+
+    @Test
+    fun a_chosen_storage_limit_and_no_limit_are_read_back_by_a_new_store() {
+        store.upsert(1, testRule())
+        store.setStorageLimit(1, 250)
+        assertEquals(250_000_000_000L, AutoDownloadStore(payloads) { 1 }.storageLimitBytes())
+
+        store.setStorageLimit(1, null)
+
+        val reloaded = AutoDownloadStore(payloads) { 1 }
+        assertNull(reloaded.storageLimitBytes())
+        assertNull(reloaded.storageLimitGb.value)
+        assertEquals(listOf(testRule()), reloaded.currentRules())
+    }
+
+    @Test
+    fun the_storage_limit_is_kept_per_profile_and_not_changed_for_a_profile_that_is_not_active() {
+        store.setStorageLimit(1, 10)
+        activeProfile = 2
+
+        assertEquals(50_000_000_000L, store.storageLimitBytes())
+        assertFalse(store.setStorageLimit(1, 100))
+        activeProfile = 1
+
+        assertEquals(10_000_000_000L, store.storageLimitBytes())
+        assertEquals(10, store.storageLimitGb.value)
+    }
+
+    @Test
+    fun a_storage_limit_that_is_not_offered_falls_back_to_the_default() {
+        store.setStorageLimit(1, 7)
+
+        assertEquals(50, store.storageLimitGb.value)
+    }
+
+    @Test
     fun a_change_that_changes_nothing_is_not_written() {
         store.upsert(1, testRule())
         payloads.saved[1] = "sentinel"

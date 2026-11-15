@@ -43,6 +43,9 @@ object DownloadsRepository {
     // Where items are persisted and transfers and files are handled. Always the platform in the app.
     internal var backend: DownloadsBackend = PlatformDownloadsBackend
 
+    // What limits automatic downloads. Always the saved setting in the app.
+    internal var autoDownloadLimits: AutoDownloadLimits = SavedAutoDownloadLimits
+
     private var nextDownloadOrdinal = 0L
 
     // What the stored payload held that this build does not use: fields of an item it does not
@@ -298,6 +301,7 @@ object DownloadsRepository {
         val reset = item.copy(
             status = DownloadStatus.Downloading,
             errorMessage = null,
+            autoDownloadStop = null,
             localFileUri = null,
             updatedAtEpochMs = DownloadsClock.nowEpochMs(),
         )
@@ -388,7 +392,11 @@ object DownloadsRepository {
         activeTransfers[item.id] = transfer
 
         val handle = backend.start(
-            DownloadPlatformRequest(item, onDigestVerified = { transfer.digestVerified = true }),
+            DownloadPlatformRequest(
+                item,
+                onDigestVerified = { transfer.digestVerified = true },
+                limits = autoTransferLimits(item, transfer),
+            ),
             { downloadedBytes, totalBytes ->
                 ifCurrent(item.id, transfer) {
                     mutateItem(item.id) { current ->
@@ -539,6 +547,58 @@ object DownloadsRepository {
         },
         updatedAtEpochMs = DownloadsClock.nowEpochMs(),
     )
+
+    /**
+     * The bytes automatic downloads take: what each has recorded as downloaded, and for a running
+     * transfer the full size once the server announced it.
+     */
+    internal fun autoDownloadBytes(exceptDownloadId: String? = null): Long =
+        _uiState.value.items
+            .filter { it.autoDownloadRuleKey != null && it.id != exceptDownloadId }
+            .sumOf { item ->
+                if (item.status == DownloadStatus.Downloading) {
+                    maxOf(item.totalBytes ?: 0L, item.downloadedBytes)
+                } else {
+                    item.downloadedBytes
+                }
+            }
+
+    private fun autoTransferLimits(item: DownloadItem, transfer: ActiveTransfer): DownloadTransferLimits? {
+        if (item.autoDownloadRuleKey == null) return null
+        val limits = autoDownloadLimits
+        return DownloadTransferLimits(
+            maxTotalBytes = { limits.storageLimitBytes()?.let { it - autoDownloadBytes(exceptDownloadId = item.id) } },
+            minFreeBytes = limits.minFreeBytes,
+            checkAndReserve = { check, announcedBytes ->
+                synchronized(stateLock) {
+                    check() ?: run {
+                        if (announcedBytes != null && announcedBytes > 0L) {
+                            ifCurrent(item.id, transfer) {
+                                mutateItem(item.id) { current ->
+                                    if (current.status == DownloadStatus.Downloading) current.copy(totalBytes = announcedBytes) else current
+                                }
+                            }
+                        }
+                        null
+                    }
+                }
+            },
+            onStopped = { reason ->
+                ifCurrent(item.id, transfer) {
+                    activeTransfers.remove(item.id)
+                    mutateItem(item.id) { current ->
+                        if (current.status != DownloadStatus.Downloading) return@mutateItem current
+                        current.copy(
+                            status = DownloadStatus.Paused,
+                            autoDownloadStop = reason,
+                            errorMessage = null,
+                            updatedAtEpochMs = DownloadsClock.nowEpochMs(),
+                        )
+                    }
+                }
+            },
+        )
+    }
 
     /** Runs [block] under the state lock, and only while [transfer] still owns the download. */
     private inline fun ifCurrent(downloadId: String, transfer: ActiveTransfer, block: () -> Unit) {
