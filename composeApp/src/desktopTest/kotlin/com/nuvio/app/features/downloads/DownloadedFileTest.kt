@@ -79,7 +79,7 @@ class DownloadedFileTest {
 
         val facts = inspectDownloadedFile(clip.toURI().toString())
 
-        assertEquals(DownloadedFileFacts(exists = true, sizeBytes = clip.length(), isVideoContainer = true, durationMs = 4_000), facts)
+        assertEquals(DownloadedFileFacts(exists = true, sizeBytes = clip.length(), isVideoContainer = true, durationMs = 4_000, audioLanguages = emptyList()), facts)
     }
 
     @Test

@@ -8,6 +8,7 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
@@ -29,6 +30,11 @@ import nuvio.composeapp.generated.resources.downloads_season_button
 import nuvio.composeapp.generated.resources.downloads_season_dialog_title
 import nuvio.composeapp.generated.resources.downloads_season_quality_1080
 import nuvio.composeapp.generated.resources.downloads_season_quality_any
+import nuvio.composeapp.generated.resources.downloads_season_audio_language
+import nuvio.composeapp.generated.resources.downloads_season_audio_language_any
+import nuvio.composeapp.generated.resources.downloads_season_bitrate_no_limit
+import nuvio.composeapp.generated.resources.downloads_season_bitrate_value
+import nuvio.composeapp.generated.resources.downloads_season_max_bitrate
 import nuvio.composeapp.generated.resources.downloads_season_quality_heading
 import nuvio.composeapp.generated.resources.downloads_season_stop
 import nuvio.composeapp.generated.resources.episodes_season
@@ -124,21 +130,53 @@ class SeasonDownloadButtonTest {
     }
 
     @Test
-    fun the_quality_options_are_named_radio_buttons_under_a_heading() {
+    fun the_three_choices_are_buttons_named_by_their_title_with_the_current_value_as_state() {
         showButton()
         compose.onNodeWithText(text(Res.string.downloads_season_button)).performClick()
 
-        compose.onNodeWithText(text(Res.string.downloads_season_quality_heading))
-            .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading))
-        compose.onNodeWithContentDescription(text(Res.string.downloads_season_quality_any))
-            .assert(isRadioButton())
-            .assert(hasAnyAncestor(SemanticsMatcher.keyIsDefined(SemanticsProperties.SelectableGroup)))
-            .assertIsSelected()
-        compose.onNodeWithContentDescription(text(Res.string.downloads_season_quality_1080))
-            .assert(isRadioButton())
+        mapOf(
+            Res.string.downloads_season_quality_heading to text(Res.string.downloads_season_quality_any),
+            Res.string.downloads_season_max_bitrate to text(Res.string.downloads_season_bitrate_no_limit),
+            Res.string.downloads_season_audio_language to text(Res.string.downloads_season_audio_language_any),
+        ).forEach { (title, value) ->
+            compose.onNodeWithContentDescription(text(title))
+                .assert(isButton())
+                .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, value))
+                .assertHasClickAction()
+        }
+    }
+
+    @Test
+    fun a_choice_is_opened_with_the_keyboard_and_its_options_are_named_radio_buttons_of_one_group() {
+        showButton()
+        compose.onNodeWithText(text(Res.string.downloads_season_button)).performClick()
+
+        compose.onNodeWithContentDescription(text(Res.string.downloads_season_max_bitrate))
             .requestFocus()
             .performKeyInput { pressKey(Key.Enter) }
-        compose.onNodeWithContentDescription(text(Res.string.downloads_season_quality_1080)).assertIsSelected()
+
+        val noLimit = text(Res.string.downloads_season_bitrate_no_limit)
+        compose.onNode(hasContentDescription(noLimit) and isRadioButton())
+            .assert(hasAnyAncestor(SemanticsMatcher.keyIsDefined(SemanticsProperties.SelectableGroup)))
+            .assertIsSelected()
+        val tenMbps = text(Res.string.downloads_season_bitrate_value, 10)
+        compose.onNode(hasContentDescription(tenMbps) and isRadioButton())
+            .assertIsNotSelected()
+            .requestFocus()
+            .performKeyInput { pressKey(Key.Enter) }
+
+        compose.onNodeWithContentDescription(text(Res.string.downloads_season_max_bitrate))
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, tenMbps))
+    }
+
+    @Test
+    fun the_quality_options_are_named_radio_buttons_too() {
+        showButton()
+        compose.onNodeWithText(text(Res.string.downloads_season_button)).performClick()
+        compose.onNodeWithContentDescription(text(Res.string.downloads_season_quality_heading)).performClick()
+
+        compose.onNode(hasContentDescription(text(Res.string.downloads_season_quality_any)) and isRadioButton()).assertIsSelected()
+        compose.onNode(hasContentDescription(text(Res.string.downloads_season_quality_1080)) and isRadioButton()).assertIsNotSelected()
     }
 
     private fun showButton() {
@@ -147,6 +185,7 @@ class SeasonDownloadButtonTest {
                 SeasonDownloadButton(
                     meta = show,
                     seasonNumber = 1,
+                    profileId = 9_900_009,
                     running = running,
                     cancelBatch = { id, season -> stopped += id to season },
                 )

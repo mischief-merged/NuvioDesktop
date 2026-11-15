@@ -57,6 +57,11 @@ data class DownloadItem(
     val expectedSizeBytes: Long? = null,
     /** What the finished file was checked against. Null for a download that finished before this was recorded. */
     val verifiedBy: DownloadVerification? = null,
+    /**
+     * The audio language playback of this file starts on: set when the language chosen for the
+     * download is in the file but another track comes first.
+     */
+    val preferredAudioLanguage: String? = null,
 ) {
     val isEpisode: Boolean
         get() = seasonNumber != null && episodeNumber != null

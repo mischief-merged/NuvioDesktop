@@ -1,0 +1,15 @@
+package com.nuvio.app.features.downloads
+
+import com.nuvio.app.core.storage.DesktopStorage
+import com.nuvio.app.core.storage.ProfileScopedKey
+
+internal actual object SeasonDownloadDefaultsStorage {
+    private val store = DesktopStorage.store("nuvio_season_download_defaults")
+
+    actual fun loadPayload(profileId: Int): String? =
+        store.getString(ProfileScopedKey.of("season_download_defaults", profileId))
+
+    actual fun savePayload(profileId: Int, payload: String) {
+        store.putString(ProfileScopedKey.of("season_download_defaults", profileId), payload)
+    }
+}

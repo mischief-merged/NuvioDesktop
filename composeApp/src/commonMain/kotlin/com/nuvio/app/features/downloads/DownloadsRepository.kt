@@ -458,6 +458,25 @@ object DownloadsRepository {
         downloadsResumedAtLoad.also { downloadsResumedAtLoad = emptySet() }
     }
 
+    /** Notes the audio language playback of a download starts on. */
+    internal fun setPreferredAudioLanguage(downloadId: String, language: String) {
+        ensureLoaded()
+        mutateItem(downloadId) { it.copy(preferredAudioLanguage = language) }
+    }
+
+    /** The audio language that was noted for the finished download with this file, if any. */
+    fun preferredAudioLanguageOfFile(localFileUri: String): String? =
+        _uiState.value.items
+            .firstOrNull { it.status == DownloadStatus.Completed && it.localFileUri == localFileUri }
+            ?.preferredAudioLanguage
+
+    /** A look at the file of a finished download. Null when it has none or the platform cannot look. */
+    internal fun inspectCompletedDownload(item: DownloadItem): DownloadedFileFacts? {
+        if (item.status != DownloadStatus.Completed) return null
+        val fileUri = backend.resolveLocalFileUri(item.localFileUri, item.fileName) ?: item.localFileUri ?: return null
+        return backend.inspectFile(fileUri)
+    }
+
     /**
      * Whether a finished download still has its file. One whose file is gone, or smaller than the
      * download was, becomes a failed download, which can be tried again, and is not counted as
