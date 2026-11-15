@@ -52,6 +52,11 @@ import nuvio.composeapp.generated.resources.downloads_delete_message_trash
 import nuvio.composeapp.generated.resources.downloads_delete_not_moved_toast
 import nuvio.composeapp.generated.resources.downloads_delete_title
 import nuvio.composeapp.generated.resources.downloads_choose_another_source
+import nuvio.composeapp.generated.resources.downloads_episode_details_description
+import nuvio.composeapp.generated.resources.downloads_go_to_season_description
+import nuvio.composeapp.generated.resources.downloads_go_to_show_description
+import nuvio.composeapp.generated.resources.nav_episode_details
+import nuvio.composeapp.generated.resources.nav_go_to_season
 import nuvio.composeapp.generated.resources.downloads_run_dismiss_description
 import nuvio.composeapp.generated.resources.downloads_choose_another_source_description
 import nuvio.composeapp.generated.resources.downloads_run_problem_failed
@@ -200,6 +205,14 @@ class DownloadsScreenTest {
 
     private var chooseSourceFor: DownloadItem? = null
     private var folderOpened = 0
+    private var episodeLinks: DownloadEpisodeLinks? = null
+    private val linkCalls = mutableListOf<String>()
+
+    private fun recordingLinks() = DownloadEpisodeLinks(
+        onEpisodeDetails = { linkCalls += "details:${it.id}" },
+        onGoToSeason = { linkCalls += "season:${it.id}" },
+        onGoToShow = { linkCalls += "show:${it.id}" },
+    )
     private val rememberedDeletions = mutableListOf<Pair<String, Int>>()
 
     private fun show(vararg items: String, withChooseSource: Boolean = true) {
@@ -220,6 +233,7 @@ class DownloadsScreenTest {
                         true
                     },
                     rememberDeletion = { rememberedDeletions += it.id to DownloadsRepository.uiState.value.items.size },
+                    episodeLinks = episodeLinks,
                 )
             }
         }
@@ -1011,5 +1025,35 @@ class DownloadsScreenTest {
 
         compose.onNodeWithText(text(Res.string.downloads_empty_title)).assertDoesNotExist()
         compose.onNodeWithText(text(Res.string.downloads_empty_hint)).assertDoesNotExist()
+    }
+
+    @Test
+    fun an_episode_download_offers_links_to_its_episode_season_and_show() {
+        episodeLinks = recordingLinks()
+        show(stored("a", "Downloading", extra = ""","downloadedBytes":10,"totalBytes":100""", updatedAt = 1))
+
+        compose.onNodeWithText(text(Res.string.nav_episode_details)).assertIsDisplayed().assertHasClickAction()
+        compose.onNodeWithText(text(Res.string.nav_go_to_season)).assertIsDisplayed().assertHasClickAction()
+        compose.onNodeWithContentDescription(text(Res.string.downloads_episode_details_description, "Pantheon S02E03")).performClick()
+        compose.onNodeWithContentDescription(text(Res.string.downloads_go_to_season_description, "Pantheon S02E03")).performClick()
+        compose.onNodeWithContentDescription(text(Res.string.downloads_go_to_show_description, "Pantheon S02E03")).performClick()
+
+        assertEquals(listOf("details:a", "season:a", "show:a"), linkCalls)
+    }
+
+    @Test
+    fun an_episode_download_has_no_links_where_none_are_given() {
+        show(stored("a", "Downloading", extra = ""","downloadedBytes":10,"totalBytes":100""", updatedAt = 1))
+
+        compose.onNodeWithText(text(Res.string.nav_episode_details)).assertDoesNotExist()
+        compose.onNodeWithText(text(Res.string.nav_go_to_season)).assertDoesNotExist()
+    }
+
+    @Test
+    fun a_movie_download_has_no_episode_links() {
+        episodeLinks = recordingLinks()
+        show(stored("m", "Downloading", title = "Film", season = null, episode = null, extra = ""","downloadedBytes":10,"totalBytes":100""", updatedAt = 1))
+
+        compose.onNodeWithText(text(Res.string.nav_episode_details)).assertDoesNotExist()
     }
 }
