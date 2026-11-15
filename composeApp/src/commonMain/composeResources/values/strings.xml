@@ -1376,9 +1376,11 @@
     <string name="player_failover_trying_source">Trying another source: %1$s</string>
     <string name="player_failover_now_playing">Now playing from another source: %1$s</string>
     <string name="player_failover_trying_after_placeholder">That source was only a placeholder, not the video. Trying another source: %1$s</string>
+    <string name="player_failover_trying_after_stall">That source stopped responding. Trying another source: %1$s</string>
     <string name="player_failover_placeholder_exhausted">That source was only a placeholder, not the video, and no other source played. Choose a different source.</string>
     <string name="player_failover_placeholder_warning">This source looks like a placeholder, not the video.</string>
     <string name="player_failover_exhausted">The sources we tried did not play. Choose a different source.</string>
+    <string name="player_error_source_stalled">The source stopped responding.</string>
     <string name="player_error_source_startup_timeout">The source did not start within %1$d seconds.</string>
     <string name="settings_playback_threshold_minutes">Threshold Minutes</string>
     <string name="settings_playback_threshold_mode">Next Episode Threshold Mode</string>

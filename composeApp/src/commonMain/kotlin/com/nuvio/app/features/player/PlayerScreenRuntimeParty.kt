@@ -305,7 +305,7 @@ internal fun PlayerScreenRuntime.BindPartyEffects() {
                 if (!isPartySynced) return false
                 val targetMs = if (isPartyControlLocked) ownSeekTarget(positionMs) else positionMs
                 if (targetMs != null) {
-                    playerController?.seekTo(targetMs)
+                    seekWithNote(playerController, targetMs)
                     scheduleProgressSyncAfterSeek()
                     publishPartyPlayback(positionMs = targetMs)
                 }
@@ -448,7 +448,7 @@ internal fun PlayerScreenRuntime.BindPartyEffects() {
                 applyPartyPaused(playback.paused, force = forced)
                 val own = playback.memberId == party.memberId && !forced
                 if ((!own || playback.paused) && abs(snapshot.positionMs - expected) > PartySync.PAUSED_TOLERANCE_MS) {
-                    controller.seekTo(if (playback.paused) expected else expected + seekLeadMs)
+                    seekWithNote(controller, if (playback.paused) expected else expected + seekLeadMs)
                     measureSeekLead = !playback.paused
                 }
                 lastSeek = clock.markNow()
@@ -502,7 +502,7 @@ internal fun PlayerScreenRuntime.BindPartyEffects() {
                     partyLog.i { "Seeking $drift ms back into sync with ${seekLeadMs} ms lead" }
                     clearPartyNudge(playback)
                     val target = if (playback.paused) correction.positionMs else correction.positionMs + seekLeadMs
-                    controller.seekTo(if (snapshot.durationMs > 0L) target.coerceAtMost(snapshot.durationMs) else target)
+                    seekWithNote(controller, if (snapshot.durationMs > 0L) target.coerceAtMost(snapshot.durationMs) else target)
                     lastSeek = clock.markNow()
                     measureSeekLead = !playback.paused
                 }

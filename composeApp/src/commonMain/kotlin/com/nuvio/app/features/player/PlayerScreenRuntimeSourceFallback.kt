@@ -23,6 +23,7 @@ import nuvio.composeapp.generated.resources.player_failover_now_playing
 import nuvio.composeapp.generated.resources.player_failover_placeholder_exhausted
 import nuvio.composeapp.generated.resources.player_failover_placeholder_warning
 import nuvio.composeapp.generated.resources.player_failover_trying_after_placeholder
+import nuvio.composeapp.generated.resources.player_failover_trying_after_stall
 import nuvio.composeapp.generated.resources.player_failover_trying_source
 import org.jetbrains.compose.resources.getString
 import org.jetbrains.compose.resources.stringResource
@@ -141,7 +142,11 @@ private fun PlayerScreenRuntime.showSourceNotice(text: String) {
 internal fun PlayerScreenRuntime.sourceFailoverLoadingMessage(): String? =
     sourceFailoverTryingName?.let { name ->
         stringResource(
-            if (sourceFailoverForPlaceholder) Res.string.player_failover_trying_after_placeholder else Res.string.player_failover_trying_source,
+            when {
+                sourceFailoverForPlaceholder -> Res.string.player_failover_trying_after_placeholder
+                sourceFailoverForStall -> Res.string.player_failover_trying_after_stall
+                else -> Res.string.player_failover_trying_source
+            },
             name,
         )
     }
@@ -184,8 +189,44 @@ internal fun PlayerScreenRuntime.checkForPlaceholderSource(snapshot: PlayerPlayb
     placeholderCheckedUrl = url
     placeholderCheckState = null
     val expectedMinutes = MetaDetailsRepository.runtimeMinutesFor(parentMetaId, videoId, activeSeasonNumber, activeEpisodeNumber)
-    if (!looksLikePlaceholder(durationMs, expectedMinutes)) return
-    log.i { "Source looks like a placeholder: $durationMs ms against $expectedMinutes minutes expected" }
+    // A link or name that made the source a suspect needs only a short stable length to be confirmed.
+    val suspect = placeholderSuspectUrl == url
+    val confirmed = isPlaceholderConfirmed(
+        suspect = suspect,
+        durationMs = durationMs,
+        expectedRuntimeMinutes = expectedMinutes,
+        resumeMs = activeInitialPositionMs,
+    )
+    if (!confirmed) return
+    log.i { "Source looks like a placeholder: $durationMs ms against $expectedMinutes minutes expected (suspect=$suspect)" }
+    handleDetectedPlaceholder(url)
+}
+
+/**
+ * Looks at the resolved link and the file names of a source that was just handed to the player. A known status
+ * clip in a static folder decides before playback starts; any other sign only makes the source a suspect. Desktop only,
+ * like the duration check. A source with a P2P torrent behind it is left alone.
+ */
+internal fun PlayerScreenRuntime.checkForPlaceholderBySourceSignals() {
+    if (!isDesktop || sourceFailoverCancelled || activeTorrentInfoHash != null) return
+    val url = activeSourceUrl
+    if (url.isBlank() || activeVideoId == null) return
+    val assessment = assessSourceLink(url, listOf(activeSourceFilename, activeStreamFilename)) ?: return
+    if (!assessment.decisive) {
+        // Only a suspect: the length the player reports has to confirm it.
+        log.i { "Source is suspect of being a placeholder: ${assessment.signal.name}" }
+        placeholderSuspectUrl = url
+        return
+    }
+    log.i { "Source is a provider placeholder by its link: ${assessment.signal.name}" }
+    handleDetectedPlaceholder(url)
+}
+
+/**
+ * A placeholder was recognised: treat it as a failed source and move on, which applies in every mode. When
+ * the setting is off (or the device is offline) the source is kept and the user is told once.
+ */
+private fun PlayerScreenRuntime.handleDetectedPlaceholder(url: String) {
     if (tryFallbackToNextSourceAfterError(message = null, failureOverride = SourceFailure.PlaceholderClip)) return
     // Not moved on: the setting is off (or the device is offline). Say so once, only when the user chose to stay.
     if (!playerSettingsUiState.streamAutoPlayFallbackActive && placeholderWarnedUrl != url) {
@@ -220,9 +261,11 @@ internal fun PlayerScreenRuntime.tryFallbackToNextSourceAfterError(
     val failure = failureOverride
         ?: if (initialLoadCompleted) SourceFailure.DiedDuringPlayback else SourceFailure.FailedToStart
     val forPlaceholder = failure == SourceFailure.PlaceholderClip
+    val forStall = failure == SourceFailure.StalledDuringPlayback
     val manualMode = settings.streamAutoPlayMode == StreamAutoPlayMode.MANUAL
     val chosenByApp = failedUrl == autoSelectedSourceUrl
     sourceFailoverForPlaceholder = forPlaceholder
+    sourceFailoverForStall = forStall
     // Everything except the list is checked first, so a failure that does not apply is left alone.
     val preflight = decideSourceFailover(
         failure = failure,
@@ -243,6 +286,7 @@ internal fun PlayerScreenRuntime.tryFallbackToNextSourceAfterError(
             return true
         }
         sourceFailoverForPlaceholder = false
+        sourceFailoverForStall = false
         return false
     }
 
@@ -255,7 +299,7 @@ internal fun PlayerScreenRuntime.tryFallbackToNextSourceAfterError(
     val resumeMs = when (failure) {
         // The placeholder's position means nothing for the real video.
         SourceFailure.PlaceholderClip -> 0L
-        SourceFailure.DiedDuringPlayback -> sourceFailoverResumePositionMs(
+        SourceFailure.DiedDuringPlayback, SourceFailure.StalledDuringPlayback -> sourceFailoverResumePositionMs(
             positionMs = playbackSnapshot.positionMs,
             durationMs = playbackSnapshot.durationMs,
         )
@@ -364,6 +408,7 @@ private suspend fun PlayerScreenRuntime.finishSourceFailover(message: String?, r
     removeFailedStreamFromCache()
     sourceFailoverTryingName = null
     sourceFailoverPlayingName = null
+    sourceFailoverForStall = false
     if (sourceFailoverForPlaceholder) {
         sourceFailoverForPlaceholder = false
         if (reason == SourceFailoverStop.Offline) {
