@@ -181,6 +181,13 @@ internal fun DownloadsScreenContent(
         null
     }
     val clock = RowClock(nowEpochMs = now, offline = network.isOfflineLike, extras = extras)
+    // What the list builder needs is read here, in composition, once. A list builder that reads state
+    // itself is run again whenever that state changes, also in the middle of a layout pass, which the
+    // lazy list does not survive (an item count that changes between two lookups of one pass).
+    val folderStateNow = folderState
+    val storageLimitNow = storageLimitGb
+    val selectingNow = selecting
+    val selectedNow = selectedIds
 
     // The last run of each season, movie set and movie downloaded in one go, kept until dismissed.
     val batchRunProfileId = ProfileRepository.activeProfileId
@@ -256,9 +263,9 @@ internal fun DownloadsScreenContent(
             )
         }
 
-        if (extras != null && selecting && selectedIds.isNotEmpty()) {
+        if (extras != null && selectingNow && selectedNow.isNotEmpty()) {
             item(key = "selection-bar") {
-                SelectionBar(count = selectedIds.size, onMove = { moveRequest = MoveRequest.MoveItems(selectedIds) })
+                SelectionBar(count = selectedNow.size, onMove = { moveRequest = MoveRequest.MoveItems(selectedNow) })
             }
         }
 
@@ -266,8 +273,8 @@ internal fun DownloadsScreenContent(
             if (extras != null) {
                 item(key = "storage-summary") {
                     DownloadStorageSummary(
-                        state = folderState,
-                        autoLimitGb = storageLimitGb,
+                        state = folderStateNow,
+                        autoLimitGb = storageLimitNow,
                         onManageLocations = openSettingsPage?.let { open -> { open(SettingsPage.Playback) } },
                     )
                 }
@@ -312,7 +319,7 @@ internal fun DownloadsScreenContent(
                 },
                 onDeleteDownload = { downloadPendingDeletionId = it },
                 episodeLinks = episodeLinks,
-                unreachable = folderState.unreachable,
+                unreachable = folderStateNow.unreachable,
             )
         } else {
             downloadsShowContent(
