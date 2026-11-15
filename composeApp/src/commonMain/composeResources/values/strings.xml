@@ -684,6 +684,25 @@
     <string name="downloads_result_not_checked">Not checked</string>
     <string name="downloads_result_suspect">Suspect: the file's title names another episode</string>
     <string name="downloads_result_picture_ok">Picture looked fine</string>
+    <string name="downloads_status_failed_reason">Failed: %1$s</string>
+    <string name="downloads_error_not_enough_space">Not enough space on this computer</string>
+    <string name="downloads_failed_reason_source_refused">The source no longer allows this download</string>
+    <string name="downloads_failed_reason_other">The download stopped</string>
+    <string name="downloads_failed_next_not_enough_space">Free up some space, then retry.</string>
+    <string name="downloads_failed_next_source_refused">Choose another source for this title.</string>
+    <string name="downloads_failed_next_bad_file">This source gave a bad file. Choose another source.</string>
+    <string name="downloads_failed_next_other">Retry, or choose another source if it keeps failing.</string>
+    <string name="downloads_choose_another_source">Choose another source</string>
+    <string name="downloads_choose_another_source_description">Choose another source for %1$s</string>
+    <string name="downloads_try_source_again">Try this source again</string>
+    <string name="downloads_try_source_again_description">Try this source again for %1$s</string>
+    <string name="downloads_retry_description">Retry %1$s</string>
+    <plurals name="downloads_failed_count">
+        <item quantity="one">%1$d download failed</item>
+        <item quantity="other">%1$d downloads failed</item>
+    </plurals>
+    <string name="downloads_retry_all_failed">Retry all failed</string>
+    <string name="downloads_clear_failed">Clear failed</string>
     <string name="episodes_cd_watched">Watched</string>
     <string name="episodes_unavailable">Unavailable</string>
     <string name="episodes_season">Season %1$d</string>
@@ -2054,8 +2073,8 @@
     <string name="downloads_error_file_missing">The downloaded file is missing</string>
     <string name="downloads_error_file_incomplete">The downloaded file is incomplete</string>
     <string name="downloads_error_file_not_video">The downloaded file is not a video</string>
-    <string name="downloads_error_file_checksum">The downloaded file does not match its checksum</string>
-    <string name="downloads_error_frames_undecodable">The downloaded video could not be decoded</string>
+    <string name="downloads_error_file_checksum">The downloaded file does not match what the source said it sent</string>
+    <string name="downloads_error_frames_undecodable">The downloaded video could not be opened</string>
     <string name="downloads_error_frames_broken_end">The downloaded video breaks off before its end</string>
     <string name="downloads_error_frames_broken_start">The downloaded video does not start properly</string>
     <string name="downloads_error_frames_blank">The downloaded video is blank</string>

@@ -1063,6 +1063,30 @@ internal fun MainAppContent(
             )
         }
 
+        // Opens the list of sources of the title of a failed download, where a download button sits
+        // beside every source. Picking one replaces the failed entry.
+        fun chooseAnotherSourceForDownload(item: DownloadItem) {
+            launchPlaybackWithDownloadPreference(
+                type = item.contentType,
+                videoId = item.videoId,
+                parentMetaId = item.parentMetaId,
+                parentMetaType = item.parentMetaType,
+                title = item.title,
+                logo = item.logo,
+                poster = item.poster,
+                background = item.background,
+                seasonNumber = item.seasonNumber,
+                episodeNumber = item.episodeNumber,
+                episodeTitle = item.episodeTitle,
+                episodeThumbnail = item.episodeThumbnail,
+                pauseDescription = null,
+                resumePositionMs = null,
+                resumeProgressFraction = null,
+                manualSelection = true,
+                startFromBeginning = true,
+            )
+        }
+
         fun openPartyMedia(media: PartyMedia) {
             if (navController.currentRoute is PlayerRoute) navController.popBackStack()
             val resumePositionMs = PartyRepository.playback.value
@@ -1709,6 +1733,7 @@ internal fun MainAppContent(
                         navController = navController,
                         useNativeNavigation = useNativeNavigation,
                         onOpenDownload = ::openDownloadedItem,
+                        onChooseAnotherSource = ::chooseAnotherSourceForDownload,
                     )
                 }
                 entry<DownloadShowRoute> { route ->
@@ -1716,6 +1741,7 @@ internal fun MainAppContent(
                         route = route,
                         navController = navController,
                         onOpenDownload = ::openDownloadedItem,
+                        onChooseAnotherSource = ::chooseAnotherSourceForDownload,
                     )
                 }
                 entry<AddonsSettingsRoute> { route ->

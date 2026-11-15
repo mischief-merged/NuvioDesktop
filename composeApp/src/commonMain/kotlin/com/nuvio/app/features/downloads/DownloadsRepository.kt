@@ -303,6 +303,7 @@ object DownloadsRepository {
             status = DownloadStatus.Downloading,
             errorMessage = null,
             autoDownloadStop = null,
+            failureKind = null,
             localFileUri = null,
             updatedAtEpochMs = DownloadsClock.nowEpochMs(),
         )
@@ -314,6 +315,35 @@ object DownloadsRepository {
 
     fun retryDownload(downloadId: String) {
         resumeDownload(downloadId)
+    }
+
+    /**
+     * Starts every failed download again, except the ones whose source is the problem: fetching
+     * those again would give the same bad file, so they wait for another source. Returns how many
+     * were started.
+     */
+    fun retryAllFailed(): Int = synchronized(stateLock) {
+        ensureLoaded()
+        val retryable = _uiState.value.items
+            .filter { it.status == DownloadStatus.Failed && !it.needsAnotherSource }
+            .map { it.id }
+        retryable.forEach(::resumeDownload)
+        retryable.size
+    }
+
+    /** Removes every failed download from the list. A failed download has no file; only a partial one is cleaned up. Returns how many. */
+    fun clearFailed(): Int = synchronized(stateLock) {
+        ensureLoaded()
+        val failed = _uiState.value.items.filter { it.status == DownloadStatus.Failed }
+        if (failed.isEmpty()) return 0
+        failed.forEach { item ->
+            activeTransfers.remove(item.id)?.cancel()
+            backend.removePartialFile(item.fileName)
+        }
+        val ids = failed.mapTo(mutableSetOf()) { it.id }
+        publish(_uiState.value.items.filterNot { it.id in ids })
+        persist()
+        failed.size
     }
 
     internal fun reattachBackgroundDownload(downloadId: String): Unit = synchronized(stateLock) {
@@ -419,7 +449,10 @@ object DownloadsRepository {
                 ifCurrent(item.id, transfer) {
                     activeTransfers.remove(item.id)
                     val current = _uiState.value.items.firstOrNull { it.id == item.id }
-                    if (current?.status == DownloadStatus.Downloading && attempt < MaxDownloadAttempts) {
+                    val kind = classifyDownloadFailure(message)
+                    // A bad file, a refusal or a full disk comes again on every attempt.
+                    val worthAnotherAttempt = kind == DownloadFailureKind.Other
+                    if (current?.status == DownloadStatus.Downloading && attempt < MaxDownloadAttempts && worthAnotherAttempt) {
                         startDownload(current, attempt + 1)
                     } else {
                         mutateItem(item.id) { failed ->
@@ -428,6 +461,7 @@ object DownloadsRepository {
                             } else {
                                 failed.copy(
                                     status = DownloadStatus.Failed,
+                                    failureKind = kind,
                                     errorMessage = message.ifBlank { runBlocking { getString(Res.string.download_failed) } },
                                     updatedAtEpochMs = DownloadsClock.nowEpochMs(),
                                 )
@@ -575,6 +609,11 @@ object DownloadsRepository {
             DownloadedFileProblem.NotVideo -> Res.string.downloads_error_file_not_video
             DownloadedFileProblem.ChecksumMismatch -> Res.string.downloads_error_file_checksum
         },
+        // A file that went missing or was cut short says nothing against its source.
+        when (problem) {
+            DownloadedFileProblem.Missing, DownloadedFileProblem.Incomplete -> DownloadFailureKind.Other
+            DownloadedFileProblem.NotVideo, DownloadedFileProblem.ChecksumMismatch -> DownloadFailureKind.BadFile
+        },
     )
 
     private fun DownloadItem.failedBecauseOf(problem: DownloadedFramesProblem): DownloadItem = failedWith(
@@ -585,12 +624,14 @@ object DownloadsRepository {
             DownloadedFramesProblem.Blank -> Res.string.downloads_error_frames_blank
             DownloadedFramesProblem.StillPicture -> Res.string.downloads_error_frames_still
         },
+        DownloadFailureKind.BadFile,
     )
 
-    private fun DownloadItem.failedWith(message: StringResource): DownloadItem = copy(
+    private fun DownloadItem.failedWith(message: StringResource, kind: DownloadFailureKind): DownloadItem = copy(
         status = DownloadStatus.Failed,
         localFileUri = null,
         framesCheck = DownloadFramesCheck.NotChecked,
+        failureKind = kind,
         errorMessage = runBlocking { getString(message) },
         updatedAtEpochMs = DownloadsClock.nowEpochMs(),
     )

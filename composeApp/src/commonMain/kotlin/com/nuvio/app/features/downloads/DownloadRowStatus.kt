@@ -127,3 +127,11 @@ internal fun downloadRowStatus(
         )
     }
 }
+
+/** The name of a download in a label that is read out of its row: "Pantheon S02E03", or the title of a movie. */
+internal fun DownloadItem.nameForLabels(): String {
+    val season = seasonNumber
+    val episode = episodeNumber
+    if (season == null || episode == null) return title
+    return "$title S${season.toString().padStart(2, '0')}E${episode.toString().padStart(2, '0')}"
+}

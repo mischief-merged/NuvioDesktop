@@ -17,11 +17,11 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -34,6 +34,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -47,6 +49,7 @@ import com.nuvio.app.core.ui.NuvioStatusModal
 import com.nuvio.app.core.ui.NuvioToastController
 import com.nuvio.app.isDesktop
 import nuvio.composeapp.generated.resources.*
+import org.jetbrains.compose.resources.pluralStringResource
 import org.jetbrains.compose.resources.stringResource
 
 @Composable
@@ -57,6 +60,11 @@ fun DownloadsScreen(
     onNavigateToShow: ((showId: String, title: String) -> Unit)? = null,
     onBackFromShow: (() -> Unit)? = null,
     showAutoDownloads: Boolean = isDesktop,
+    /**
+     * Opens the list of sources for the title of a download, so that another one can be picked.
+     * Null where the screen cannot reach it: the action is then not offered.
+     */
+    onChooseAnotherSource: ((DownloadItem) -> Unit)? = null,
 ) {
     val uiState by remember {
         DownloadsRepository.ensureLoaded()
@@ -132,6 +140,7 @@ fun DownloadsScreen(
             downloadsRootContent(
                 uiState = uiState,
                 clock = clock,
+                onChooseAnotherSource = onChooseAnotherSource,
                 onOpenDownload = onOpenDownload,
                 onOpenShow = { showId, title ->
                     onNavigateToShow?.invoke(showId, title) ?: run { selectedShowId = showId }
@@ -175,6 +184,7 @@ private data class RowClock(val nowEpochMs: Long, val offline: Boolean)
 private fun LazyListScope.downloadsRootContent(
     uiState: DownloadsUiState,
     clock: RowClock,
+    onChooseAnotherSource: ((DownloadItem) -> Unit)?,
     onOpenDownload: (DownloadItem) -> Unit,
     onOpenShow: (showId: String, title: String) -> Unit,
     onDeleteDownload: (String) -> Unit,
@@ -195,6 +205,15 @@ private fun LazyListScope.downloadsRootContent(
         item {
             SectionTitle(stringResource(Res.string.downloads_section_active))
         }
+        val failedCount = activeItems.count { it.status == DownloadStatus.Failed }
+        if (failedCount > 0) {
+            item(key = "failed-actions") {
+                FailedActions(
+                    failedCount = failedCount,
+                    retryableCount = activeItems.count { it.status == DownloadStatus.Failed && !it.needsAnotherSource },
+                )
+            }
+        }
         items(
             items = activeItems,
             key = { it.id },
@@ -202,6 +221,7 @@ private fun LazyListScope.downloadsRootContent(
             DownloadRow(
                 item = item,
                 clock = clock,
+                onChooseAnotherSource = onChooseAnotherSource,
                 onOpen = { onOpenDownload(item) },
                 onPause = { DownloadsRepository.pauseDownload(item.id) },
                 onResume = { DownloadsRepository.resumeDownload(item.id) },
@@ -222,6 +242,7 @@ private fun LazyListScope.downloadsRootContent(
             DownloadRow(
                 item = item,
                 clock = clock,
+                onChooseAnotherSource = onChooseAnotherSource,
                 onOpen = { onOpenDownload(item) },
                 onPause = { DownloadsRepository.pauseDownload(item.id) },
                 onResume = { DownloadsRepository.resumeDownload(item.id) },
@@ -357,6 +378,7 @@ private fun LazyListScope.downloadsShowContent(
             DownloadRow(
                 item = item,
                 clock = clock,
+                onChooseAnotherSource = null,
                 onOpen = { onOpenDownload(item) },
                 onPause = { DownloadsRepository.pauseDownload(item.id) },
                 onResume = { DownloadsRepository.resumeDownload(item.id) },
@@ -371,6 +393,7 @@ private fun LazyListScope.downloadsShowContent(
 private fun DownloadRow(
     item: DownloadItem,
     clock: RowClock,
+    onChooseAnotherSource: ((DownloadItem) -> Unit)?,
     onOpen: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
@@ -454,14 +477,7 @@ private fun DownloadRow(
                                 )
                             }
                         }
-                        DownloadStatus.Failed -> {
-                            IconButton(onClick = onRetry) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Refresh,
-                                    contentDescription = stringResource(Res.string.action_retry),
-                                )
-                            }
-                        }
+                        DownloadStatus.Failed -> Unit
                         DownloadStatus.Completed -> {
                             IconButton(onClick = onOpen) {
                                 Icon(
@@ -478,6 +494,14 @@ private fun DownloadRow(
                         )
                     }
                 }
+            }
+
+            if (item.status == DownloadStatus.Failed) {
+                FailureDetails(
+                    item = item,
+                    onRetry = onRetry,
+                    onChooseAnotherSource = onChooseAnotherSource,
+                )
             }
 
             if (item.status == DownloadStatus.Downloading) {
@@ -548,7 +572,7 @@ private fun statusText(item: DownloadItem, status: DownloadRowStatus): String {
     }
 
     val line = when (status.phase) {
-        DownloadPhase.Failed -> item.errorMessage ?: stringResource(status.phase.message)
+        DownloadPhase.Failed -> stringResource(Res.string.downloads_status_failed_reason, failureReasonText(item))
         else -> if (status.phase.showsSize) {
             stringResource(status.phase.message, size)
         } else {
@@ -559,6 +583,82 @@ private fun statusText(item: DownloadItem, status: DownloadRowStatus): String {
         stringResource(Res.string.downloads_status_auto) + " • " + line
     } else {
         line
+    }
+}
+
+@Composable
+private fun failureReasonText(item: DownloadItem): String =
+    when (val reason = failureReasonMessage(item)) {
+        is FailureText.Resource -> stringResource(reason.resource)
+        is FailureText.Literal -> reason.text
+    }
+
+/** The next step of a failed row and the buttons that take it. */
+@Composable
+private fun FailureDetails(
+    item: DownloadItem,
+    onRetry: () -> Unit,
+    onChooseAnotherSource: ((DownloadItem) -> Unit)?,
+) {
+    val name = item.nameForLabels()
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            text = stringResource(failureNextStepMessage(item)),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (onChooseAnotherSource != null) {
+                val chooseText = stringResource(Res.string.downloads_choose_another_source)
+                val chooseDescription = stringResource(Res.string.downloads_choose_another_source_description, name)
+                TextButton(
+                    modifier = Modifier.semantics { contentDescription = chooseDescription },
+                    onClick = { onChooseAnotherSource(item) },
+                ) {
+                    Text(text = chooseText, style = MaterialTheme.typography.labelLarge)
+                }
+            }
+            // A bad source is not fetched again without saying so: the button names what it does.
+            val retryText = stringResource(
+                if (item.needsAnotherSource) Res.string.downloads_try_source_again else Res.string.action_retry,
+            )
+            val retryDescription = if (item.needsAnotherSource) {
+                stringResource(Res.string.downloads_try_source_again_description, name)
+            } else {
+                stringResource(Res.string.downloads_retry_description, name)
+            }
+            TextButton(
+                modifier = Modifier.semantics { contentDescription = retryDescription },
+                onClick = onRetry,
+            ) {
+                Text(text = retryText, style = MaterialTheme.typography.labelLarge)
+            }
+        }
+    }
+}
+
+/** Retry all and clear, for a list with failed downloads. */
+@Composable
+private fun FailedActions(failedCount: Int, retryableCount: Int) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = pluralStringResource(Res.plurals.downloads_failed_count, failedCount, failedCount),
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (retryableCount > 0) {
+            TextButton(onClick = { DownloadsRepository.retryAllFailed() }) {
+                Text(text = stringResource(Res.string.downloads_retry_all_failed), style = MaterialTheme.typography.labelLarge)
+            }
+        }
+        TextButton(onClick = { DownloadsRepository.clearFailed() }) {
+            Text(text = stringResource(Res.string.downloads_clear_failed), style = MaterialTheme.typography.labelLarge)
+        }
     }
 }
 
