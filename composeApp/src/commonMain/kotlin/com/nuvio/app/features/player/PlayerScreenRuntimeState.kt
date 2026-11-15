@@ -293,6 +293,11 @@ internal class PlayerScreenRuntime(
     var sourceFailoverForPlaceholder by mutableStateOf(false)
     /** The failure being moved on from was a source that stopped responding mid-play, which changes what the loading screen says. */
     var sourceFailoverForStall by mutableStateOf(false)
+    /** How many seeks the runtime asked the player for, and the target of the latest (null when relative). The stall watch reads them. */
+    var seekRequestCount = 0L
+    var lastSeekTargetMs: Long? = null
+    /** The source whose link or name makes it suspect of being a placeholder, which a second signal must confirm. */
+    var placeholderSuspectUrl: String? = null
     /** The source whose first seconds were checked for being a placeholder, so each is checked once. */
     var placeholderCheckedUrl: String? = null
     var placeholderCheckStateUrl: String? = null

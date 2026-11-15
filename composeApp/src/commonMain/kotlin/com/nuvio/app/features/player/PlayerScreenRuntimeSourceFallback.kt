@@ -189,26 +189,36 @@ internal fun PlayerScreenRuntime.checkForPlaceholderSource(snapshot: PlayerPlayb
     placeholderCheckedUrl = url
     placeholderCheckState = null
     val expectedMinutes = MetaDetailsRepository.runtimeMinutesFor(parentMetaId, videoId, activeSeasonNumber, activeEpisodeNumber)
-    // Either rule is enough: a file far shorter than the running time, or the two minute provider clip
-    // that cannot satisfy the resume point the playback asked for.
-    val tooShort = looksLikePlaceholder(durationMs, expectedMinutes)
-    val waitClip = isWaitClipForResume(durationMs, activeInitialPositionMs)
-    if (!tooShort && !waitClip) return
-    log.i { "Source looks like a placeholder: $durationMs ms against $expectedMinutes minutes expected (tooShort=$tooShort, waitClip=$waitClip)" }
+    // A link or name that made the source a suspect needs only a short stable length to be confirmed.
+    val suspect = placeholderSuspectUrl == url
+    val confirmed = isPlaceholderConfirmed(
+        suspect = suspect,
+        durationMs = durationMs,
+        expectedRuntimeMinutes = expectedMinutes,
+        resumeMs = activeInitialPositionMs,
+    )
+    if (!confirmed) return
+    log.i { "Source looks like a placeholder: $durationMs ms against $expectedMinutes minutes expected (suspect=$suspect)" }
     handleDetectedPlaceholder(url)
 }
 
 /**
- * Looks at the resolved link and the file names of a source that was just handed to the player for the
- * signs of a provider's status clip. It needs no frame, so it decides before playback starts. Desktop only,
+ * Looks at the resolved link and the file names of a source that was just handed to the player. A known status
+ * clip in a static folder decides before playback starts; any other sign only makes the source a suspect. Desktop only,
  * like the duration check. A source with a P2P torrent behind it is left alone.
  */
 internal fun PlayerScreenRuntime.checkForPlaceholderBySourceSignals() {
     if (!isDesktop || sourceFailoverCancelled || activeTorrentInfoHash != null) return
     val url = activeSourceUrl
     if (url.isBlank() || activeVideoId == null) return
-    val signal = placeholderSignalFor(url, listOf(activeSourceFilename, activeStreamFilename)) ?: return
-    log.i { "Source is a provider placeholder by its link or file name: ${signal.name}" }
+    val assessment = assessSourceLink(url, listOf(activeSourceFilename, activeStreamFilename)) ?: return
+    if (!assessment.decisive) {
+        // Only a suspect: the length the player reports has to confirm it.
+        log.i { "Source is suspect of being a placeholder: ${assessment.signal.name}" }
+        placeholderSuspectUrl = url
+        return
+    }
+    log.i { "Source is a provider placeholder by its link: ${assessment.signal.name}" }
     handleDetectedPlaceholder(url)
 }
 

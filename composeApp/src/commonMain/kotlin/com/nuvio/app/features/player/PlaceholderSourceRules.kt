@@ -5,6 +5,10 @@ package com.nuvio.app.features.player
  * without a frame. They add to the duration rule in SourceFailoverPlanner.kt. Each one must be something a
  * real release is very unlikely to match, because a match ends a source the user may want: so a word counts
  * only when it is the whole file name or a whole folder, never part of a title, and never in the host.
+ *
+ * Even so, a link or a name alone does not end a source, with one exception: a known status clip file in a
+ * `static` folder. Everything else only makes the source a suspect, and a second, independent signal has to
+ * confirm it (see [isPlaceholderConfirmed]). A healthy `https://cdn.example/status/feature.mkv` must play.
  */
 
 /** Which rule marked a source as a placeholder. For the log only. */
@@ -70,27 +74,51 @@ private fun bareName(fileName: String?): String =
 /** Whether [fileName] is exactly one of the provider status clips. A title that contains the word does not match. */
 internal fun isStatusClipFileName(fileName: String?): Boolean = bareName(fileName) in STATUS_CLIP_NAMES
 
+/** What the link and file names say about a source. [decisive] is true only when that alone settles it. */
+internal data class LinkAssessment(val signal: PlaceholderSignal, val decisive: Boolean)
+
 /**
- * The rule that marks a source as a placeholder by its resolved [url] and the file names known for it
- * (any may be null), or null when none applies. It needs no frame and no network.
+ * What the resolved [url] and the file names known for it (any may be null) say about a source, or null when
+ * they say nothing. Only a known status clip in a `static` folder is decisive. Every other signal marks a
+ * suspect that [isPlaceholderConfirmed] must confirm. It needs no frame and no network.
  */
-internal fun placeholderSignalFor(url: String, fileNames: List<String?>): PlaceholderSignal? {
+internal fun assessSourceLink(url: String, fileNames: List<String?>): LinkAssessment? {
     val link = splitLink(url)
     if (link != null) {
+        val inStaticFolder = link.folders.lastOrNull() == "static"
+        if (inStaticFolder && (link.file in STATUS_CLIP_NAMES || link.file in STATUS_CODE_CLIP_NAMES)) {
+            return LinkAssessment(PlaceholderSignal.StaticStatusClip, decisive = true)
+        }
         if (link.query.any { (key, value) -> (key == "title" || key == "body" || key == "message") && isRateLimitText(value) }) {
-            return PlaceholderSignal.RateLimitNotice
+            return LinkAssessment(PlaceholderSignal.RateLimitNotice, decisive = false)
         }
         val keys = link.query.map { it.first }
         val describesItself = ("title" in keys && ("body" in keys || "message" in keys)) || "error" in keys ||
             link.folders.any { it == "error" || it == "status" } || DIAGNOSTIC_FILE.matches(link.file)
-        if (describesItself) return PlaceholderSignal.SelfDescribingLink
-        val inStaticFolder = link.folders.lastOrNull() == "static"
-        if (inStaticFolder && (link.file in STATUS_CLIP_NAMES || link.file in STATUS_CODE_CLIP_NAMES)) {
-            return PlaceholderSignal.StaticStatusClip
-        }
+        if (describesItself) return LinkAssessment(PlaceholderSignal.SelfDescribingLink, decisive = false)
     }
-    return if (fileNames.any(::isStatusClipFileName)) PlaceholderSignal.StatusClipFileName else null
+    return if (fileNames.any(::isStatusClipFileName)) LinkAssessment(PlaceholderSignal.StatusClipFileName, decisive = false) else null
 }
+
+/**
+ * Whether a source is a placeholder, judged once the player has told its length. Any one of the independent
+ * rules is enough: a short stable length against the running time, the two minute clip against the resume
+ * point, or a served file far below its declared size. A [suspect] source (see [assessSourceLink]) also
+ * needs only a short stable length (under [PLACEHOLDER_MAX_DURATION_MS]), even when the running time is
+ * unknown. Without a suspicion, a link or name never counts.
+ */
+internal fun isPlaceholderConfirmed(
+    suspect: Boolean,
+    durationMs: Long,
+    expectedRuntimeMinutes: Int?,
+    resumeMs: Long,
+    servedBytes: Long? = null,
+    declaredBytes: Long? = null,
+): Boolean =
+    looksLikePlaceholder(durationMs, expectedRuntimeMinutes) ||
+        isWaitClipForResume(durationMs, resumeMs) ||
+        servedFileTooSmallForDeclaredSize(servedBytes, declaredBytes) ||
+        (suspect && durationMs in 1 until PLACEHOLDER_MAX_DURATION_MS)
 
 /** A file this small can be a placeholder... */
 internal const val PLACEHOLDER_SIZE_CEILING_BYTES = 64L * 1024L * 1024L

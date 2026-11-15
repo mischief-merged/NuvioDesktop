@@ -8,7 +8,9 @@ import kotlin.test.assertTrue
 
 class PlaceholderSourceRulesTest {
 
-    private fun signal(url: String, vararg names: String?) = placeholderSignalFor(url, names.toList())
+    private fun signal(url: String, vararg names: String?) = assessSourceLink(url, names.toList())?.signal
+
+    private fun decisive(url: String, vararg names: String?) = assessSourceLink(url, names.toList())?.decisive
 
     @Test
     fun aLinkWithATitleAndABodyDescribesItself() {
@@ -129,5 +131,65 @@ class PlaceholderSourceRulesTest {
         assertTrue(looksLikePlaceholder(120_000L, 24))
         assertFalse(looksLikePlaceholder(8 * 60_000L, 150))
         assertFalse(looksLikePlaceholder(120_000L, null))
+    }
+
+    // A link alone never decides, except a known clip in a static folder
+
+    @Test
+    fun onlyAKnownClipInAStaticFolderDecidesByItself() {
+        assertEquals(true, decisive("https://p.example/static/downloading.mp4"))
+        assertEquals(true, decisive("https://p.example/v0/store/_/static/429.mp4"))
+        assertEquals(false, decisive("https://a.example/status.mp4"))
+        assertEquals(false, decisive("https://a.example/error/gone.webm"))
+        assertEquals(false, decisive("https://a.example/v.mp4?error=1"))
+        assertEquals(false, decisive("https://a.example/seg.ts?title=Nope&body=Later"))
+        assertEquals(false, decisive("https://a.example/x.mp4?title=Too+Many+Requests"))
+        assertEquals(false, decisive("https://a.example/dl/abc", "downloading.mp4"))
+    }
+
+    @Test
+    fun realLookingMediaUnderStatusAndErrorFoldersIsOnlyASuspectAtMost() {
+        assertEquals(false, decisive("https://cdn.example/status/feature.mkv"))
+        assertEquals(false, decisive("https://cdn.example/error/Some.Movie.2020.1080p.mkv"))
+        assertEquals(false, decisive("https://cdn.example/files/feature.mkv?error=0"))
+        assertEquals(false, decisive("https://cdn.example/files/feature.mkv?title=Some+Movie&body=full"))
+    }
+
+    private fun confirmed(
+        suspect: Boolean,
+        durationMs: Long,
+        runtime: Int? = null,
+        resumeMs: Long = 0L,
+        served: Long? = null,
+        declared: Long? = null,
+    ) = isPlaceholderConfirmed(suspect, durationMs, runtime, resumeMs, served, declared)
+
+    @Test
+    fun aSuspectNeedsASecondSignalToBeConfirmed() {
+        // A healthy feature under /status/: long stable length, nothing else says placeholder.
+        assertFalse(confirmed(suspect = true, durationMs = 2 * 60 * 60_000L, runtime = 120))
+        assertFalse(confirmed(suspect = true, durationMs = 2 * 60 * 60_000L))
+        assertFalse(confirmed(suspect = true, durationMs = 0L))
+        // A short stable length confirms a suspect even when the running time is unknown.
+        assertTrue(confirmed(suspect = true, durationMs = 120_000L))
+        assertTrue(confirmed(suspect = true, durationMs = 4 * 60_000L, runtime = null))
+        // The wait clip and the size rule confirm on their own terms.
+        assertTrue(confirmed(suspect = true, durationMs = 120_000L, resumeMs = 600_000L))
+        assertTrue(confirmed(suspect = true, durationMs = 2 * 60 * 60_000L, served = 3 * mib, declared = 20 * gib))
+    }
+
+    @Test
+    fun withoutASuspicionAShortStableLengthWithAnUnknownRuntimeIsLeftAlone() {
+        assertFalse(confirmed(suspect = false, durationMs = 120_000L))
+        assertFalse(confirmed(suspect = false, durationMs = 4 * 60_000L))
+        // The existing rules still decide alone.
+        assertTrue(confirmed(suspect = false, durationMs = 120_000L, runtime = 100))
+        assertTrue(confirmed(suspect = false, durationMs = 120_000L, resumeMs = 600_000L))
+    }
+
+    @Test
+    fun aSuspectWithALengthAtOrAboveTheCeilingIsNotConfirmedByLengthAlone() {
+        assertFalse(confirmed(suspect = true, durationMs = PLACEHOLDER_MAX_DURATION_MS))
+        assertTrue(confirmed(suspect = true, durationMs = PLACEHOLDER_MAX_DURATION_MS - 1))
     }
 }
