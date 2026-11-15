@@ -12,6 +12,8 @@ import com.nuvio.app.features.tracking.TrackingScrobbleAction
 import com.nuvio.app.features.tracking.TrackingScrobbleEvent
 import com.nuvio.app.features.tracking.TrackingScrobbler
 import com.nuvio.app.features.tracking.TrackingSeekScrobblePolicy
+import com.nuvio.app.features.tracking.outbox.OutboxMedia
+import com.nuvio.app.features.tracking.outbox.TrackerOutboxRuntime
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.serialization.SerialName
@@ -226,9 +228,18 @@ internal object TraktScrobbleRepository : TrackingScrobbler {
         progressPercent: Float,
     ) {
         if (ProfileRepository.activeProfileId != profileId) return
-        val headers = TraktAuthRepository.authorizedHeaders() ?: return
-        if (ProfileRepository.activeProfileId != profileId) return
         val clampedProgress = progressPercent.coerceIn(0f, 100f)
+        val watchedAtEpochMs = TraktPlatformClock.nowEpochMs()
+        val headers = TraktAuthRepository.authorizedHeaders() ?: run {
+            if (TraktAuthRepository.isAuthenticated.value) {
+                queueCompletionForLater(
+                    profileId, action, item, clampedProgress, watchedAtEpochMs,
+                    TraktUndelivered(maybeDelivered = false),
+                )
+            }
+            return
+        }
+        if (ProfileRepository.activeProfileId != profileId) return
         if (shouldSkip(profileId, action, item.itemKey, clampedProgress)) return
 
         val url = "$BASE_URL/scrobble/$action"
@@ -277,6 +288,9 @@ internal object TraktScrobbleRepository : TrackingScrobbler {
                     delay(retryDelayMs * attempt)
                     continue
                 }
+                traktUndeliveredOrNull(response = null)?.let { undelivered ->
+                    queueCompletionForLater(profileId, action, item, clampedProgress, watchedAtEpochMs, undelivered)
+                }
                 return
             }
 
@@ -316,6 +330,9 @@ internal object TraktScrobbleRepository : TrackingScrobbler {
             log.w {
                 "Failed Trakt scrobble $action: HTTP ${response.status} ${response.statusText.ifBlank { "<no-status-text>" }}"
             }
+            traktUndeliveredOrNull(response)?.let { undelivered ->
+                queueCompletionForLater(profileId, action, item, clampedProgress, watchedAtEpochMs, undelivered)
+            }
             return
         }
 
@@ -336,6 +353,25 @@ internal object TraktScrobbleRepository : TrackingScrobbler {
                     log.w { "Failed to refresh Trakt progress after stop: ${error.message}" }
                 }
         }
+    }
+
+    /**
+     * Keeps a finished watch that did not reach Trakt, to be delivered later with the time it happened.
+     * Only a stop that Trakt would have recorded as a watch counts: a start, a pause or an earlier
+     * stop describes a live session and means nothing later. Returns true when the watch is queued.
+     */
+    internal fun queueCompletionForLater(
+        profileId: Int,
+        action: String,
+        item: TraktScrobbleItem,
+        progressPercent: Float,
+        watchedAtEpochMs: Long,
+        undelivered: TraktUndelivered,
+        enqueue: (Int, OutboxMedia, Long, TraktUndelivered) -> Boolean = TrackerOutboxRuntime::enqueueTraktWatch,
+    ): Boolean {
+        if (action != "stop" || progressPercent < TRAKT_SCROBBLE_WATCHED_PERCENT) return false
+        val media = item.toOutboxMedia() ?: return false
+        return enqueue(profileId, media, watchedAtEpochMs, undelivered)
     }
 
     private fun buildRequestBody(
@@ -416,6 +452,20 @@ internal object TraktScrobbleRepository : TrackingScrobbler {
             tmdb = tmdb,
         )
     }
+}
+
+/** Trakt records a scrobble stop as a watch from this progress on, and as a pause below it. */
+internal const val TRAKT_SCROBBLE_WATCHED_PERCENT = 80f
+
+private fun TraktScrobbleItem.toOutboxMedia(): OutboxMedia? = when (this) {
+    is TraktScrobbleItem.Movie -> OutboxMedia.movie(imdb = ids.imdb, tmdb = ids.tmdb, trakt = ids.trakt)
+    is TraktScrobbleItem.Episode -> OutboxMedia.episode(
+        imdb = showIds.imdb,
+        tmdb = showIds.tmdb,
+        trakt = showIds.trakt,
+        season = season,
+        number = number,
+    )
 }
 
 private fun Long.toTraktIntOrNull(): Int? = takeIf { value -> value in 1L..Int.MAX_VALUE.toLong() }?.toInt()

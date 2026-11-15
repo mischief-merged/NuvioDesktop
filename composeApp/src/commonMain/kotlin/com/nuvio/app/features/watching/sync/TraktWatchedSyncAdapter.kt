@@ -6,13 +6,17 @@ import com.nuvio.app.features.addons.httpRequestRaw
 import com.nuvio.app.features.tmdb.TmdbService
 import com.nuvio.app.features.tracking.TrackingProviderId
 import com.nuvio.app.features.tracking.TrackingWatchedProvider
+import com.nuvio.app.features.tracking.outbox.OutboxMedia
+import com.nuvio.app.features.tracking.outbox.TrackerOutboxRuntime
 import com.nuvio.app.features.trakt.TraktAuthRepository
 import com.nuvio.app.features.trakt.TraktEpisodeMappingService
 import com.nuvio.app.features.trakt.TraktPlatformClock
+import com.nuvio.app.features.trakt.TraktUndelivered
 import com.nuvio.app.features.trakt.TraktWatchedHttpEngine
 import com.nuvio.app.features.trakt.TraktWatchedPageClient
 import com.nuvio.app.features.trakt.TraktWatchedShowSnapshotRepository
 import com.nuvio.app.features.trakt.TraktWatchedSnapshotIds
+import com.nuvio.app.features.trakt.traktUndeliveredOrNull
 import com.nuvio.app.features.watched.WatchedItem
 import com.nuvio.app.features.watched.normalizeWatchedMarkedAtEpochMs
 import kotlinx.atomicfu.locks.SynchronizedObject
@@ -29,6 +33,7 @@ import kotlinx.serialization.json.Json
 private const val BASE_URL = "https://api.trakt.tv"
 private const val WATCHED_PAGE_LIMIT = 250
 private const val WATCHED_MAX_PAGES = 1_000
+private const val UNKNOWN_TIMESTAMP = "unknown"
 
 private val platformTraktWatchedHttpEngine = TraktWatchedHttpEngine { url, headers, maxResponseBodyBytes ->
     httpRequestRaw(
@@ -161,7 +166,12 @@ object TraktWatchedSyncAdapter : TrackingWatchedProvider {
         items: Collection<WatchedItem>,
     ) {
         if (items.isEmpty()) return
-        val headers = TraktAuthRepository.authorizedHeaders() ?: return
+        val headers = TraktAuthRepository.authorizedHeaders() ?: run {
+            if (TraktAuthRepository.isAuthenticated.value) {
+                queueHistoryAddsForLater(profileId, items, TraktUndelivered(maybeDelivered = false))
+            }
+            return
+        }
 
         val movies = mutableListOf<TraktHistoryMovieRequestDto>()
         val shows = mutableListOf<TraktHistoryShowRequestDto>()
@@ -247,10 +257,13 @@ object TraktWatchedSyncAdapter : TrackingWatchedProvider {
             log.w { "Failed to push watched items to Trakt: ${e.message}" }
         }.getOrNull()
 
+        val queuedForLater = traktUndeliveredOrNull(response)
+            ?.let { undelivered -> queueHistoryAddsForLater(profileId, items, undelivered) } == true
+
         val responseBody = response?.body?.takeIf { it.isNotBlank() }?.let { payload ->
             runCatching { json.decodeFromString<TraktHistoryAddResponseDto>(payload) }.getOrNull()
         }
-        val shouldRetryRemap = shows.isNotEmpty() && (
+        val shouldRetryRemap = !queuedForLater && shows.isNotEmpty() && (
             response == null ||
                 response.status !in 200..299 ||
                 hasHistoryAddNotFound(responseBody) ||
@@ -267,6 +280,75 @@ object TraktWatchedSyncAdapter : TrackingWatchedProvider {
         }
         if (shows.isNotEmpty()) {
             TraktWatchedShowSnapshotRepository.clear()
+        }
+    }
+
+    /**
+     * Keeps marks that did not reach Trakt, to be delivered later with the time they were made.
+     * Returns true when the queue took any of them, so that nothing else sends this push again.
+     */
+    internal suspend fun queueHistoryAddsForLater(
+        profileId: Int,
+        items: Collection<WatchedItem>,
+        undelivered: TraktUndelivered,
+        isActive: Boolean = TrackerOutboxRuntime.isActive,
+        enqueue: (Int, OutboxMedia, Long, TraktUndelivered) -> Boolean = TrackerOutboxRuntime::enqueueTraktWatch,
+    ): Boolean {
+        if (!isActive) return false
+        val now = TraktPlatformClock.nowEpochMs()
+        var queued = false
+        for (item in items) {
+            val media = item.toOutboxMedia() ?: continue
+            val markedAtEpochMs = normalizeWatchedMarkedAtEpochMs(item.markedAtEpochMs)
+            val watchedAtEpochMs = markedAtEpochMs.takeIf { epochMsToIso(it) != UNKNOWN_TIMESTAMP } ?: now
+            if (enqueue(profileId, media, watchedAtEpochMs, undelivered)) queued = true
+        }
+        return queued
+    }
+
+    /**
+     * An un-watch must also drop a watch that is still queued for the same title, in the addon's
+     * numbering and in Trakt's, or it would be recorded after all.
+     */
+    internal suspend fun cancelQueuedAdds(
+        profileId: Int,
+        items: Collection<WatchedItem>,
+        hasQueued: (Int) -> Boolean = TrackerOutboxRuntime::hasQueuedTraktWatches,
+        mapEpisode: suspend (WatchedItem) -> Pair<Int, Int>? = ::mappedEpisodeOrNull,
+        cancel: suspend (Int, Collection<OutboxMedia>) -> Unit = TrackerOutboxRuntime::cancelTraktWatches,
+    ) {
+        if (!hasQueued(profileId)) return
+        val media = items.flatMap { item ->
+            val original = item.toOutboxMedia() ?: return@flatMap emptyList()
+            val mapped = if (original.season != null) {
+                mapEpisode(item)?.let { (season, number) -> original.copy(season = season, number = number) }
+            } else {
+                null
+            }
+            listOfNotNull(original, mapped)
+        }
+        if (media.isNotEmpty()) cancel(profileId, media)
+    }
+
+    private suspend fun mappedEpisodeOrNull(item: WatchedItem): Pair<Int, Int>? =
+        TraktEpisodeMappingService.resolveEpisodeMapping(
+            contentId = item.id,
+            contentType = item.type,
+            videoId = null,
+            season = item.season,
+            episode = item.episode,
+        )?.let { it.season to it.episode }
+
+    private suspend fun WatchedItem.toOutboxMedia(): OutboxMedia? {
+        if (!shouldSyncToTraktHistory()) return null
+        val ids = resolveHistoryIds(this) ?: return null
+        val normalizedType = type.trim().lowercase()
+        return if (normalizedType == "movie" || normalizedType == "film") {
+            OutboxMedia.movie(imdb = ids.imdb, tmdb = ids.tmdb, trakt = ids.trakt)
+        } else if (season != null && episode != null) {
+            OutboxMedia.episode(imdb = ids.imdb, tmdb = ids.tmdb, trakt = ids.trakt, season = season, number = episode)
+        } else {
+            null
         }
     }
 
@@ -360,6 +442,7 @@ object TraktWatchedSyncAdapter : TrackingWatchedProvider {
         items: Collection<WatchedItem>,
     ) {
         if (items.isEmpty()) return
+        cancelQueuedAdds(profileId, items)
         val headers = TraktAuthRepository.authorizedHeaders() ?: return
 
         val movies = mutableListOf<TraktHistoryMovieRequestDto>()
@@ -606,10 +689,10 @@ object TraktWatchedSyncAdapter : TrackingWatchedProvider {
             ?: 0L
     }
 
-    private fun epochMsToIso(epochMs: Long): String {
+    internal fun epochMsToIso(epochMs: Long): String {
         val normalizedEpochMs = normalizeWatchedMarkedAtEpochMs(epochMs)
-        if (normalizedEpochMs <= 0L) return "unknown"
-        if (normalizedEpochMs < 10_000_000_000L) return "unknown"
+        if (normalizedEpochMs <= 0L) return UNKNOWN_TIMESTAMP
+        if (normalizedEpochMs < 10_000_000_000L) return UNKNOWN_TIMESTAMP
         // Real epoch ms → simple ISO via arithmetic
         val totalSeconds = normalizedEpochMs / 1000
         val s = (totalSeconds % 60).toInt()
@@ -663,14 +746,14 @@ private data class TraktWatchedMovieDto(
 )
 
 @Serializable
-private data class TraktSyncMediaDto(
+internal data class TraktSyncMediaDto(
     @SerialName("title") val title: String? = null,
     @SerialName("year") val year: Int? = null,
     @SerialName("ids") val ids: TraktSyncIdsDto? = null,
 )
 
 @Serializable
-private data class TraktSyncIdsDto(
+internal data class TraktSyncIdsDto(
     @SerialName("trakt") val trakt: Int? = null,
     @SerialName("slug") val slug: String? = null,
     @SerialName("imdb") val imdb: String? = null,
@@ -681,13 +764,13 @@ private data class TraktSyncIdsDto(
 // ── DTOs for push (POST /sync/history) ──────────────────────────────────
 
 @Serializable
-private data class TraktHistoryAddRequestDto(
+internal data class TraktHistoryAddRequestDto(
     @SerialName("movies") val movies: List<TraktHistoryMovieRequestDto>? = null,
     @SerialName("shows") val shows: List<TraktHistoryShowRequestDto>? = null,
 )
 
 @Serializable
-private data class TraktHistoryAddResponseDto(
+internal data class TraktHistoryAddResponseDto(
     @SerialName("added") val added: TraktHistoryMutationCountDto? = null,
     @SerialName("not_found") val notFound: TraktHistoryNotFoundDto? = null,
 )
@@ -699,7 +782,7 @@ private data class TraktHistoryRemoveResponseDto(
 )
 
 @Serializable
-private data class TraktHistoryMutationCountDto(
+internal data class TraktHistoryMutationCountDto(
     @SerialName("movies") val movies: Int? = null,
     @SerialName("episodes") val episodes: Int? = null,
     @SerialName("shows") val shows: Int? = null,
@@ -707,7 +790,7 @@ private data class TraktHistoryMutationCountDto(
 )
 
 @Serializable
-private data class TraktHistoryNotFoundDto(
+internal data class TraktHistoryNotFoundDto(
     @SerialName("movies") val movies: List<TraktSyncMediaDto>? = null,
     @SerialName("shows") val shows: List<TraktSyncMediaDto>? = null,
     @SerialName("seasons") val seasons: List<TraktHistorySeasonRequestDto>? = null,
@@ -715,7 +798,7 @@ private data class TraktHistoryNotFoundDto(
 )
 
 @Serializable
-private data class TraktHistoryMovieRequestDto(
+internal data class TraktHistoryMovieRequestDto(
     @SerialName("title") val title: String? = null,
     @SerialName("year") val year: Int? = null,
     @SerialName("ids") val ids: TraktSyncIdsDto,
@@ -723,7 +806,7 @@ private data class TraktHistoryMovieRequestDto(
 )
 
 @Serializable
-private data class TraktHistoryShowRequestDto(
+internal data class TraktHistoryShowRequestDto(
     @SerialName("title") val title: String? = null,
     @SerialName("year") val year: Int? = null,
     @SerialName("ids") val ids: TraktSyncIdsDto,
@@ -731,19 +814,19 @@ private data class TraktHistoryShowRequestDto(
 )
 
 @Serializable
-private data class TraktHistorySeasonRequestDto(
+internal data class TraktHistorySeasonRequestDto(
     @SerialName("number") val number: Int,
     @SerialName("episodes") val episodes: List<TraktHistoryEpisodeRequestDto>? = null,
 )
 
 @Serializable
-private data class TraktHistoryEpisodeRequestDto(
+internal data class TraktHistoryEpisodeRequestDto(
     @SerialName("number") val number: Int,
     @SerialName("watched_at") val watchedAt: String? = null,
 )
 
 @Serializable
-private data class TraktSyncEpisodeDto(
+internal data class TraktSyncEpisodeDto(
     @SerialName("season") val season: Int? = null,
     @SerialName("number") val number: Int? = null,
     @SerialName("ids") val ids: TraktSyncIdsDto? = null,

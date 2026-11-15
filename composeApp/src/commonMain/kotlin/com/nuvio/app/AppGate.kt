@@ -57,6 +57,7 @@ import com.nuvio.app.features.profiles.ProfileEditScreen
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.profiles.ProfileSelectionScreen
 import com.nuvio.app.features.profiles.profileAvatarImageUrl
+import com.nuvio.app.features.tracking.outbox.TrackerOutboxRuntime
 import com.nuvio.app.features.trakt.TraktAuthRepository
 import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.features.watched.WatchedRepository
@@ -82,6 +83,7 @@ internal suspend fun warmProfileBoundRepositories() {
         P2pSettingsRepository.ensureLoaded()
         PlayerSettingsRepository.ensureLoaded()
         TraktAuthRepository.ensureLoaded()
+        TrackerOutboxRuntime.start()
         TraktSettingsRepository.ensureLoaded()
         WatchedRepository.ensureLoaded()
         WatchProgressRepository.ensureLoaded()
