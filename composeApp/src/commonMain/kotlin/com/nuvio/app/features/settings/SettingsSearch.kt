@@ -36,6 +36,7 @@ import com.nuvio.app.core.ui.NuvioTokens
 import com.nuvio.app.core.ui.nuvio
 import com.nuvio.app.features.p2p.P2pSettingsRepository
 import com.nuvio.app.features.player.PlayerSettingsRepository
+import com.nuvio.app.core.build.AppFeaturePolicy
 import com.nuvio.app.isDesktop
 import com.nuvio.app.isIos
 import com.nuvio.app.supportsPosterNavigationMotion
@@ -670,6 +671,21 @@ internal fun settingsSearchEntries(
             add(PlaybackSearchRow("source-scope", stringResource(Res.string.settings_playback_source_scope)))
             add(PlaybackSearchRow("allowed-addons", stringResource(Res.string.settings_playback_allowed_addons)))
             if (pluginsEnabled) add(PlaybackSearchRow("allowed-plugins", stringResource(Res.string.settings_playback_allowed_plugins)))
+        },
+    )
+    addPlaybackRows(
+        addRow = ::addRow,
+        pageLabel = playbackPage,
+        section = stringResource(Res.string.settings_playback_page_preferences),
+        page = SettingsPage.PlaybackPreferences,
+        rows = buildList {
+            add(PlaybackSearchRow("preferred-quality", stringResource(Res.string.downloads_season_quality_heading)))
+            add(PlaybackSearchRow("max-bitrate", stringResource(Res.string.downloads_season_max_bitrate), stringResource(Res.string.downloads_season_max_bitrate_description)))
+            add(PlaybackSearchRow("download-audio-language", stringResource(Res.string.downloads_season_audio_language)))
+            add(PlaybackSearchRow("when-i-press-play", stringResource(Res.string.settings_preferences_play_heading), stringResource(Res.string.settings_preferences_play_best)))
+            if (isDesktop && AppFeaturePolicy.downloadsEnabled) {
+                add(PlaybackSearchRow("auto-download-storage-limit", stringResource(Res.string.downloads_auto_storage_limit), stringResource(Res.string.downloads_auto_storage_limit_description)))
+            }
         },
     )
     if (!isIos) {

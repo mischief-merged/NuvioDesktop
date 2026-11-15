@@ -244,31 +244,18 @@ internal fun DownloadChoicesDialog(
     confirmEnabled: Boolean = true,
     content: @Composable ColumnScope.() -> Unit = {},
 ) {
-    val tokens = MaterialTheme.nuvio
-    var picker by remember(choices) { mutableStateOf<SeasonDownloadPicker?>(null) }
+    var picker by remember(choices) { mutableStateOf<DownloadPreferencePicker?>(null) }
     DialogSurface(
         onDismissRequest = onDismiss,
         title = title,
         message = message,
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(tokens.spacing.controlGap)) {
-            SeasonDownloadChoiceRow(
-                title = stringResource(Res.string.downloads_season_quality_heading),
-                value = batchQualityLabel(choices.quality),
-                onClick = { picker = SeasonDownloadPicker.Quality },
-            )
-            SeasonDownloadChoiceRow(
-                title = stringResource(Res.string.downloads_season_max_bitrate),
-                description = stringResource(Res.string.downloads_season_max_bitrate_description),
-                value = maxBitrateLabel(choices.maxBitrateMbps),
-                onClick = { picker = SeasonDownloadPicker.MaxBitrate },
-            )
-            SeasonDownloadChoiceRow(
-                title = stringResource(Res.string.downloads_season_audio_language),
-                value = audioLanguageLabel(choices.audioLanguage),
-                onClick = { picker = SeasonDownloadPicker.AudioLanguage },
-            )
-        }
+        DownloadPreferenceRows(
+            quality = choices.quality,
+            maxBitrateMbps = choices.maxBitrateMbps,
+            audioLanguage = choices.audioLanguage,
+            onPick = { picker = it },
+        )
         content()
         DialogButtons {
             DialogButton(
@@ -284,49 +271,134 @@ internal fun DownloadChoicesDialog(
         }
     }
 
+    DownloadPreferencePickers(
+        picker = picker,
+        quality = choices.quality,
+        maxBitrateMbps = choices.maxBitrateMbps,
+        audioLanguage = choices.audioLanguage,
+        onQualityChange = { choices.quality = it },
+        onMaxBitrateChange = { choices.maxBitrateMbps = it },
+        onAudioLanguageChange = { choices.audioLanguage = it },
+        onDismiss = { picker = null },
+    )
+}
+
+/** The three download preferences. Each one has a row and, once picked, a picker. */
+internal enum class DownloadPreferencePicker { Quality, MaxBitrate, AudioLanguage }
+
+/**
+ * The rows for quality, maximum bitrate and audio language, each showing its current value. A click
+ * hands the row's [DownloadPreferencePicker] to [onPick]. Shared by the season download dialog, the
+ * settings page and the first-start dialog, so that all of them offer the same choices.
+ */
+@Composable
+internal fun DownloadPreferenceRows(
+    quality: BatchQuality,
+    maxBitrateMbps: Int?,
+    audioLanguage: DebridStreamLanguage?,
+    onPick: (DownloadPreferencePicker) -> Unit,
+) {
+    val tokens = MaterialTheme.nuvio
+    Column(verticalArrangement = Arrangement.spacedBy(tokens.spacing.controlGap)) {
+        SeasonDownloadChoiceRow(
+            title = stringResource(Res.string.downloads_season_quality_heading),
+            value = batchQualityLabel(quality),
+            onClick = { onPick(DownloadPreferencePicker.Quality) },
+        )
+        SeasonDownloadChoiceRow(
+            title = stringResource(Res.string.downloads_season_max_bitrate),
+            description = stringResource(Res.string.downloads_season_max_bitrate_description),
+            value = maxBitrateLabel(maxBitrateMbps),
+            onClick = { onPick(DownloadPreferencePicker.MaxBitrate) },
+        )
+        SeasonDownloadChoiceRow(
+            title = stringResource(Res.string.downloads_season_audio_language),
+            value = audioLanguageLabel(audioLanguage),
+            onClick = { onPick(DownloadPreferencePicker.AudioLanguage) },
+        )
+    }
+}
+
+/** The picker for [picker], if there is one. A choice is handed to its callback and closes the picker. */
+@Composable
+internal fun DownloadPreferencePickers(
+    picker: DownloadPreferencePicker?,
+    quality: BatchQuality,
+    maxBitrateMbps: Int?,
+    audioLanguage: DebridStreamLanguage?,
+    onQualityChange: (BatchQuality) -> Unit,
+    onMaxBitrateChange: (Int?) -> Unit,
+    onAudioLanguageChange: (DebridStreamLanguage?) -> Unit,
+    onDismiss: () -> Unit,
+) {
     when (picker) {
-        SeasonDownloadPicker.Quality -> DownloadChoiceDialog(
+        DownloadPreferencePicker.Quality -> DownloadChoiceDialog(
             title = stringResource(Res.string.downloads_season_quality_heading),
             options = BatchQuality.entries,
-            selected = choices.quality,
+            selected = quality,
             label = { batchQualityLabel(it) },
             onSelect = {
-                choices.quality = it
-                picker = null
+                onQualityChange(it)
+                onDismiss()
             },
-            onDismiss = { picker = null },
+            onDismiss = onDismiss,
         )
-        SeasonDownloadPicker.MaxBitrate -> DownloadChoiceDialog(
+        DownloadPreferencePicker.MaxBitrate -> DownloadChoiceDialog(
             title = stringResource(Res.string.downloads_season_max_bitrate),
             options = SeasonDownloadDefaults.maxBitrateOptions,
-            selected = choices.maxBitrateMbps,
+            selected = maxBitrateMbps,
             label = { maxBitrateLabel(it) },
             onSelect = {
-                choices.maxBitrateMbps = it
-                picker = null
+                onMaxBitrateChange(it)
+                onDismiss()
             },
-            onDismiss = { picker = null },
+            onDismiss = onDismiss,
         )
-        SeasonDownloadPicker.AudioLanguage -> {
+        DownloadPreferencePicker.AudioLanguage -> {
             val options = SeasonDownloadDefaults.audioLanguageOptions.map { language ->
                 LanguageSelectionOption(value = language?.code, label = audioLanguageLabel(language))
             }
             LanguageSelectionDialog(
                 title = stringResource(Res.string.downloads_season_audio_language),
                 options = options,
-                selectedValue = choices.audioLanguage?.code,
+                selectedValue = audioLanguage?.code,
                 onSelect = { code ->
-                    choices.audioLanguage = SeasonDownloadDefaults.audioLanguageOptions.firstOrNull { it?.code == code }
-                    picker = null
+                    onAudioLanguageChange(SeasonDownloadDefaults.audioLanguageOptions.firstOrNull { it?.code == code })
+                    onDismiss()
                 },
-                onDismiss = { picker = null },
+                onDismiss = onDismiss,
             )
         }
         null -> Unit
     }
 }
 
-private enum class SeasonDownloadPicker { Quality, MaxBitrate, AudioLanguage }
+/**
+ * The three preferences with their pickers, for a page that edits them in place: every choice is
+ * handed to its callback as soon as it is made.
+ */
+@Composable
+internal fun DownloadPreferenceEditor(
+    quality: BatchQuality,
+    maxBitrateMbps: Int?,
+    audioLanguage: DebridStreamLanguage?,
+    onQualityChange: (BatchQuality) -> Unit,
+    onMaxBitrateChange: (Int?) -> Unit,
+    onAudioLanguageChange: (DebridStreamLanguage?) -> Unit,
+) {
+    var picker by remember { mutableStateOf<DownloadPreferencePicker?>(null) }
+    DownloadPreferenceRows(quality, maxBitrateMbps, audioLanguage, onPick = { picker = it })
+    DownloadPreferencePickers(
+        picker = picker,
+        quality = quality,
+        maxBitrateMbps = maxBitrateMbps,
+        audioLanguage = audioLanguage,
+        onQualityChange = onQualityChange,
+        onMaxBitrateChange = onMaxBitrateChange,
+        onAudioLanguageChange = onAudioLanguageChange,
+        onDismiss = { picker = null },
+    )
+}
 
 /**
  * A picker for one download choice. Every option is a radio button of one group that is named by
@@ -403,7 +475,7 @@ internal fun SeasonDownloadChoiceRow(
 }
 
 @Composable
-private fun batchQualityLabel(quality: BatchQuality): String = when (quality) {
+internal fun batchQualityLabel(quality: BatchQuality): String = when (quality) {
     BatchQuality.BestAvailable -> stringResource(Res.string.downloads_season_quality_any)
     BatchQuality.P2160 -> stringResource(Res.string.downloads_season_quality_2160)
     BatchQuality.P1080 -> stringResource(Res.string.downloads_season_quality_1080)
@@ -412,7 +484,7 @@ private fun batchQualityLabel(quality: BatchQuality): String = when (quality) {
 }
 
 @Composable
-private fun maxBitrateLabel(maxBitrateMbps: Int?): String =
+internal fun maxBitrateLabel(maxBitrateMbps: Int?): String =
     if (maxBitrateMbps == null) {
         stringResource(Res.string.downloads_season_bitrate_no_limit)
     } else {
@@ -420,5 +492,5 @@ private fun maxBitrateLabel(maxBitrateMbps: Int?): String =
     }
 
 @Composable
-private fun audioLanguageLabel(language: DebridStreamLanguage?): String =
+internal fun audioLanguageLabel(language: DebridStreamLanguage?): String =
     language?.label ?: stringResource(Res.string.downloads_season_audio_language_any)

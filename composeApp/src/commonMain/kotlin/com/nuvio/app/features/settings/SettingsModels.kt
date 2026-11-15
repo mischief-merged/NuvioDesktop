@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.RoundedCorner
 import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VideoSettings
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -123,6 +124,11 @@ internal enum class SettingsPage(
     ),
     PlaybackStreamSelection(
         titleRes = Res.string.settings_playback_page_stream_selection,
+        category = SettingsCategory.Watch,
+        parentPage = Playback,
+    ),
+    PlaybackPreferences(
+        titleRes = Res.string.settings_playback_page_preferences,
         category = SettingsCategory.Watch,
         parentPage = Playback,
     ),
@@ -305,6 +311,7 @@ internal val SettingsPage.icon: ImageVector
         SettingsPage.TraktAuthentication -> Icons.Default.Sync
         SettingsPage.PlaybackPlayer -> Icons.Default.SmartDisplay
         SettingsPage.PlaybackStreamSelection -> Icons.AutoMirrored.Filled.PlaylistPlay
+        SettingsPage.PlaybackPreferences -> Icons.Default.Tune
         SettingsPage.PlaybackUpNext -> Icons.Default.QueuePlayNext
         SettingsPage.PlaybackSkipSegments -> Icons.Default.FastForward
         SettingsPage.PlaybackInterface -> Icons.Default.Layers
