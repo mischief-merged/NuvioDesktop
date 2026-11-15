@@ -503,6 +503,37 @@ internal object DebridStreamMetadata {
         }
     }
 
+    /**
+     * The audio languages [stream] states, read by [StreamAudioLanguages]. The words of the
+     * media title, the one the source names and [contentTitle] are removed first, so a title
+     * ("The German Doctor") is not read as a language. Case is kept: short codes count only in
+     * uppercase.
+     */
+    fun audioLanguages(stream: StreamItem, contentTitle: String? = null): AudioLanguageReading {
+        val resolve = stream.clientResolve
+        val parsed = resolve?.stream?.raw?.parsed
+        val titles = listOfNotNull(parsed?.parsedTitle, resolve?.title, contentTitle)
+            .mapNotNull { titleStripRegex(it) }
+            .distinctBy { it.pattern }
+            .sortedByDescending { it.pattern.length }
+        val texts = streamTexts(stream).map { text ->
+            titles.fold(text) { remaining, regex -> regex.replaceFirst(remaining, " ") }
+        }
+        return StreamAudioLanguages.read(texts, parsed?.languages.orEmpty())
+    }
+
+    private fun titleStripRegex(title: String): Regex? {
+        val words = title.split(titleWordSeparator).filter { it.isNotEmpty() }
+        if (words.isEmpty()) return null
+        val separator = "[^\\p{L}\\p{N}]"
+        return Regex(
+            "(^|$separator)${words.joinToString("$separator+") { Regex.escape(it) }}(?=$separator|\$)",
+            RegexOption.IGNORE_CASE,
+        )
+    }
+
+    private val titleWordSeparator = Regex("[^\\p{L}\\p{N}]+")
+
     private fun titleRegex(title: String): Regex? {
         val words = title.lowercase().split(nonAlphanumericRunRegex).filter { it.isNotEmpty() }
         if (words.isEmpty()) return null
