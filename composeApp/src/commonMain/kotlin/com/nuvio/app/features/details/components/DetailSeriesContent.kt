@@ -744,7 +744,7 @@ private fun EpisodeHorizontalRow(
     }
     // The show page was opened on one episode: this row reports that it is on screen, then goes to it.
     LaunchedEffect(focus, focusIndex) {
-        if (focus != null && focusIndex != null) {
+        if (focus != null && focusIndex != null && focus.needsPositioning) {
             focus.markSectionReached()
             listState.scrollToItem(focusIndex)
         }
@@ -1029,8 +1029,8 @@ private fun FocusTargetEffect(
 ) {
     if (focus == null) return
     LaunchedEffect(focus) {
-        focus.markPlaced()
-        bringIntoView.bringIntoView()
+        // Only the first time the card is composed: later it must not pull the page back.
+        if (focus.markPlaced()) bringIntoView.bringIntoView()
     }
 }
 
