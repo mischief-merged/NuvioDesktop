@@ -255,7 +255,7 @@ internal fun PlayerScreenRuntime.tryFallbackToNextSourceAfterError(
     val resumeMs = when (failure) {
         // The placeholder's position means nothing for the real video.
         SourceFailure.PlaceholderClip -> 0L
-        SourceFailure.DiedDuringPlayback -> sourceFailoverResumePositionMs(
+        SourceFailure.DiedDuringPlayback, SourceFailure.StalledDuringPlayback -> sourceFailoverResumePositionMs(
             positionMs = playbackSnapshot.positionMs,
             durationMs = playbackSnapshot.durationMs,
         )
