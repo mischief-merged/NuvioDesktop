@@ -21,6 +21,7 @@ class PlaybackStallDetectorTest {
         isEnded: Boolean = false,
         isUserSeeking: Boolean = false,
         isOffline: Boolean = false,
+        seekRequest: PlaybackStallDetector.SeekRequest? = null,
     ) = Sample(
         nowMs = nowMs,
         positionMs = positionMs,
@@ -32,6 +33,7 @@ class PlaybackStallDetectorTest {
         isEnded = isEnded,
         isUserSeeking = isUserSeeking,
         isOffline = isOffline,
+        seekRequest = seekRequest,
     )
 
     /** Feeds one sample per second, from the second after [fromMs], until a stall or [untilMs]. */
@@ -180,5 +182,90 @@ class PlaybackStallDetectorTest {
     fun `the deadlines are ordered`() {
         assertTrue(PlaybackStallDetector.STALL_DEADLINE_MS < PlaybackStallDetector.TRICKLE_DEADLINE_MS)
         assertTrue(PlaybackStallDetector.MAX_SAMPLE_GAP_MS < PlaybackStallDetector.STALL_DEADLINE_MS)
+    }
+
+    // A requested seek stays exempt until it settles
+
+    private val seekTo = PlaybackStallDetector.SeekRequest(targetMs = 3_000_000L)
+
+    /** A distant seek requested at 5 s that the player answers only at [settleAtMs]. */
+    private fun distantSeek(settleAtMs: Long, untilMs: Long): Pair<State, Step.Stalled?> {
+        val first = PlaybackStallDetector.step(
+            armed(),
+            sample(5_000L, positionMs = 3_000_000L, bufferedPositionMs = 3_000_000L, seekRequest = seekTo),
+        )
+        var state = (first as Step.Continue).state
+        return run(state, 5_000L, untilMs) { now ->
+            if (now < settleAtMs) {
+                // Position at the target, loading, nothing buffered, nothing moving.
+                sample(now, positionMs = 3_000_000L, bufferedPositionMs = 3_000_000L)
+            } else {
+                sample(now, positionMs = 3_000_000L + (now - settleAtMs), bufferedPositionMs = 3_030_000L + now, isLoading = false, isPlaying = true)
+            }
+        }
+    }
+
+    @Test
+    fun aDistantSeekThatTakesThirtySecondsDoesNotFailOver() {
+        val (_, stalled) = distantSeek(settleAtMs = 35_000L, untilMs = 300_000L)
+        assertEquals(null, stalled)
+    }
+
+    @Test
+    fun aSeekThatNeverSettlesFailsOverAtTheLongerLimit() {
+        val (_, early) = distantSeek(settleAtMs = Long.MAX_VALUE, untilMs = 5_000L + PlaybackStallDetector.SEEK_NEVER_SETTLES_MS - 2_000L)
+        assertEquals(null, early)
+        val (_, stalled) = distantSeek(settleAtMs = Long.MAX_VALUE, untilMs = 5_000L + PlaybackStallDetector.SEEK_NEVER_SETTLES_MS + 2_000L)
+        assertIs<Step.Stalled>(stalled)
+        assertEquals(PlaybackStallDetector.SEEK_NEVER_SETTLES_MS, stalled.stillForMs)
+    }
+
+    @Test
+    fun theBufferGrowingAgainSettlesASeekAndOrdinaryRulesResume() {
+        val first = PlaybackStallDetector.step(armed(), sample(5_000L, positionMs = 3_000_000L, bufferedPositionMs = 3_000_000L, seekRequest = seekTo))
+        var state = (first as Step.Continue).state
+        // Buffer grows once while still loading: the seek settled.
+        state = (PlaybackStallDetector.step(state, sample(6_000L, positionMs = 3_000_000L, bufferedPositionMs = 3_005_000L)) as Step.Continue).state
+        assertEquals(null, state.pendingSeekSinceMs)
+        // Now a freeze counts again after the ordinary deadline.
+        val (_, stalled) = run(state, 6_000L, 6_000L + PlaybackStallDetector.STALL_DEADLINE_MS + 2_000L) { now ->
+            sample(now, positionMs = 3_000_000L, bufferedPositionMs = 3_005_000L)
+        }
+        assertIs<Step.Stalled>(stalled)
+    }
+
+    @Test
+    fun playingNearTheTargetSettlesASeekWithoutABufferFigure() {
+        val first = PlaybackStallDetector.step(armed(), sample(5_000L, positionMs = 3_000_000L, bufferedPositionMs = 0L, seekRequest = seekTo))
+        val state = (first as Step.Continue).state
+        val settled = PlaybackStallDetector.step(state, sample(7_000L, positionMs = 3_001_000L, bufferedPositionMs = 0L, isLoading = false, isPlaying = true))
+        assertEquals(null, (settled as Step.Continue).state.pendingSeekSinceMs)
+    }
+
+    @Test
+    fun aRelativeSeekWithNoKnownTargetSettlesWhenPlayingAgain() {
+        val first = PlaybackStallDetector.step(armed(), sample(5_000L, positionMs = 70_000L, seekRequest = PlaybackStallDetector.SeekRequest(null)))
+        assertEquals(5_000L, (first as Step.Continue).state.pendingSeekSinceMs)
+        val settled = PlaybackStallDetector.step(first.state, sample(6_000L, positionMs = 71_000L, isLoading = false, isPlaying = true))
+        assertEquals(null, (settled as Step.Continue).state.pendingSeekSinceMs)
+    }
+
+    @Test
+    fun aPendingSeekDoesNotAgeWhilePausedOrOffline() {
+        val first = PlaybackStallDetector.step(armed(), sample(5_000L, seekRequest = seekTo))
+        val (state, stalled) = run((first as Step.Continue).state, 5_000L, 400_000L) { now -> sample(now, wantsToPlay = false) }
+        assertEquals(null, stalled)
+        // After resuming it still has most of its limit left.
+        val (_, early) = run(state, 400_000L, 400_000L + 40_000L) { now -> sample(now) }
+        assertEquals(null, early)
+        val (_, offline) = run((first).state, 5_000L, 400_000L) { now -> sample(now, isOffline = true) }
+        assertEquals(null, offline)
+    }
+
+    @Test
+    fun aSuspendedAppDuringAPendingSeekRestartsItsAge() {
+        val first = PlaybackStallDetector.step(armed(), sample(5_000L, seekRequest = seekTo))
+        val step = PlaybackStallDetector.step((first as Step.Continue).state, sample(5_000L + 600_000L))
+        assertEquals(5_000L + 600_000L, (step as Step.Continue).state.pendingSeekSinceMs)
     }
 }

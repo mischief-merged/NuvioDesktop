@@ -11,6 +11,11 @@ package com.nuvio.app.features.player
  * the buffer creeps forward. Anything that is not the source's fault clears the clocks instead, so
  * a pause, a seek, going offline or a sleeping machine never adds up to a stall.
  *
+ * A seek the player was asked for stays exempt from the moment it is requested until the player shows it
+ * settled (playing again near the target, or the buffer growing again), because a distant seek into a large
+ * remote file can wait a long time with nothing moving. A seek that never settles counts as a stall after
+ * [SEEK_NEVER_SETTLES_MS].
+ *
  * Pure and clock-free: the caller passes a monotonic time with each sample.
  */
 internal object PlaybackStallDetector {
@@ -27,8 +32,17 @@ internal object PlaybackStallDetector {
     /** Two samples further apart than this mean the app was suspended or hung, so the clocks start over. */
     const val MAX_SAMPLE_GAP_MS = 5_000L
 
+    /** A requested seek that has not settled after this long is a stall. Far past [STALL_DEADLINE_MS] on purpose. */
+    const val SEEK_NEVER_SETTLES_MS = 60_000L
+
+    /** Playing this close to a seek's target counts as the seek having settled. */
+    const val SEEK_SETTLE_TOLERANCE_MS = 3_000L
+
     /** A position this close to the end is the end, even if the player has not said so. */
     const val END_MARGIN_MS = 1_000L
+
+    /** A seek the runtime asked the player for. [targetMs] is null for a relative seek whose target is not known. */
+    data class SeekRequest(val targetMs: Long?)
 
     /** One reading of the player. [nowMs] is on a monotonic clock. */
     data class Sample(
@@ -44,6 +58,8 @@ internal object PlaybackStallDetector {
         /** The user is dragging the timeline or a seek they asked for has not settled. */
         val isUserSeeking: Boolean,
         val isOffline: Boolean,
+        /** Set on the reading taken after a new seek was requested, otherwise null. */
+        val seekRequest: SeekRequest? = null,
     )
 
     /**
@@ -58,6 +74,9 @@ internal object PlaybackStallDetector {
         val positionStillSinceMs: Long? = null,
         /** Since when the buffer has not grown, or null while it grows or the check is paused. */
         val bufferStillSinceMs: Long? = null,
+        /** Since when a requested seek has waited to settle, or null when none is pending. */
+        val pendingSeekSinceMs: Long? = null,
+        val pendingSeekTargetMs: Long? = null,
     )
 
     sealed interface Step {
@@ -83,14 +102,40 @@ internal object PlaybackStallDetector {
         // between states): that says nothing about the source either.
         val notTrying = !sample.isLoading && !sample.isPlaying
         val exempt = !sample.wantsToPlay || atEnd || sample.isUserSeeking || sample.isOffline || notTrying
-        if (discontinuity || exempt) {
-            return Step.Continue(initial(sample.nowMs, sample.positionMs, sample.bufferedPositionMs))
+
+        var pendingSince = state.pendingSeekSinceMs
+        var pendingTarget = state.pendingSeekTargetMs
+        sample.seekRequest?.let {
+            pendingSince = sample.nowMs
+            pendingTarget = it.targetMs
         }
+        fun fresh(sinceMs: Long?, targetMs: Long?) = initial(sample.nowMs, sample.positionMs, sample.bufferedPositionMs)
+            .copy(pendingSeekSinceMs = sinceMs, pendingSeekTargetMs = targetMs)
+
+        // The reading that carries a new request only starts the wait: what it shows is still the old buffer's.
+        if (sample.seekRequest != null) return Step.Continue(fresh(pendingSince, pendingTarget))
+        if (pendingSince != null) {
+            // The age of a pending seek stands still while something else exempts the check or the app was suspended.
+            if (discontinuity || exempt) {
+                val frozenSince = if (discontinuity) sample.nowMs else pendingSince + gapMs.coerceAtLeast(0L)
+                return Step.Continue(fresh(frozenSince, pendingTarget))
+            }
+            val target = pendingTarget
+            val bufferGrew = sample.bufferedPositionMs - state.referenceBufferedMs >= MIN_MOVE_MS
+            val playingNearTarget = !sample.isLoading && sample.isPlaying &&
+                (target == null || kotlin.math.abs(sample.positionMs - target) <= SEEK_SETTLE_TOLERANCE_MS)
+            if (bufferGrew || playingNearTarget) return Step.Continue(fresh(null, null))
+            val ageMs = sample.nowMs - pendingSince
+            if (ageMs >= SEEK_NEVER_SETTLES_MS) return Step.Stalled(ageMs)
+            return Step.Continue(fresh(pendingSince, target))
+        }
+
+        if (discontinuity || exempt) return Step.Continue(fresh(null, null))
 
         val positionMoved = kotlin.math.abs(sample.positionMs - state.referencePositionMs) >= MIN_MOVE_MS
         if (positionMoved) {
             // Forward is playback, backward is a seek: either way the source is alive and the clocks start over.
-            return Step.Continue(initial(sample.nowMs, sample.positionMs, sample.bufferedPositionMs))
+            return Step.Continue(fresh(null, null))
         }
         val bufferMoved = kotlin.math.abs(sample.bufferedPositionMs - state.referenceBufferedMs) >= MIN_MOVE_MS
         val referenceBufferedMs = if (bufferMoved) sample.bufferedPositionMs else state.referenceBufferedMs

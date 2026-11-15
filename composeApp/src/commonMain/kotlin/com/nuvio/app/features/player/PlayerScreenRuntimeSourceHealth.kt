@@ -38,8 +38,8 @@ internal suspend fun PlayerScreenRuntime.monitorSourceHealth() {
     var startup = SourceStartMonitor.Progress()
     var stall: PlaybackStallDetector.State? = null
     val baselineMs = activeInitialPositionMs.coerceAtLeast(0L)
-    var startedAtMs = sourceHealthNowMs()
-    var lastTickMs = startedAtMs
+    val clock = SourceStartClock(sourceHealthNowMs())
+    var seenSeekRequests = seekRequestCount
     // The start was given up on but moving on did not apply (a source picked by hand): the source stays, and a
     // stall is watched for once it does start playing.
     var startGivenUp = false
@@ -48,17 +48,22 @@ internal suspend fun PlayerScreenRuntime.monitorSourceHealth() {
         startup = SourceStartMonitor.Progress()
         stall = null
         startGivenUp = false
-        startedAtMs = nowMs
+        clock.restart(nowMs)
     }
 
     while (true) {
         delay(SourceStartMonitor.POLL_INTERVAL_MS)
         if (sourceFailoverCancelled) return
         val nowMs = sourceHealthNowMs()
-        val deltaMs = nowMs - lastTickMs
-        lastTickMs = nowMs
         val settings = playerSettingsUiState
         val offline = isDeviceOffline()
+        // The time of the start stands still while the user has paused or the device is offline, and starts
+        // over after a gap between reads (a sleeping machine), before anything is judged.
+        val startElapsedMs = clock.read(nowMs, held = !shouldPlay || offline)
+        if (clock.restarted) {
+            restartClocks(nowMs)
+            continue
+        }
         // Nothing is judged while the error screen shows, the setting is off, or a replacement is being looked up.
         if (errorMessage != null || !settings.streamAutoPlayFallbackActive || sourceFallbackJob?.isActive == true) {
             restartClocks(nowMs)
@@ -72,13 +77,11 @@ internal suspend fun PlayerScreenRuntime.monitorSourceHealth() {
                 startGivenUp = false
             }
         } else if (currentStall == null) {
-            // The clock of the start stands still while the user has paused or the device is offline.
-            if (!shouldPlay || offline) startedAtMs += deltaMs
             val limits = SourceStartMonitor.Limits.fromSettingSeconds(settings.streamAutoPlayFallbackStartupTimeoutSeconds)
             val step = SourceStartMonitor.next(
                 progress = startup,
                 reading = SourceStartMonitor.Reading(
-                    elapsedMs = nowMs - startedAtMs,
+                    elapsedMs = startElapsedMs,
                     playing = snapshot.isPlaying,
                     positionMs = snapshot.positionMs,
                     bufferedMs = snapshot.bufferedPositionMs,
@@ -92,8 +95,8 @@ internal suspend fun PlayerScreenRuntime.monitorSourceHealth() {
                 SourceStartMonitor.Step.Playing ->
                     stall = PlaybackStallDetector.initial(nowMs, snapshot.positionMs, snapshot.bufferedPositionMs)
                 is SourceStartMonitor.Step.GiveUp -> {
-                    val elapsedSeconds = ((nowMs - startedAtMs) / 1_000L).toInt().coerceAtLeast(1)
-                    log.i { "Source did not start: ${step.cause.name} after ${nowMs - startedAtMs} ms" }
+                    val elapsedSeconds = (startElapsedMs / 1_000L).toInt().coerceAtLeast(1)
+                    log.i { "Source did not start: ${step.cause.name} after $startElapsedMs ms" }
                     val handled = tryFallbackToNextSourceAfterError(
                         message = getString(Res.string.player_error_source_startup_timeout, elapsedSeconds),
                         failureOverride = SourceFailure.FailedToStart,
@@ -105,6 +108,12 @@ internal suspend fun PlayerScreenRuntime.monitorSourceHealth() {
                 }
             }
         } else {
+            val seekRequest = if (seekRequestCount != seenSeekRequests) {
+                seenSeekRequests = seekRequestCount
+                PlaybackStallDetector.SeekRequest(lastSeekTargetMs)
+            } else {
+                null
+            }
             val step = PlaybackStallDetector.step(
                 state = currentStall,
                 sample = PlaybackStallDetector.Sample(
@@ -118,6 +127,7 @@ internal suspend fun PlayerScreenRuntime.monitorSourceHealth() {
                     isEnded = snapshot.isEnded,
                     isUserSeeking = isScrubbingTimeline || scrubbingPositionMs != null,
                     isOffline = offline,
+                    seekRequest = seekRequest,
                 ),
             )
             when (step) {
@@ -135,4 +145,29 @@ internal suspend fun PlayerScreenRuntime.monitorSourceHealth() {
             }
         }
     }
+}
+
+/** Records that a seek is being requested, so the stall watch does not count its wait as a stall. */
+internal fun PlayerScreenRuntime.noteSeekRequested(targetMs: Long?) {
+    seekRequestCount += 1
+    lastSeekTargetMs = targetMs
+}
+
+/** Seeks [controller] to [targetMs] and records the request. */
+internal fun PlayerScreenRuntime.seekWithNote(controller: PlayerEngineController?, targetMs: Long) {
+    noteSeekRequested(targetMs)
+    controller?.seekTo(targetMs)
+}
+
+/** Like [PlayerEngineController.trySeekTo] and records the request when it is accepted. */
+internal fun PlayerScreenRuntime.trySeekWithNote(controller: PlayerEngineController, targetMs: Long): Boolean {
+    val accepted = controller.trySeekTo(targetMs)
+    if (accepted) noteSeekRequested(targetMs)
+    return accepted
+}
+
+/** Seeks [controller] by [offsetMs] and records the request; the target is unknown. */
+internal fun PlayerScreenRuntime.seekByWithNote(controller: PlayerEngineController?, offsetMs: Long) {
+    noteSeekRequested(null)
+    controller?.seekBy(offsetMs)
 }

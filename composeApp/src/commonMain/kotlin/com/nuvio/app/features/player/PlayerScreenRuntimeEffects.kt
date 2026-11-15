@@ -445,7 +445,7 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
             return@LaunchedEffect
         }
 
-        controller.seekTo(targetPositionMs)
+        seekWithNote(controller, targetPositionMs)
         initialSeekApplied = true
     }
 
@@ -818,7 +818,7 @@ private fun PlayerScreenRuntime.BindPlayerMetadataAndSkipEffects() {
                 val rawMs = current.internalSkipAction(skipIntervals, durationMs)?.targetMs ?: return@LaunchedEffect
                 val seekPositionMs = if (durationMs > 0L) rawMs.coerceAtMost(durationMs - 1) else rawMs
                 val notification = current.autoSkipNotificationMessage(seekPositionMs)
-                if (!controller.trySeekTo(seekPositionMs)) return@LaunchedEffect
+                if (!trySeekWithNote(controller, seekPositionMs)) return@LaunchedEffect
                 autoSkippedIntervalKeys.add(intervalKey)
                 autoSkippedIntervals.add(current)
                 scheduleProgressSyncAfterSeek()
