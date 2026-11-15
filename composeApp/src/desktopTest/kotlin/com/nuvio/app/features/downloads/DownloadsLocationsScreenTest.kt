@@ -37,7 +37,7 @@ class DownloadsLocationsScreenTest {
     private val backend = LocationsBackend(world)
     private val realBackend = DownloadsRepository.backend
     private val folders = DesktopDownloadFolders(
-        world.locations, world.validator, DownloadMover(world.root.resolve("journal.json")), RepositoryDownloadsHooks,
+        world.locations, world.validator, world.mover(), RepositoryDownloadsHooks,
     )
 
     @Before

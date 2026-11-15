@@ -183,6 +183,7 @@ internal class DownloadMover(
     private val createLink: (link: Path, existing: Path) -> Unit = { link, existing -> Files.createLink(link, existing) },
     private val fileKeyOf: (Path) -> String? = ::identityOf,
     private val randomName: () -> String = { randomHex(8) },
+    private val txIdFactory: () -> String = { randomHex(16) },
     /** Called before every journal write. Tests make it throw to see what a failed journal write leaves. */
     private val beforeJournalWrite: (MoveJournal) -> Unit = {},
     private val lock: MoveLock = MoveLock(journalDir.resolve("move.lock")),
@@ -239,7 +240,7 @@ internal class DownloadMover(
         val canCommit: (MoveItem) -> Boolean,
         val onMoved: (MoveItem, Path?) -> Unit,
     ) {
-        val txId: String = randomHex(16)
+        val txId: String = txIdFactory()
         val journalPath: Path = journalDir.resolve("move-$txId.journal")
         lateinit var journal: MoveJournal
         var totalBytes = 0L
@@ -542,15 +543,20 @@ internal class DownloadMover(
         }
 
         private fun canLink(source: Path, destination: Path): Boolean {
-            val probe = destination.resolve(".nuvio-$txId-probe-${randomName()}")
-            return try {
-                createLink(probe, source)
-                runCatching { Files.deleteIfExists(probe) }
-                true
-            } catch (_: Exception) {
-                // Created by nobody (the link failed) or already someone's: nothing to remove.
-                false
+            repeat(5) {
+                val probe = destination.resolve(".nuvio-$txId-probe-${randomName()}")
+                try {
+                    createLink(probe, source)
+                    // The link was just made by this move, so it is this move's to remove.
+                    runCatching { Files.deleteIfExists(probe) }
+                    return true
+                } catch (_: FileAlreadyExistsException) {
+                    // Someone else's file has that name: it is left alone and another is chosen.
+                } catch (_: Exception) {
+                    return false
+                }
             }
+            return false
         }
     }
 

@@ -51,7 +51,7 @@ class DownloadFolderBehaviourTest {
     @Test
     fun the_downloader_pauses_a_download_whose_location_is_away_and_writes_nothing() {
         val drive = world.driveLocation("Archive")
-        val folders = DesktopDownloadFolders(world.locations, world.validator, DownloadMover(world.root.resolve("j.json")), object : DownloadsHooks {
+        val folders = DesktopDownloadFolders(world.locations, world.validator, world.mover(), object : DownloadsHooks {
             override fun items() = emptyList<DownloadItem>()
             override fun pauseAndWait(downloadId: String) = true
             override fun resume(downloadId: String) = Unit
@@ -81,7 +81,7 @@ class DownloadFolderBehaviourTest {
     @Test
     fun free_space_is_read_on_the_volume_of_the_location_the_download_goes_to() {
         val drive = world.driveLocation("Archive")
-        val folders = DesktopDownloadFolders(world.locations, world.validator, DownloadMover(world.root.resolve("j.json")), object : DownloadsHooks {
+        val folders = DesktopDownloadFolders(world.locations, world.validator, world.mover(), object : DownloadsHooks {
             override fun items() = emptyList<DownloadItem>()
             override fun pauseAndWait(downloadId: String) = true
             override fun resume(downloadId: String) = Unit

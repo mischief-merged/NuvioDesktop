@@ -48,6 +48,49 @@ internal class FolderWorld(val root: Path = Files.createTempDirectory("nuvio-fol
         Files.move(root.resolve("$drive.unplugged"), volumes.resolve(drive))
     }
 
+    /** The folder of a location that can be used now, by id: what the mover is given. */
+    fun resolver(): (String) -> Path? = { id ->
+        locations.location(id)?.takeIf { locations.availability(it) == FolderAvailability.Available }?.path
+    }
+
+    /** A mover over these locations. Journals go to a folder of their own. */
+    fun mover(
+        checkpoint: (String) -> Unit = {},
+        copy: (Path, Path, (Long) -> Unit, () -> Boolean) -> String = DownloadMover::copyFile,
+        sameStore: (Path, Path) -> Boolean = { _, _ -> false },
+        syncDirectory: (Path) -> Boolean = { true },
+        deleteFile: (Path) -> Unit = { Files.delete(it) },
+        createLink: (Path, Path) -> Unit = { link, existing -> Files.createLink(link, existing) },
+        randomName: () -> String = { DownloadMover.randomHex(8) },
+        txId: () -> String = { DownloadMover.randomHex(16) },
+        beforeJournalWrite: (MoveJournal) -> Unit = {},
+        fileKey: (Path) -> String? = DownloadMover::identityOf,
+    ) = DownloadMover(
+        journalDir = root.resolve("moves"),
+        resolve = resolver(),
+        checkpoint = checkpoint,
+        copy = copy,
+        sameStore = sameStore,
+        syncDirectory = syncDirectory,
+        deleteFile = deleteFile,
+        createLink = createLink,
+        randomName = randomName,
+        txIdFactory = txId,
+        beforeJournalWrite = beforeJournalWrite,
+        fileKeyOf = fileKey,
+    )
+
+    /** An item to move from the app folder to [destinationId]: the video, then files of its sidecar folder. */
+    fun moveItem(id: String, video: Path, destinationId: String, vararg sidecar: Path, profile: Int = 1): MoveItem {
+        fun entry(path: Path, dstRel: String, kind: MoveKind) =
+            MoveEntry(DownloadLocations.AppId, appFolder.relativize(path).toString(), destinationId, dstRel, kind, Files.size(path))
+        return MoveItem(
+            profile, id, null, video.fileName.toString(),
+            listOf(entry(video, video.fileName.toString(), MoveKind.File)) +
+                sidecar.map { entry(it, appFolder.relativize(it).toString(), MoveKind.Companion) },
+        )
+    }
+
     fun close() {
         root.toFile().deleteRecursively()
     }

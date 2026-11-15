@@ -52,11 +52,7 @@ class DesktopDownloadFoldersTest {
     private fun controller(hooks: Hooks, crashAt: String? = null) = DesktopDownloadFolders(
         locations = world.locations,
         validator = world.validator,
-        mover = DownloadMover(
-            world.root.resolve("journal.json"),
-            checkpoint = { if (it == crashAt) throw IllegalStateException("crash at $it") },
-            sameStore = { _, _ -> false },
-        ),
+        mover = world.mover(checkpoint = { if (it == crashAt) throw IllegalStateException("crash at $it") }),
         hooks = hooks,
     )
 
@@ -259,39 +255,122 @@ class DesktopDownloadFoldersTest {
     }
 
     @Test
-    fun a_move_cut_short_by_a_crash_is_settled_from_the_journal_and_the_moved_partial_is_repointed() {
+    fun a_move_cut_short_by_a_crash_leaves_both_files_and_finishes_only_the_record_from_the_journal() {
         val done = episode("A", 1)
         val running = episodeItem("A", 9, status = DownloadStatus.Downloading, bytes = 5_000L)
-        val partial = world.appFolder.resolve(running.fileName + ".part")
-        Files.write(partial, ByteArray(5_000) { it.toByte() })
+        Files.createDirectories(world.appFolder)
+        Files.write(world.appFolder.resolve(running.fileName + ".part"), ByteArray(5_000) { it.toByte() })
         val drive = world.driveLocation("Archive")
         val original = Files.readAllBytes(fileOf(done))
         val hooks = Hooks(listOf(done, running))
         var crashed = false
         try {
-            controller(hooks, crashAt = "record-updating").move(setOf(done.id, running.id), drive.path.toString())
+            controller(hooks, crashAt = "published").move(setOf(done.id, running.id), drive.path.toString())
         } catch (_: IllegalStateException) {
             crashed = true
         }
         assertTrue(crashed)
-        assertTrue(world.root.resolve("journal.json").exists())
 
-        // The next start, before the list is loaded: nothing can be told apart yet, so nothing is touched.
         val restarted = Hooks(listOf(done, running.copy(status = DownloadStatus.Paused)))
         val folders = controller(restarted)
+        // At start, before the list is loaded, only the move's own temporary files can go.
         val first = assertNotNull(folders.recoverInterrupted())
-        assertEquals(listOf(done.id), first.unresolved)
-        assertEquals(listOf(running.id), first.pausedIds)
-        assertTrue(fileOf(done).exists() && drive.path.resolve(done.fileName).exists())
+        assertEquals(0, first.recordsFinished)
+        assertTrue(fileOf(done).exists())
 
-        // Then, with the list loaded, the journal says where the file went and the record is pointed there.
-        folders.settleInterrupted(withRecords = true)
+        // With the list loaded the journal proves where the file went, and the record is pointed there.
+        val second = folders.settleInterrupted(withRecords = true)
 
-        assertFalse(world.root.resolve("journal.json").exists())
-        assertContentEquals(original, Files.readAllBytes(drive.path.resolve(done.fileName)))
-        assertFalse(fileOf(done).exists())
-        assertTrue("relocate ${done.id}" in restarted.log, "the record was not pointed from the journal")
+        assertEquals(1, second.recordsFinished)
+        assertTrue("relocate ${done.id}" in restarted.log)
         assertEquals(drive.id, restarted.items.first { it.id == done.id }.locationId)
+        // Nothing was deleted: the original and the copy both stay, and the user is told.
+        assertContentEquals(original, Files.readAllBytes(fileOf(done)))
+        assertContentEquals(original, Files.readAllBytes(drive.path.resolve(done.fileName)))
+        folders.refresh()
+        assertEquals(1, folders.state.value.leftovers.size)
+    }
+
+    @Test
+    fun the_extra_copy_is_removed_from_the_settings_only_when_the_user_asks_and_the_record_points_at_the_other() {
+        val done = episode("A", 1)
+        val drive = world.driveLocation("Archive")
+        val hooks = Hooks(listOf(done))
+        try {
+            controller(hooks, crashAt = "published").move(setOf(done.id), drive.path.toString())
+        } catch (_: IllegalStateException) {
+        }
+        val folders = controller(hooks)
+        folders.refresh()
+        val leftover = folders.state.value.leftovers.single()
+
+        assertEquals(done.fileName, leftover.name)
+        assertEquals(LeftoverOutcome.Removed, folders.removeExtraCopy(leftover.id))
+
+        assertTrue(fileOf(done).exists())
+        assertFalse(drive.path.resolve(done.fileName).exists())
+        assertEquals(0, folders.state.value.leftovers.size)
+    }
+
+    @Test
+    fun a_paused_item_whose_writer_has_not_exited_is_waited_for_or_skipped_and_never_copied() {
+        val item = episodeItem("A", 3, status = DownloadStatus.Paused, bytes = 5_000L)
+        Files.createDirectories(world.appFolder)
+        val partial = world.appFolder.resolve(item.fileName + ".part").also { Files.write(it, ByteArray(5_000)) }
+        val drive = world.driveLocation("Archive")
+        val hooks = Hooks(listOf(item))
+        val folders = DesktopDownloadFolders(world.locations, world.validator, world.mover(), hooks, writerWaitMs = 300)
+        assertTrue(WriterTokens.tryAcquire(item.id, WriterTokens.Kind.Writer)) // the writer is still closing its file
+
+        val skipped = folders.move(setOf(item.id), drive.path.toString())
+
+        assertEquals(0, skipped.moved)
+        assertEquals(MoveFailureReason.StillWriting, skipped.failures.single().reason)
+        assertTrue(partial.exists() && !drive.path.resolve(partial.fileName).exists(), "a file that may still grow was copied")
+
+        // The same writer exits shortly after the move started waiting: the move goes on after it.
+        val exiting = Thread { Thread.sleep(100); WriterTokens.release(item.id) }.also { it.start() }
+        val waited = DesktopDownloadFolders(world.locations, world.validator, world.mover(), hooks, writerWaitMs = 5_000).move(setOf(item.id), drive.path.toString())
+        exiting.join()
+
+        assertEquals(1, waited.moved)
+        assertTrue(drive.path.resolve(partial.fileName).exists())
+        assertFalse(WriterTokens.kindOf(item.id) != null, "the token was kept")
+    }
+
+    @Test
+    fun two_records_in_one_folder_that_share_a_base_name_move_one_and_the_other_is_untouched() {
+        val mkv = episodeItem("A", 1).copy(fileName = "movie.mkv")
+        val mp4 = episodeItem("A", 2).copy(fileName = "movie.mp4")
+        Files.createDirectories(world.appFolder)
+        val mkvFile = world.appFolder.resolve("movie.mkv").writeVideo(1)
+        val mp4File = world.appFolder.resolve("movie.mp4").writeVideo(2)
+        val drive = world.driveLocation("Archive")
+        val hooks = Hooks(listOf(mkv.copy(localFileUri = mkvFile.toUri().toString()), mp4.copy(localFileUri = mp4File.toUri().toString())))
+        val before = Files.readAllBytes(mkvFile)
+
+        val report = controller(hooks).move(setOf(mp4.id), drive.path.toString())
+
+        assertEquals(1, report.moved)
+        assertTrue(drive.path.resolve("movie.mp4").exists())
+        assertFalse(drive.path.resolve("movie.mkv").exists())
+        assertContentEquals(before, Files.readAllBytes(mkvFile), "the other record's file was touched")
+    }
+
+    @Test
+    fun a_record_that_owns_a_path_of_the_item_stops_that_item_and_is_reported() {
+        val a = episodeItem("A", 1).copy(fileName = "same.mp4")
+        val b = episodeItem("B", 1).copy(fileName = "same.mp4")
+        Files.createDirectories(world.appFolder)
+        val file = world.appFolder.resolve("same.mp4").writeVideo(1)
+        val drive = world.driveLocation("Archive")
+        val hooks = Hooks(listOf(a.copy(localFileUri = file.toUri().toString()), b.copy(localFileUri = file.toUri().toString())))
+
+        val report = controller(hooks).move(setOf(a.id), drive.path.toString())
+
+        assertEquals(0, report.moved)
+        assertEquals(MoveFailureReason.OwnedByAnother, report.failures.single().reason)
+        assertTrue(file.exists())
     }
 
     @Test
@@ -319,7 +398,7 @@ class DesktopDownloadFoldersTest {
         val hooks = Hooks(listOf(a, b))
         val folders = DesktopDownloadFolders(
             world.locations, world.validator,
-            DownloadMover(world.root.resolve("journal.json"), sameStore = { _, _ -> false }), hooks,
+            world.mover(), hooks,
             isPlaying = { it.id == b.id },
         )
         var deleteWhileMoving: Boolean? = null
@@ -409,7 +488,7 @@ class DesktopDownloadFoldersTest {
         val drive = world.driveLocation("Archive")
         val size = Files.size(fileOf(item))
         val sameVolume = DesktopDownloadFolders(
-            world.locations, world.validator, DownloadMover(world.root.resolve("j.json")), Hooks(listOf(item)),
+            world.locations, world.validator, world.mover(), Hooks(listOf(item)),
         )
 
         // The temporary folders share one volume here, so a rename carries nothing.
@@ -424,7 +503,7 @@ class DesktopDownloadFoldersTest {
         val hooks = Hooks(listOf(item))
         var woke = 0
         val folders = DesktopDownloadFolders(
-            world.locations, world.validator, DownloadMover(world.root.resolve("j.json")), hooks, onReturned = { woke++ },
+            world.locations, world.validator, world.mover(), hooks, onReturned = { woke++ },
         )
         folders.move(setOf(item.id), drive.path.toString())
         hooks.log.clear()

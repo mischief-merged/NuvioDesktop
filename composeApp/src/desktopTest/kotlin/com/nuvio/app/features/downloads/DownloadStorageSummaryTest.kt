@@ -56,7 +56,7 @@ class DownloadStorageSummaryTest {
 
         val result = usage.current(listOf(film.copy(localFileUri = filmFile.toUri().toString()), running), available())
 
-        assertEquals(1_000L + 50 + 200 + 700, result.perLocation.getValue(DownloadLocations.AppId).usedBytes, "announced sizes or unrelated files were counted")
+        assertEquals(1_000L + 200 + 700, result.perLocation.getValue(DownloadLocations.AppId).usedBytes, "announced sizes, siblings that only share a name or unrelated files were counted")
         assertEquals(700L, result.autoDownloadBytes)
         assertFalse(result.perLocation.getValue(DownloadLocations.AppId).lastKnown)
     }
@@ -144,7 +144,7 @@ class DownloadStorageSummaryTest {
             override fun relocate(downloadId: String, locationId: String, localFileUri: String?) = Unit
             override fun resumeHeld() = Unit
         }
-        val folders = DesktopDownloadFolders(world.locations, world.validator, DownloadMover(world.root.resolve("j.json")), hooks)
+        val folders = DesktopDownloadFolders(world.locations, world.validator, world.mover(), hooks)
         assertFalse(folders.state.value.usageMeasured)
 
         folders.refresh()

@@ -295,6 +295,36 @@ class DownloadLocationsRepositoryTest {
     }
 
     @Test
+    fun file_checks_cancel_and_clear_failed_acquire_the_item_lock_instead_of_only_looking_at_it() {
+        val seen = mutableListOf<String>()
+        val watching = object : DownloadsBackend by backend {
+            override fun locate(item: DownloadItem): FileLookup {
+                if (ItemLocks.isHeld(item.id)) seen += "locate"
+                return backend.locate(item)
+            }
+            override fun removePartialOf(item: DownloadItem): Boolean {
+                if (ItemLocks.isHeld(item.id)) seen += "partial"
+                return backend.removePartialOf(item)
+            }
+        }
+        DownloadsRepository.backend = watching
+        val done = episodeIn(null, "tt1", 1)
+        val failed = episodeItem("tt2", 1, status = DownloadStatus.Failed)
+        backend.payload = storedPayload(listOf(done, failed))
+        DownloadsRepository.clearLocalState()
+        DownloadsRepository.ensureLoaded()
+        seen.clear()
+
+        DownloadsRepository.verifyCompletedDownload(done.id)
+        DownloadsRepository.clearFailed()
+        DownloadsRepository.cancelDownload(done.id)
+
+        assertTrue("locate" in seen, "the file check did not hold the lock")
+        assertTrue("partial" in seen, "clear or cancel did not hold the lock")
+        assertFalse(ItemLocks.isHeld(done.id) || ItemLocks.isHeld(failed.id), "a lock was kept")
+    }
+
+    @Test
     fun the_list_stays_readable_by_a_build_without_locations() {
         val drive = world.driveLocation("Archive")
         val item = episodeIn(drive, "tt1", 1)
