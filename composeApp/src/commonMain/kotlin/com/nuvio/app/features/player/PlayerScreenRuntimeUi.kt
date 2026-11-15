@@ -208,9 +208,7 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi(
     val openingOverlayWanted = playerSettingsUiState.showLoadingOverlay &&
         (!initialLoadCompleted || sourceFailoverTryingName != null) &&
         errorMessage == null
-    val sourceFailoverMessage = sourceFailoverTryingName?.let { name ->
-        stringResource(Res.string.player_failover_trying_source, name)
-    }
+    val sourceFailoverMessage = sourceFailoverLoadingMessage()
     val episodeText = if (seasonNumber != null && episodeNumber != null && !episodeTitle.isNullOrBlank()) {
         stringResource(
             Res.string.compose_player_episode_title_format,
@@ -663,6 +661,7 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi(
                         initialLoadCompleted = true
                         announceSourceFailoverIfPending()
                     }
+                    checkForPlaceholderSource(snapshot)
                     if (snapshot.isEnded) {
                         shouldPlay = false
                         controlsVisible = !playerControlsLocked
@@ -1917,9 +1916,7 @@ private fun BoxScope.RenderPlaybackOverlays(
             title = title,
             onBackWithProgress = { requestBack() },
             openingLoadingMessage = if (playerSettingsUiState.showPlayerLoadingStatus) {
-                sourceFailoverTryingName?.let { name ->
-                    stringResource(Res.string.player_failover_trying_source, name)
-                } ?: p2pInitialLoadingMessage ?: playerLoadingStatusMessage(
+                sourceFailoverLoadingMessage() ?: p2pInitialLoadingMessage ?: playerLoadingStatusMessage(
                     showStatus = true,
                     controllerReady = playerController != null,
                     buffering = playbackSnapshot.isLoading,
