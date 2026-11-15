@@ -14,6 +14,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.downloads_error_not_enough_space
 import nuvio.composeapp.generated.resources.downloads_error_private_address
 import org.jetbrains.compose.resources.getString
 import java.awt.Desktop
@@ -49,6 +50,12 @@ internal actual object DownloadsPlatformDownloader {
      */
     /** Whether the internet cannot be reached right now, asked when a source keeps failing. */
     internal var isOffline: suspend () -> Boolean = { !NetworkStatusRepository.isInternetReachable() }
+
+    /** Free space on the volume of the downloads folder, or null when the system does not tell. Replaced in tests. */
+    internal var freeBytesProvider: () -> Long? = {
+        val directory = File(DesktopStorage.rootDir.resolve("downloads").also { it.createDirectories() }.toUri())
+        directory.usableSpace.takeIf { it > 0L || directory.totalSpace > 0L }
+    }
 
     internal var waitBeforeRetry: suspend (delayMs: Long) -> Unit = { delay(it) }
 
@@ -106,6 +113,11 @@ internal actual object DownloadsPlatformDownloader {
                     request.limits?.onStopped?.invoke(error.reason)
                     return@launch
                 } catch (error: IOException) {
+                    // A full disk is still full after a wait, so it is not tried again.
+                    if (classifyDownloadFailure(error.message.orEmpty()) == DownloadFailureKind.NotEnoughSpace) {
+                        onFailure(runBlocking { getString(Res.string.downloads_error_not_enough_space) })
+                        return@launch
+                    }
                     if (!retries.awaitNextAttempt(madeProgress = tempFile.partialLength() > bytesBeforeAttempt)) {
                         onFailure(error.message?.takeIf { it.isNotBlank() && it != "closed" } ?: "Connection lost")
                         return@launch
@@ -214,6 +226,15 @@ internal actual object DownloadsPlatformDownloader {
             contentLength = response.headers().firstValue("Content-Length").orElse(null)?.toLongOrNull(),
         )
         var downloadedBytes = startingBytes
+        // Checked before anything of the body is written, for every download: a file announced as
+        // larger than the room on the disk fails with a plain message instead of a system error.
+        if (totalBytes != null) {
+            val free = downloadsFreeBytes()
+            if (free != null && totalBytes - startingBytes > free) {
+                response.body().close()
+                error(runBlocking { getString(Res.string.downloads_error_not_enough_space) })
+            }
+        }
         // Checked before anything of the body is written: a file that is announced as too large for
         // the limits of an automatic download is not started.
         val limits = request.limits
@@ -294,10 +315,7 @@ internal actual object DownloadsPlatformDownloader {
     }
 
     /** Free space on the volume of the downloads folder, or null when the system does not tell. */
-    private fun downloadsFreeBytes(): Long? {
-        val directory = downloadsDir
-        return directory.usableSpace.takeIf { it > 0L || directory.totalSpace > 0L }
-    }
+    private fun downloadsFreeBytes(): Long? = freeBytesProvider()
 
     private fun sendDownloadRequest(
         request: DownloadPlatformRequest,

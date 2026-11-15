@@ -13,11 +13,13 @@ internal fun DownloadsDestination(
     navController: NuvioNavigator,
     useNativeNavigation: Boolean,
     onOpenDownload: (DownloadItem) -> Unit,
+    onChooseAnotherSource: ((DownloadItem) -> Unit)? = null,
 ) {
     val onBack = rememberGuardedPopBackStack(navController, route)
     DownloadsScreen(
         onBack = onBack,
         onOpenDownload = onOpenDownload,
+        onChooseAnotherSource = onChooseAnotherSource,
         onNavigateToShow = if (useNativeNavigation) {
             { showId, title -> navController.navigate(DownloadShowRoute(showId, title)) }
         } else {
@@ -31,11 +33,13 @@ internal fun DownloadShowDestination(
     route: DownloadShowRoute,
     navController: NuvioNavigator,
     onOpenDownload: (DownloadItem) -> Unit,
+    onChooseAnotherSource: ((DownloadItem) -> Unit)? = null,
 ) {
     val onBack = rememberGuardedPopBackStack(navController, route)
     DownloadsScreen(
         onBack = onBack,
         onOpenDownload = onOpenDownload,
+        onChooseAnotherSource = onChooseAnotherSource,
         initialShowId = route.showId,
         onBackFromShow = onBack,
     )

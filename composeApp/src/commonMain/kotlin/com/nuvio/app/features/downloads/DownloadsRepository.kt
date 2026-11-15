@@ -303,6 +303,7 @@ object DownloadsRepository {
             status = DownloadStatus.Downloading,
             errorMessage = null,
             autoDownloadStop = null,
+            failureKind = null,
             localFileUri = null,
             updatedAtEpochMs = DownloadsClock.nowEpochMs(),
         )
@@ -314,6 +315,35 @@ object DownloadsRepository {
 
     fun retryDownload(downloadId: String) {
         resumeDownload(downloadId)
+    }
+
+    /**
+     * Starts every failed download again, except the ones whose source is the problem: fetching
+     * those again would give the same bad file, so they wait for another source. Returns how many
+     * were started.
+     */
+    fun retryAllFailed(): Int = synchronized(stateLock) {
+        ensureLoaded()
+        val retryable = _uiState.value.items
+            .filter { it.status == DownloadStatus.Failed && !it.needsAnotherSource }
+            .map { it.id }
+        retryable.forEach(::resumeDownload)
+        retryable.size
+    }
+
+    /** Removes every failed download from the list. A failed download has no file; only a partial one is cleaned up. Returns how many. */
+    fun clearFailed(): Int = synchronized(stateLock) {
+        ensureLoaded()
+        val failed = _uiState.value.items.filter { it.status == DownloadStatus.Failed }
+        if (failed.isEmpty()) return 0
+        failed.forEach { item ->
+            activeTransfers.remove(item.id)?.cancel()
+            backend.removePartialFile(item.fileName)
+        }
+        val ids = failed.mapTo(mutableSetOf()) { it.id }
+        publish(_uiState.value.items.filterNot { it.id in ids })
+        persist()
+        failed.size
     }
 
     internal fun reattachBackgroundDownload(downloadId: String): Unit = synchronized(stateLock) {
@@ -338,6 +368,41 @@ object DownloadsRepository {
         persist()
     }
 
+    /**
+     * Deletes a download the user chose to delete. Its finished file goes to the trash, as it does
+     * for a download deleted after watching, and is not deleted outright; what a transfer wrote so
+     * far is removed. A file that another download also uses stays where it is. When the file cannot
+     * be moved nothing is removed: the entry stays, so that the file is not lost from view.
+     */
+    internal fun deleteDownload(downloadId: String): DownloadDeleteResult = synchronized(stateLock) {
+        ensureLoaded()
+        val items = _uiState.value.items
+        val item = items.firstOrNull { it.id == downloadId } ?: return DownloadDeleteResult.Gone
+
+        val fileUri = if (item.status == DownloadStatus.Completed) {
+            backend.resolveLocalFileUri(item.localFileUri, item.fileName)
+        } else {
+            null
+        }
+        if (fileUri != null) {
+            val usedByAnother = items.any { other ->
+                other.id != item.id &&
+                    listOfNotNull(other.localFileUri, backend.resolveLocalFileUri(other.localFileUri, other.fileName))
+                        .any { backend.isSameFile(it, fileUri) }
+            }
+            if (!usedByAnother && !backend.trashFile(fileUri)) return DownloadDeleteResult.NotMoved
+        }
+        activeTransfers.remove(downloadId)?.cancel()
+        backend.removePartialFile(item.fileName)
+
+        publish(items.filterNot { it.id == downloadId })
+        persist()
+        DownloadDeleteResult.Removed
+    }
+
+    /** Whether the files of deleted downloads go to the trash of the system, or are held for days in the downloads folder. */
+    internal val usesSystemTrash: Boolean get() = backend.usesSystemTrash
+
     private fun loadFromDisk(): Unit = synchronized(stateLock) {
         _hasUnseenCompleted.value = false
         hasLoaded = true
@@ -345,6 +410,7 @@ object DownloadsRepository {
         savingIsUnsafe = false
         val payload = backend.loadPayload().orEmpty().trim()
         var decoded = if (payload.isEmpty()) null else DownloadsCodec.decode(payload)
+        val payloadUnreadable = payload.isNotEmpty() && decoded == null
         if (decoded == null && payload.isNotEmpty()) {
             // A payload that cannot be read is put aside before anything can be saved in its place,
             // and the one from before the last write is read instead when there is one. That one
@@ -357,8 +423,15 @@ object DownloadsRepository {
                 ?.takeIf { it.isNotEmpty() }
                 ?.let(DownloadsCodec::decode)
         }
+        // A payload with content that could not be read is a problem to show, whatever was read in its place.
+        val storeProblem = when {
+            !payloadUnreadable -> null
+            savingIsUnsafe -> DownloadsStoreProblem.NotSaving
+            decoded != null -> DownloadsStoreProblem.EarlierCopyShown
+            else -> DownloadsStoreProblem.StartedEmpty
+        }
         if (decoded == null) {
-            _uiState.value = DownloadsUiState()
+            _uiState.value = DownloadsUiState(storeProblem = storeProblem)
             notifyLiveStatusPlatform()
             return
         }
@@ -376,7 +449,7 @@ object DownloadsRepository {
                 localUriNormalized
             }
 
-        _uiState.value = DownloadsUiState(normalized)
+        _uiState.value = DownloadsUiState(normalized, storeProblem)
         notifyLiveStatusPlatform()
         if (shouldPersistNormalized) {
             persist()
@@ -419,7 +492,10 @@ object DownloadsRepository {
                 ifCurrent(item.id, transfer) {
                     activeTransfers.remove(item.id)
                     val current = _uiState.value.items.firstOrNull { it.id == item.id }
-                    if (current?.status == DownloadStatus.Downloading && attempt < MaxDownloadAttempts) {
+                    val kind = classifyDownloadFailure(message)
+                    // A bad file, a refusal or a full disk comes again on every attempt.
+                    val worthAnotherAttempt = kind == DownloadFailureKind.Other
+                    if (current?.status == DownloadStatus.Downloading && attempt < MaxDownloadAttempts && worthAnotherAttempt) {
                         startDownload(current, attempt + 1)
                     } else {
                         mutateItem(item.id) { failed ->
@@ -428,6 +504,7 @@ object DownloadsRepository {
                             } else {
                                 failed.copy(
                                     status = DownloadStatus.Failed,
+                                    failureKind = kind,
                                     errorMessage = message.ifBlank { runBlocking { getString(Res.string.download_failed) } },
                                     updatedAtEpochMs = DownloadsClock.nowEpochMs(),
                                 )
@@ -575,6 +652,11 @@ object DownloadsRepository {
             DownloadedFileProblem.NotVideo -> Res.string.downloads_error_file_not_video
             DownloadedFileProblem.ChecksumMismatch -> Res.string.downloads_error_file_checksum
         },
+        // A file that went missing or was cut short says nothing against its source.
+        when (problem) {
+            DownloadedFileProblem.Missing, DownloadedFileProblem.Incomplete -> DownloadFailureKind.Other
+            DownloadedFileProblem.NotVideo, DownloadedFileProblem.ChecksumMismatch -> DownloadFailureKind.BadFile
+        },
     )
 
     private fun DownloadItem.failedBecauseOf(problem: DownloadedFramesProblem): DownloadItem = failedWith(
@@ -585,12 +667,14 @@ object DownloadsRepository {
             DownloadedFramesProblem.Blank -> Res.string.downloads_error_frames_blank
             DownloadedFramesProblem.StillPicture -> Res.string.downloads_error_frames_still
         },
+        DownloadFailureKind.BadFile,
     )
 
-    private fun DownloadItem.failedWith(message: StringResource): DownloadItem = copy(
+    private fun DownloadItem.failedWith(message: StringResource, kind: DownloadFailureKind): DownloadItem = copy(
         status = DownloadStatus.Failed,
         localFileUri = null,
         framesCheck = DownloadFramesCheck.NotChecked,
+        failureKind = kind,
         errorMessage = runBlocking { getString(message) },
         updatedAtEpochMs = DownloadsClock.nowEpochMs(),
     )
@@ -718,9 +802,7 @@ object DownloadsRepository {
         if (items.any { it.status == DownloadStatus.Completed && previousStatuses[it.id].let { status -> status != null && status != DownloadStatus.Completed } }) {
             _hasUnseenCompleted.value = true
         }
-        _uiState.value = DownloadsUiState(
-            items = items,
-        )
+        _uiState.value = _uiState.value.copy(items = items)
         notifyLiveStatusPlatform()
     }
 
@@ -821,9 +903,22 @@ internal interface DownloadsBackend {
     /** Moves a file out of the downloads folder without deleting it at once. True when it is out, or was gone. */
     fun trashFile(localFileUri: String): Boolean = false
 
+    /** True when [trashFile] puts files in the trash of the system, false when it only holds them for days. */
+    val usesSystemTrash: Boolean get() = true
+
     /** Whether two addresses name the same file, however they are spelled. */
     fun isSameFile(firstFileUri: String, secondFileUri: String): Boolean =
         firstFileUri.trim().removePrefix("file:").trimStart('/') == secondFileUri.trim().removePrefix("file:").trimStart('/')
+}
+
+internal enum class DownloadDeleteResult {
+    Removed,
+
+    /** The download was already gone. */
+    Gone,
+
+    /** The file could not be moved to the trash. Nothing was removed. */
+    NotMoved,
 }
 
 internal enum class AutoDownloadRemovalResult {
@@ -872,6 +967,8 @@ private object PlatformDownloadsBackend : DownloadsBackend {
         sampleConfirmingDownloadedFrames(localFileUri, durationMs)
 
     override fun trashFile(localFileUri: String): Boolean = DownloadsTrash.moveAway(localFileUri)
+
+    override val usesSystemTrash: Boolean get() = DownloadsTrash.usesSystemTrash
 
     override fun isSameFile(firstFileUri: String, secondFileUri: String): Boolean =
         DownloadsTrash.isSameFile(firstFileUri, secondFileUri)
