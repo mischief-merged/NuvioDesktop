@@ -13,10 +13,14 @@
 </div>
 
 <p align="center">
-  <img src="assets/fork-logo.png" alt="Nuvio play-button icon with two flexing cartoon arms" width="220" />
+  <img src="assets/fork-logo.png" alt="NuvioRoid logo: the Nuvio play-button icon with two flexing cartoon arms" width="220" />
 </p>
 
-> **This is a fork of [NuvioMedia/NuvioDesktop](https://github.com/NuvioMedia/NuvioDesktop).** It adds offline downloads, auto-download, download file checks and play-by-preferences to the desktop app. **[FORK.md](FORK.md) lists what is different**, change by change, with what was tested. The official builds are at the links above; this fork does not publish releases.
+<h1 align="center">NuvioRoid</h1>
+
+<p align="center"><b>Nuvio Desktop on steroids.</b></p>
+
+> **NuvioRoid is a fork of [NuvioMedia/NuvioDesktop](https://github.com/NuvioMedia/NuvioDesktop).** It adds offline downloads, auto-download, download file checks, play-by-preferences and Plex-style episode pages to the desktop app. **[FORK.md](FORK.md) lists what is different**, change by change, with what was tested. A macOS download of NuvioRoid is being prepared; the links below are the official Nuvio builds.
 
 ## ⚠️ Alpha Software - Slow Development - Testers Only
 
