@@ -34,6 +34,12 @@ NuvioRoid is a fork of [NuvioMedia/NuvioDesktop](https://github.com/NuvioMedia/N
 |---|---|---|
 | Episode page and trail | Each episode has its own page: still, title, air date, runtime, rating, summary, Play or Resume, mark watched, previous and next episode, and the rest of the season. A `Show > Season > Episode` trail leads back. On desktop, clicking an episode opens its page and a Play button on the thumbnail plays it; the show page can open on a given season and episode. Episode downloads, Continue Watching entries and the player title link to the episode, season and show. | `pr/k-episode-navigation` |
 
+## First run
+
+| Change | What it does | Branch |
+|---|---|---|
+| Profile picker without an account | With no profiles, the picker shows the "Add Profile" tile and a line of guidance instead of an empty screen. Its title, profile cards and buttons are labelled and work from the keyboard. | `fix/profile-picker-first-run` |
+
 ## Trakt
 
 | Change | What it does | Branch |
@@ -48,7 +54,7 @@ User-facing English text uses one set of terms ("source", "Auto-download") and p
 
 ## Testing
 
-The desktop test suite on `downloads-suite` runs 2,887 tests. Three fail, and the same three fail on upstream `Dev` at `c8ee7621` without any of these changes:
+The desktop test suite on `downloads-suite` runs 2,905 tests. Three fail, and the same three fail on upstream `Dev` at `c8ee7621` without any of these changes:
 
 - `DesktopWindowInsetsTest` (title bar clearance)
 - `SettingsNavigationTest` (buffer options by platform and playback engine)
