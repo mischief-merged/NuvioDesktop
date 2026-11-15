@@ -51,7 +51,8 @@ internal object SeasonDownloadDefaultsRepository {
 
 /**
  * The choices shown in the season download dialog, starting from what [profileId] last confirmed.
- * They are saved only when the download is confirmed, and always for that same profile.
+ * They are saved only when the download is confirmed, and always for that same profile, unless
+ * [justThisTime] is set: then they apply to this download only and the saved ones stay as they were.
  */
 internal class SeasonDownloadChoices(
     val profileId: Int,
@@ -61,8 +62,11 @@ internal class SeasonDownloadChoices(
     var maxBitrateMbps by mutableStateOf(saved.maxBitrateMbps)
     var audioLanguage by mutableStateOf(saved.audioLanguage)
 
+    /** When true, [confirm] hands the choices on without saving them. Off unless the user turns it on. */
+    var justThisTime by mutableStateOf(false)
+
     fun confirm(): SeasonDownloadDefaults =
         SeasonDownloadDefaults(quality, maxBitrateMbps, audioLanguage)
             .normalized()
-            .also { SeasonDownloadDefaultsRepository.save(profileId, it) }
+            .also { if (!justThisTime) SeasonDownloadDefaultsRepository.save(profileId, it) }
 }

@@ -8,6 +8,7 @@ import com.nuvio.app.features.addons.fetchAddonResponseText
 import com.nuvio.app.features.debrid.DirectDebridPlaybackResolver
 import com.nuvio.app.features.debrid.DirectDebridPlayableResult
 import com.nuvio.app.features.details.MetaDetailsRepository
+import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.streams.StreamItem
 import com.nuvio.app.features.streams.StreamParser
 import com.nuvio.app.features.streams.runCatchingUnlessCancelled
@@ -58,6 +59,9 @@ internal object SeasonBatchDownloads {
         onFinished = { request, summary ->
             if (request.autoDownloadRuleKey == null) {
                 summaryToast(request, summary)?.let { NuvioToastController.show(it) }
+                // The toast goes away; the last run stays on the Downloads screen until dismissed.
+                summary.toRunRecord(request, DownloadsClock.nowEpochMs())
+                    ?.let { BatchRunSummaries.record(ProfileRepository.activeProfileId, it) }
             } else {
                 AutoDownloads.onBatchFinished(request, summary)
             }

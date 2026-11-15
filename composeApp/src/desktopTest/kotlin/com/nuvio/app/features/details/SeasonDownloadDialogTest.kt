@@ -3,7 +3,14 @@ package com.nuvio.app.features.details
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotSelected
+import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isDialog
@@ -29,13 +36,18 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.action_cancel
+import nuvio.composeapp.generated.resources.downloads_choices_just_this_time
+import nuvio.composeapp.generated.resources.downloads_choices_saved_note
 import nuvio.composeapp.generated.resources.downloads_season_audio_language_any
 import nuvio.composeapp.generated.resources.downloads_season_bitrate_no_limit
 import nuvio.composeapp.generated.resources.downloads_season_bitrate_value
 import nuvio.composeapp.generated.resources.downloads_season_dialog_title
+import nuvio.composeapp.generated.resources.downloads_season_max_bitrate
+import nuvio.composeapp.generated.resources.downloads_season_max_bitrate_description
 import nuvio.composeapp.generated.resources.downloads_season_quality_1080
 import nuvio.composeapp.generated.resources.downloads_season_quality_720
 import nuvio.composeapp.generated.resources.downloads_season_quality_any
+import nuvio.composeapp.generated.resources.downloads_season_button
 import nuvio.composeapp.generated.resources.downloads_season_start
 import nuvio.composeapp.generated.resources.episodes_season
 import org.jetbrains.compose.resources.StringResource
@@ -45,6 +57,7 @@ import org.junit.Before
 import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class SeasonDownloadDialogTest {
     @get:Rule
@@ -136,6 +149,46 @@ class SeasonDownloadDialogTest {
     }
 
     @Test
+    fun the_dialog_says_the_choices_are_saved_and_where_they_are_used() {
+        showButton()
+        openDialog()
+
+        compose.onNodeWithText(text(Res.string.downloads_choices_saved_note)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_choices_just_this_time)).assertIsDisplayed()
+        compose.onNode(hasContentDescription(text(Res.string.downloads_choices_just_this_time)))
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Checkbox))
+            .assertIsNotSelected()
+    }
+
+    @Test
+    fun the_bitrate_choice_names_its_unit_and_says_what_lower_means() {
+        showButton()
+        openDialog()
+
+        val title = text(Res.string.downloads_season_max_bitrate)
+        assertTrue(title.contains("megabits per second"))
+        compose.onNodeWithText(text(Res.string.downloads_season_max_bitrate_description)).assertIsDisplayed()
+        assertTrue(text(Res.string.downloads_season_max_bitrate_description).contains("smaller files"))
+        assertTrue(bitrate(10).contains("megabits per second"))
+    }
+
+    @Test
+    fun just_this_time_starts_the_season_with_the_choices_and_keeps_the_saved_ones() {
+        SeasonDownloadDefaultsRepository.save(profile, saved)
+        showButton()
+        openDialog()
+
+        compose.onNodeWithText(bitrate(10)).performClick()
+        compose.onNodeWithText(bitrate(25)).performClick()
+        compose.onNodeWithText(text(Res.string.downloads_choices_just_this_time)).performClick()
+        compose.onNode(hasContentDescription(text(Res.string.downloads_choices_just_this_time))).assertIsSelected()
+        confirmButton().performClick()
+
+        assertEquals(saved, SeasonDownloadDefaultsRepository.load(profile))
+        assertEquals(25, requests.single().maxBitrateMbps)
+    }
+
+    @Test
     fun a_profile_switch_while_the_dialog_is_open_keeps_the_edits_with_the_profile_it_was_opened_for() {
         SeasonDownloadDefaultsRepository.save(profile, saved)
         val otherSaved = SeasonDownloadDefaults(BatchQuality.P480, maxBitrateMbps = 4)
@@ -179,9 +232,9 @@ class SeasonDownloadDialogTest {
         compose.onNodeWithContentDescription(text(Res.string.downloads_season_dialog_title, season)).performClick()
     }
 
-    /** The dialog's Download button. The button that opens the menu has the same label. */
+    /** The dialog's "Download season" button. The menu entry that opens the dialog has the same label. */
     private fun confirmButton() =
-        compose.onNode(hasText(text(Res.string.downloads_season_start)) and hasAnyAncestor(isDialog()))
+        compose.onNode(hasText(text(Res.string.downloads_season_button)) and hasAnyAncestor(isDialog()))
 
     private object NoAutoDownloads : AutoDownloadController {
         override val rules = MutableStateFlow(emptyList<AutoDownloadRule>())

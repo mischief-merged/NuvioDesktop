@@ -30,9 +30,13 @@ import com.nuvio.app.features.downloads.PreferenceSetupAction
 import com.nuvio.app.features.downloads.PreferenceSetupAnswer
 import com.nuvio.app.features.downloads.PreferenceSetupRepository
 import com.nuvio.app.features.downloads.SeasonDownloadChoices
+import com.nuvio.app.features.downloads.downloadChoicesStart
+import com.nuvio.app.features.player.AudioLanguageOption
+import com.nuvio.app.features.player.DeviceLanguagePreferences
 import com.nuvio.app.features.streams.StreamAutoPlayMode
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.action_save
+import nuvio.composeapp.generated.resources.downloads_season_audio_language_prefilled
 import nuvio.composeapp.generated.resources.settings_preferences_section_play
 import nuvio.composeapp.generated.resources.settings_preferences_setup_message
 import nuvio.composeapp.generated.resources.settings_preferences_setup_skip
@@ -53,6 +57,8 @@ internal fun PreferenceSetupHost(
     canInterrupt: Boolean,
     playMode: StreamAutoPlayMode,
     onPlayModeChange: (StreamAutoPlayMode) -> Unit,
+    /** The playback audio language, which the download language starts from when the profile has saved nothing. */
+    playbackAudioLanguage: String = AudioLanguageOption.DEFAULT,
 ) {
     var answers by remember(profileId) { mutableIntStateOf(0) }
     val action = remember(profileId, canInterrupt, answers) {
@@ -69,6 +75,12 @@ internal fun PreferenceSetupHost(
             profileId = profileId,
             playMode = playMode,
             onPlayModeChange = onPlayModeChange,
+            playbackAudioLanguage = playbackAudioLanguage,
+            deviceLanguages = if (playbackAudioLanguage == AudioLanguageOption.DEVICE) {
+                remember { DeviceLanguagePreferences.preferredLanguageCodes() }
+            } else {
+                emptyList()
+            },
             onAnswered = { answer ->
                 PreferenceSetupRepository.record(profileId, answer)
                 answers++
@@ -88,9 +100,21 @@ internal fun PreferenceSetupDialog(
     playMode: StreamAutoPlayMode,
     onPlayModeChange: (StreamAutoPlayMode) -> Unit,
     onAnswered: (PreferenceSetupAnswer) -> Unit,
+    playbackAudioLanguage: String = AudioLanguageOption.DEFAULT,
+    deviceLanguages: List<String> = emptyList(),
 ) {
     val tokens = MaterialTheme.nuvio
-    val choices = remember(profileId) { SeasonDownloadChoices(profileId) }
+    // The download language starts from the playback audio language when nothing is saved. Nothing
+    // is saved until Save is pressed.
+    val start = remember(profileId, playbackAudioLanguage, deviceLanguages) {
+        downloadChoicesStart(profileId, playbackAudioLanguage, deviceLanguages)
+    }
+    val choices = remember(start) { SeasonDownloadChoices(profileId, saved = start.defaults) }
+    val languageNote = if (start.languageFromPlayback && choices.audioLanguage == start.defaults.audioLanguage) {
+        stringResource(Res.string.downloads_season_audio_language_prefilled)
+    } else {
+        null
+    }
     var selectedMode by remember(profileId) { mutableStateOf(playMode) }
     var picker by remember(profileId) { mutableStateOf<DownloadPreferencePicker?>(null) }
     DialogSurface(
@@ -107,6 +131,7 @@ internal fun PreferenceSetupDialog(
                 maxBitrateMbps = choices.maxBitrateMbps,
                 audioLanguage = choices.audioLanguage,
                 onPick = { picker = it },
+                audioLanguageNote = languageNote,
             )
             NuvioSectionLabel(
                 text = stringResource(Res.string.settings_preferences_section_play),

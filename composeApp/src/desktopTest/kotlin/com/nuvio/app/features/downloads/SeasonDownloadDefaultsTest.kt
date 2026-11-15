@@ -77,6 +77,24 @@ class SeasonDownloadDefaultsTest {
     }
 
     @Test
+    fun choices_confirmed_just_this_time_are_handed_on_but_not_saved() {
+        SeasonDownloadDefaultsRepository.save(profile, chosen)
+        val choices = SeasonDownloadChoices(profile)
+
+        choices.quality = BatchQuality.P480
+        choices.justThisTime = true
+        val confirmed = choices.confirm()
+
+        assertEquals(BatchQuality.P480, confirmed.quality)
+        assertEquals(chosen, SeasonDownloadDefaultsRepository.load(profile))
+    }
+
+    @Test
+    fun choices_are_saved_by_default() {
+        assertEquals(false, SeasonDownloadChoices(profile).justThisTime)
+    }
+
+    @Test
     fun choices_are_saved_for_the_profile_the_dialog_was_opened_for() {
         val otherSaved = SeasonDownloadDefaults(BatchQuality.P480, maxBitrateMbps = 4)
         SeasonDownloadDefaultsRepository.save(otherProfile, otherSaved)

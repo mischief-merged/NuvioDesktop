@@ -75,6 +75,8 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
+import com.nuvio.app.features.settings.LocalOpenSettingsPage
+import com.nuvio.app.features.settings.SettingsPage
 import com.nuvio.app.core.build.AppFeaturePolicy
 import com.nuvio.app.core.ui.ArtworkBackdrop
 import com.nuvio.app.core.ui.LocalOnBackdrop
@@ -743,6 +745,7 @@ private const val STREAM_CONTENT_TYPE_SOURCE_HEADER = "streams_source_header"
 private const val STREAM_CONTENT_TYPE_STREAM = "streams_stream"
 private const val STREAM_CONTENT_TYPE_FOOTER_LOADING = "streams_footer_loading"
 private const val STREAM_CONTENT_TYPE_BOTTOM_SPACER = "streams_bottom_spacer"
+private const val STREAM_CONTENT_TYPE_NO_MATCH_BANNER = "streams_auto_play_no_match"
 
 private data class StreamSectionRenderModel(
     val sectionKey: String,
@@ -788,6 +791,8 @@ internal fun StreamList(
     val checkingMoreAddonsText = stringResource(Res.string.streams_checking_more_addons)
     val formatStreamSize = rememberStreamSizeLabelFormat()
     val sharedStream = LocalSharedStream.current
+    val noMatchBanner = uiState.autoPlayNoMatchBanner()
+    val openSettingsPage = LocalOpenSettingsPage.current
     val streamBadgeSettings by remember {
         StreamBadgeSettingsRepository.ensureLoaded()
         StreamBadgeSettingsRepository.uiState
@@ -813,6 +818,18 @@ internal fun StreamList(
             ),
             verticalArrangement = Arrangement.spacedBy(0.dp),
         ) {
+            noMatchBanner?.let { context ->
+                item(key = "auto_play_no_match", contentType = STREAM_CONTENT_TYPE_NO_MATCH_BANNER) {
+                    AutoPlayNoMatchBanner(
+                        context = context,
+                        sourceCount = uiState.groups.sumOf { it.streams.size },
+                        onOpenPreferences = openSettingsPage?.let { open ->
+                            { open(SettingsPage.PlaybackPreferences) }
+                        },
+                        modifier = Modifier.padding(bottom = 10.dp),
+                    )
+                }
+            }
             sharedStream?.let { shared ->
                 item(key = "shared_stream") {
                     Column {
