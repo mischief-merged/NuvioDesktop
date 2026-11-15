@@ -1,5 +1,8 @@
 package com.nuvio.app.features.streams
 
+import com.nuvio.app.features.debrid.DebridStreamLanguage
+import com.nuvio.app.features.downloads.BatchQuality
+import com.nuvio.app.features.downloads.SeasonDownloadDefaults
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -301,6 +304,7 @@ class StreamAutoPlaySelectorTest {
         directDebridService: String = "torbox",
         infoHash: String? = null,
         cacheState: StreamDebridCacheState? = null,
+        videoSize: Long? = null,
     ): StreamItem = StreamItem(
         name = name,
         url = url,
@@ -327,6 +331,169 @@ class StreamAutoPlaySelectorTest {
         },
         behaviorHints = StreamBehaviorHints(
             bingeGroup = bingeGroup,
+            videoSize = videoSize,
         ),
     )
+
+    private val preferredRuntimeMinutes = 50
+
+    private fun sizeFor(megabitsPerSecond: Double): Long =
+        (megabitsPerSecond * 1_000_000 * preferredRuntimeMinutes * 60 / 8).toLong()
+
+    private fun preferred(
+        streams: List<StreamItem>,
+        preferences: SeasonDownloadDefaults = SeasonDownloadDefaults(),
+        mode: StreamAutoPlayMode = StreamAutoPlayMode.PREFERRED,
+        source: StreamAutoPlaySource = StreamAutoPlaySource.ALL_SOURCES,
+        installed: Set<String> = streams.map { it.addonName }.toSet(),
+        selectedAddons: Set<String> = emptySet(),
+        selectedPlugins: Set<String> = emptySet(),
+        runtimeMinutes: Int? = preferredRuntimeMinutes,
+    ): StreamAutoPlayEvaluation = StreamAutoPlaySelector.evaluateAutoPlayStream(
+        streams = streams,
+        mode = mode,
+        regexPattern = "",
+        source = source,
+        installedAddonNames = installed,
+        selectedAddons = selectedAddons,
+        selectedPlugins = selectedPlugins,
+        preferences = preferences,
+        runtimeMinutes = runtimeMinutes,
+    )
+
+    @Test
+    fun `preferred mode picks the saved quality even when other sources are listed first`() {
+        val uhd = stream("A", url = "https://example.com/uhd.mkv", name = "2160p")
+        val hd = stream("A", url = "https://example.com/hd.mkv", name = "1080p")
+        val sd = stream("A", url = "https://example.com/sd.mkv", name = "720p")
+
+        val evaluation = preferred(listOf(uhd, sd, hd), SeasonDownloadDefaults(quality = BatchQuality.P1080))
+
+        assertEquals(hd, evaluation.stream)
+        assertEquals(listOf(hd), evaluation.readyStreams)
+    }
+
+    @Test
+    fun `preferred mode with no saved quality picks the highest resolution, not the first listed`() {
+        val sd = stream("A", url = "https://example.com/sd.mkv", name = "720p")
+        val uhd = stream("A", url = "https://example.com/uhd.mkv", name = "2160p")
+
+        assertEquals(uhd, preferred(listOf(sd, uhd)).stream)
+    }
+
+    @Test
+    fun `preferred mode respects the bitrate cap`() {
+        val tooBig = stream("A", url = "https://example.com/big.mkv", name = "1080p", videoSize = sizeFor(30.0))
+        val fits = stream("A", url = "https://example.com/fits.mkv", name = "1080p", videoSize = sizeFor(8.0))
+        val preferences = SeasonDownloadDefaults(maxBitrateMbps = 10)
+
+        assertEquals(fits, preferred(listOf(tooBig, fits), preferences).stream)
+        assertNull(preferred(listOf(tooBig), preferences).stream)
+    }
+
+    @Test
+    fun `preferred mode cannot check a bitrate cap without a runtime and keeps the source`() {
+        val big = stream("A", url = "https://example.com/big.mkv", name = "1080p", videoSize = sizeFor(30.0))
+
+        val evaluation = preferred(listOf(big), SeasonDownloadDefaults(maxBitrateMbps = 10), runtimeMinutes = null)
+
+        assertEquals(big, evaluation.stream)
+    }
+
+    @Test
+    fun `preferred mode prefers the audio language, accepts untagged and drops other languages`() {
+        val french = stream("A", url = "https://example.com/fr.mkv", name = "1080p FRENCH")
+        val untagged = stream("A", url = "https://example.com/untagged.mkv", name = "1080p")
+        val english = stream("A", url = "https://example.com/en.mkv", name = "1080p ENGLISH")
+        val preferences = SeasonDownloadDefaults(audioLanguage = DebridStreamLanguage.EN)
+
+        val evaluation = preferred(listOf(french, untagged, english), preferences)
+
+        assertEquals(listOf(english, untagged), evaluation.readyStreams)
+        assertEquals(english, evaluation.stream)
+        assertEquals(untagged, preferred(listOf(french, untagged), preferences).stream)
+        assertNull(preferred(listOf(french), preferences).stream)
+    }
+
+    @Test
+    fun `preferred mode honours the source scope`() {
+        val plugin = stream("Plugin", url = "https://example.com/plugin.mkv", name = "2160p")
+        val addon = stream("Addon", url = "https://example.com/addon.mkv", name = "1080p")
+
+        val evaluation = preferred(
+            streams = listOf(plugin, addon),
+            source = StreamAutoPlaySource.INSTALLED_ADDONS_ONLY,
+            installed = setOf("Addon"),
+        )
+
+        assertEquals(addon, evaluation.stream)
+    }
+
+    @Test
+    fun `preferred mode honours the selected addons and plugins`() {
+        val addonA = stream("AddonA", url = "https://example.com/a.mkv", name = "2160p")
+        val addonB = stream("AddonB", url = "https://example.com/b.mkv", name = "1080p")
+        val pluginX = stream("PluginX", url = "https://example.com/x.mkv", name = "2160p")
+        val installed = setOf("AddonA", "AddonB")
+
+        assertEquals(
+            addonB,
+            preferred(listOf(addonA, addonB), installed = installed, selectedAddons = setOf("AddonB")).stream,
+        )
+        assertNull(
+            preferred(
+                listOf(pluginX),
+                installed = installed,
+                selectedPlugins = setOf("PluginY"),
+            ).stream,
+        )
+    }
+
+    @Test
+    fun `preferred mode falls back to the picker when nothing fits`() {
+        val hd = stream("A", url = "https://example.com/hd.mkv", name = "1080p")
+
+        val evaluation = preferred(listOf(hd), SeasonDownloadDefaults(quality = BatchQuality.P2160))
+
+        assertNull(evaluation.stream)
+        assertTrue(evaluation.readyStreams.isEmpty())
+        assertFalse(evaluation.hasPendingDebridCandidate)
+    }
+
+    @Test
+    fun `preferred mode never plays a source that is not auto playable`() {
+        val browserLink = stream("A", externalUrl = "https://example.com/watch", name = "1080p")
+
+        assertNull(preferred(listOf(browserLink)).stream)
+    }
+
+    @Test
+    fun `preferred mode still prefers the binge group stream`() {
+        val best = stream("A", url = "https://example.com/best.mkv", name = "2160p", bingeGroup = "other")
+        val grouped = stream("A", url = "https://example.com/grouped.mkv", name = "720p", bingeGroup = "same")
+
+        val selected = StreamAutoPlaySelector.selectAutoPlayStream(
+            streams = listOf(best, grouped),
+            mode = StreamAutoPlayMode.PREFERRED,
+            regexPattern = "",
+            source = StreamAutoPlaySource.ALL_SOURCES,
+            installedAddonNames = setOf("A"),
+            selectedAddons = emptySet(),
+            selectedPlugins = emptySet(),
+            preferredBingeGroup = "same",
+            preferBingeGroupInSelection = true,
+        )
+
+        assertEquals(grouped, selected)
+    }
+
+    @Test
+    fun `saved preferences do not change the existing modes`() {
+        val uhd = stream("A", url = "https://example.com/uhd.mkv", name = "2160p")
+        val hd = stream("A", url = "https://example.com/hd.mkv", name = "1080p")
+        val preferences = SeasonDownloadDefaults(quality = BatchQuality.P1080)
+
+        assertEquals(uhd, preferred(listOf(uhd, hd), preferences, mode = StreamAutoPlayMode.FIRST_STREAM).stream)
+        assertNull(preferred(listOf(uhd, hd), preferences, mode = StreamAutoPlayMode.MANUAL).stream)
+    }
 }

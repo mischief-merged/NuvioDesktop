@@ -1,6 +1,8 @@
 package com.nuvio.app.features.streams
 
 import com.nuvio.app.core.build.AppFeaturePolicy
+import com.nuvio.app.features.downloads.SeasonDownloadDefaults
+import com.nuvio.app.features.downloads.rankStreamsByPreferences
 
 object StreamAutoPlaySelector {
 
@@ -37,7 +39,7 @@ object StreamAutoPlaySelector {
         return directDebridEntries + orderedAddons + pluginEntries
     }
 
-    fun selectAutoPlayStream(
+    internal fun selectAutoPlayStream(
         streams: List<StreamItem>,
         mode: StreamAutoPlayMode,
         regexPattern: String,
@@ -50,6 +52,8 @@ object StreamAutoPlaySelector {
         bingeGroupOnly: Boolean = false,
         debridEnabled: Boolean = true,
         activeResolverProviderId: String? = null,
+        preferences: SeasonDownloadDefaults = SeasonDownloadDefaults(),
+        runtimeMinutes: Int? = null,
     ): StreamItem? =
         evaluateAutoPlayStream(
             streams = streams,
@@ -64,9 +68,11 @@ object StreamAutoPlaySelector {
             bingeGroupOnly = bingeGroupOnly,
             debridEnabled = debridEnabled,
             activeResolverProviderId = activeResolverProviderId,
+            preferences = preferences,
+            runtimeMinutes = runtimeMinutes,
         ).stream
 
-    fun evaluateAutoPlayStream(
+    internal fun evaluateAutoPlayStream(
         streams: List<StreamItem>,
         mode: StreamAutoPlayMode,
         regexPattern: String,
@@ -79,6 +85,10 @@ object StreamAutoPlaySelector {
         bingeGroupOnly: Boolean = false,
         debridEnabled: Boolean = true,
         activeResolverProviderId: String? = null,
+        /** Used only by [StreamAutoPlayMode.PREFERRED]: the quality, bitrate and language saved for downloads. */
+        preferences: SeasonDownloadDefaults = SeasonDownloadDefaults(),
+        /** Length of the video, so a bitrate limit can be worked out from file sizes. Unknown: no bitrate check. */
+        runtimeMinutes: Int? = null,
     ): StreamAutoPlayEvaluation {
         if (streams.isEmpty()) return StreamAutoPlayEvaluation()
 
@@ -135,7 +145,7 @@ object StreamAutoPlaySelector {
         }
         val matchingStreams = when (mode) {
             StreamAutoPlayMode.MANUAL -> emptyList()
-            StreamAutoPlayMode.FIRST_STREAM -> candidateStreams
+            StreamAutoPlayMode.FIRST_STREAM, StreamAutoPlayMode.PREFERRED -> candidateStreams
             StreamAutoPlayMode.REGEX_MATCH -> {
                 val pattern = regexPattern.trim()
 
@@ -180,10 +190,26 @@ object StreamAutoPlaySelector {
         }
         if (matchingStreams.isEmpty() && preferredStream == null) return StreamAutoPlayEvaluation()
 
+        val readyMatchingStreams = matchingStreams
+            .filter { it.isAutoPlayable(debridEnabled, activeResolverProviderId) }
+            .let { ready ->
+                if (mode != StreamAutoPlayMode.PREFERRED) {
+                    ready
+                } else {
+                    // The same ranking the season downloader uses. A source it drops does not fit the
+                    // saved choices, so it is never played here; with none left the list is shown.
+                    rankStreamsByPreferences(
+                        streams = ready,
+                        quality = preferences.quality,
+                        maxBitrateMbps = preferences.maxBitrateMbps,
+                        audioLanguage = preferences.audioLanguage,
+                        runtimeMinutes = runtimeMinutes,
+                    )
+                }
+            }
         val readyStreams = buildList {
             preferredStream?.let(::add)
-            matchingStreams
-                .filter { it.isAutoPlayable(debridEnabled, activeResolverProviderId) }
+            readyMatchingStreams
                 .filterNot { it == preferredStream }
                 .forEach(::add)
         }

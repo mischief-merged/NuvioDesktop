@@ -46,6 +46,21 @@ internal data class SeasonBatchEpisode(
     val title: String?,
     val thumbnail: String?,
     val runtimeMinutes: Int? = null,
+    /**
+     * Set when the item is a movie of its own and not an episode of the request's show. A batch of
+     * movies is queued like a season; the season and episode numbers of such an item only order it.
+     */
+    val movie: SeasonBatchMovie? = null,
+)
+
+/** What a movie in a batch is downloaded as. */
+internal data class SeasonBatchMovie(
+    val metaId: String,
+    val metaType: String,
+    val title: String,
+    val logo: String? = null,
+    val poster: String? = null,
+    val background: String? = null,
 )
 
 internal data class SeasonBatchRequest(
@@ -194,21 +209,52 @@ internal fun rankBatchCandidates(
     audioLanguage: DebridStreamLanguage? = null,
     runtimeMinutes: Int? = null,
 ): List<StreamItem> {
-    val runtimeSeconds = runtimeMinutes?.takeIf { it > 0 }?.let { it * 60L }
-    val maxBitsPerEpisode = if (maxBitrateMbps != null && runtimeSeconds != null) {
-        maxBitrateMbps * 1_000_000L * runtimeSeconds
-    } else {
-        null
-    }
-    val ordered = streams
-        .filter { stream ->
+    val ordered = rankStreamsByPreferences(
+        streams = streams.filter { stream ->
             val directUrl = stream.playableDirectUrl
             if (directUrl != null) {
                 directUrl.isSupportedDownloadUrl()
             } else {
                 stream.isDirectDebridStream || stream.needsLocalDebridResolve
             }
-        }
+        },
+        quality = quality,
+        maxBitrateMbps = maxBitrateMbps,
+        audioLanguage = audioLanguage,
+        runtimeMinutes = runtimeMinutes,
+    )
+    // Two sources with the same URL are the same request only when they also send the same headers.
+    val seenRequests = mutableSetOf<Pair<String, List<Pair<String, String>>>>()
+    return ordered.filter { stream ->
+        val url = stream.playableDirectUrl ?: return@filter true
+        val headers = stream.behaviorHints.proxyHeaders?.request.orEmpty()
+            .map { (name, value) -> name.lowercase() to value }
+            .sortedWith(compareBy({ it.first }, { it.second }))
+        seenRequests.add(url to headers)
+    }
+}
+
+/**
+ * The part of [rankBatchCandidates] that applies the saved quality, bitrate and language choices,
+ * shared with auto-play so both pick a source by the same rules. It does not look at whether a
+ * source can be downloaded or played: the caller passes only the sources it is willing to use.
+ * Sources the choices rule out are dropped and the rest come back best first, as described on
+ * [rankBatchCandidates].
+ */
+internal fun rankStreamsByPreferences(
+    streams: List<StreamItem>,
+    quality: BatchQuality,
+    maxBitrateMbps: Int? = null,
+    audioLanguage: DebridStreamLanguage? = null,
+    runtimeMinutes: Int? = null,
+): List<StreamItem> {
+    val runtimeSeconds = runtimeMinutes?.takeIf { it > 0 }?.let { it * 60L }
+    val maxBitsPerEpisode = if (maxBitrateMbps != null && runtimeSeconds != null) {
+        maxBitrateMbps * 1_000_000L * runtimeSeconds
+    } else {
+        null
+    }
+    return streams
         .map { stream ->
             val facts = DebridStreamMetadata.facts(stream, parsingPreferences)
             BatchCandidate(
@@ -231,15 +277,6 @@ internal fun rankBatchCandidates(
                 .thenBy { it.stream.playableDirectUrl == null },
         )
         .map { it.stream }
-    // Two sources with the same URL are the same request only when they also send the same headers.
-    val seenRequests = mutableSetOf<Pair<String, List<Pair<String, String>>>>()
-    return ordered.filter { stream ->
-        val url = stream.playableDirectUrl ?: return@filter true
-        val headers = stream.behaviorHints.proxyHeaders?.request.orEmpty()
-            .map { (name, value) -> name.lowercase() to value }
-            .sortedWith(compareBy({ it.first }, { it.second }))
-        seenRequests.add(url to headers)
-    }
 }
 
 /** Released, numbered episodes of one season. Unaired episodes are left out. */
@@ -267,7 +304,9 @@ internal fun seasonBatchKey(parentMetaId: String, seasonNumber: Int): String =
     "${parentMetaId.trim()}|$seasonNumber"
 
 /**
- * Queues a season through the normal downloads pipeline, a few episodes at a time.
+ * Queues a season through the normal downloads pipeline, a few episodes at a time. The items of a
+ * request can also be movies ([SeasonBatchEpisode.movie]), one or several, which are queued by the
+ * same rules.
  *
  * Each episode holds one of [maxConcurrent] slots (shared by every batch of this downloader) from
  * source lookup until its download finishes or is paused,
@@ -585,12 +624,18 @@ internal class SeasonBatchDownloader(
         }
     }
 
-    private fun DownloadsUiState.itemFor(request: SeasonBatchRequest, episode: SeasonBatchEpisode): DownloadItem? =
-        items.firstOrNull { item ->
-            item.parentMetaId.trim() == request.parentMetaId.trim() &&
-                item.seasonNumber == episode.seasonNumber &&
-                item.episodeNumber == episode.episodeNumber
+    private fun DownloadsUiState.itemFor(request: SeasonBatchRequest, episode: SeasonBatchEpisode): DownloadItem? {
+        val movie = episode.movie
+        return items.firstOrNull { item ->
+            if (movie != null) {
+                item.parentMetaId.trim() == movie.metaId.trim() && !item.isEpisode
+            } else {
+                item.parentMetaId.trim() == request.parentMetaId.trim() &&
+                    item.seasonNumber == episode.seasonNumber &&
+                    item.episodeNumber == episode.episodeNumber
+            }
         }
+    }
 
     /** Whether the file of a finished download, looked at now, is too small or far too short to be the episode. */
     private fun isPlaceholderOnDisk(item: DownloadItem, episode: SeasonBatchEpisode, minBytes: Long): Boolean {

@@ -258,6 +258,7 @@ fun DetailActions(
     onWatchedClick: () -> Unit,
     onSaveClick: () -> Unit,
     onSaveLongClick: (() -> Unit)?,
+    downloadAction: DetailSecondaryAction? = null,
 ) {
     val shuffleAction = onShuffleClick?.let { onClick ->
         DetailSecondaryAction(
@@ -270,9 +271,11 @@ fun DetailActions(
     DetailActionButtons(
         playLabel = if (playEnabled) playLabel else stringResource(Res.string.playback_unavailable),
         playEnabled = playEnabled,
-        pinnedAction = shuffleAction?.takeIf { shuffleEnabled },
+        // The download action is one click away, beside Play, unless shuffle holds that place.
+        pinnedAction = shuffleAction?.takeIf { shuffleEnabled } ?: downloadAction,
         secondaryActions = buildList {
             if (!shuffleEnabled) shuffleAction?.let(::add)
+            if (shuffleEnabled && shuffleAction != null) downloadAction?.let(::add)
             add(
                 DetailSecondaryAction(
                     label = stringResource(if (isWatched) Res.string.hero_mark_unwatched else Res.string.hero_mark_watched),

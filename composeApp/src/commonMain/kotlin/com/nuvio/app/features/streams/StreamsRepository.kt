@@ -108,6 +108,12 @@ object StreamsRepository {
         val debridSettings = DebridSettingsRepository.snapshot()
         val streamBadgeRules = StreamBadgeSettingsRepository.snapshot()
         val autoPlayMode = playerSettings.streamAutoPlayMode
+        val autoPlayPreferences = StreamAutoPlayPolicy.preferencesFor(autoPlayMode)
+        val autoPlayRuntimeMinutes = if (autoPlayMode == StreamAutoPlayMode.PREFERRED) {
+            MetaDetailsRepository.runtimeMinutesFor(parentMetaId, videoId, season, episode)
+        } else {
+            null
+        }
         val isAutoPlayEnabled = !manualSelection && autoPlayMode != StreamAutoPlayMode.MANUAL &&
             !(autoPlayMode == StreamAutoPlayMode.REGEX_MATCH &&
                 !StreamAutoPlayPolicy.isRegexSelectionConfigured(playerSettings.streamAutoPlayRegex))
@@ -271,6 +277,8 @@ object StreamsRepository {
                     bingeGroupOnly = bingeGroupOnly,
                     debridEnabled = debridSettings.canResolvePlayableLinks,
                     activeResolverProviderId = debridSettings.activeResolverProviderId,
+                    preferences = autoPlayPreferences,
+                    runtimeMinutes = autoPlayRuntimeMinutes,
                 )
 
             fun settleAutoPlay(evaluation: StreamAutoPlayEvaluation) {
