@@ -54,6 +54,9 @@ object DownloadsRepository {
     // that payload is still there for a later launch.
     private var savingIsUnsafe = false
 
+    // The downloads that were started again when the list was loaded, until someone asks for them.
+    private var downloadsResumedAtLoad: Set<String> = emptySet()
+
     fun ensureLoaded(): Unit = synchronized(stateLock) {
         if (hasLoaded) return
         loadFromDisk()
@@ -354,8 +357,9 @@ object DownloadsRepository {
         if (shouldPersistNormalized) {
             persist()
         }
-        normalized.filter { it.status == DownloadStatus.Downloading && it.id !in activeTransfers }
-            .forEach(::startDownload)
+        val resumed = normalized.filter { it.status == DownloadStatus.Downloading && it.id !in activeTransfers }
+        downloadsResumedAtLoad = downloadsResumedAtLoad + resumed.map { it.id }
+        resumed.forEach(::startDownload)
     }
 
     private fun startDownload(item: DownloadItem, attempt: Int = 1): Unit = synchronized(stateLock) {
@@ -447,6 +451,11 @@ object DownloadsRepository {
             },
         )
         transfer.attach(handle)
+    }
+
+    /** The downloads that went on by themselves when the list was loaded. Each is handed out once. */
+    internal fun takeDownloadsResumedAtLoad(): Set<String> = synchronized(stateLock) {
+        downloadsResumedAtLoad.also { downloadsResumedAtLoad = emptySet() }
     }
 
     /**
@@ -825,7 +834,7 @@ private fun String.fileExtensionFromUrl(): String {
     }
 }
 
-private fun String.isSupportedDownloadUrl(): Boolean {
+internal fun String.isSupportedDownloadUrl(): Boolean {
     val normalized = trim().lowercase()
     if (normalized.startsWith("magnet:")) return false
     if (normalized.endsWith(".m3u8") || normalized.contains(".m3u8?")) return false
