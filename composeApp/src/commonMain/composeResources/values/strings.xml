@@ -2226,7 +2226,7 @@
     <string name="downloads_auto_scope_heading">Which episodes</string>
     <string name="downloads_auto_scope_next">Next unwatched episodes</string>
     <string name="downloads_auto_scope_latest">Latest released episodes</string>
-    <string name="downloads_auto_choices_note">Uses the quality, bitrate and language of your last season download.</string>
+    <string name="downloads_auto_choices_note">Uses your saved quality, maximum bitrate and language preferences. Change them in Settings, Playback, Quality and language preferences.</string>
     <string name="downloads_auto_delete_heading">After watching</string>
     <string name="downloads_auto_delete_after">Delete episodes 24 hours after I watch them</string>
     <string name="downloads_auto_delete_note">Only auto-downloaded episodes. Your own downloads are never deleted. You can keep or delete one early in Downloads.</string>
@@ -2291,7 +2291,7 @@
     <string name="downloads_auto_status_paused">Paused</string>
     <string name="downloads_auto_status_could_not_check">Couldn't check for new episodes</string>
     <string name="downloads_auto_status_no_source">No source found. Will try again later.</string>
-    <string name="downloads_auto_status_private_sources">Sources at local or private addresses are skipped for automatic downloads.</string>
+    <string name="downloads_auto_status_private_sources">Auto-download skips sources hosted on your own network or this computer.</string>
     <string name="downloads_auto_status_failed">Download failed. Will try again later.</string>
     <string name="downloads_auto_status_stopped">Stopped. Will try again later.</string>
     <string name="downloads_auto_status_storage_limit">Paused: storage limit reached</string>
