@@ -23,6 +23,13 @@ internal enum class SourceFailure {
     DiedDuringPlayback,
 
     /**
+     * The source stopped responding after playback had started: the position stood still, without an
+     * error, while the user wanted playback. It is handled like [DiedDuringPlayback] (any source,
+     * resuming a little before where it stopped) and has its own message.
+     */
+    StalledDuringPlayback,
+
+    /**
      * The source plays without an error, but what plays is a short placeholder clip, such as a notice that
      * the file is not ready, and not the video. It applies in every mode: the user never chose a placeholder.
      */
