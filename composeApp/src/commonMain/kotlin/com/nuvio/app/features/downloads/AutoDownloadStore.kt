@@ -33,6 +33,17 @@ private data class StoredAutoDownloads(
     val removals: List<AutoDownloadRemoval> = emptyList(),
     /** Downloads the user chose to keep. They are never removed after watching. */
     val keptDownloadIds: Set<String> = emptySet(),
+    /** Episodes removed after watching, newest last. Older than a week is dropped when one is added. */
+    val recentlyDeleted: List<AutoDownloadDeleted> = emptyList(),
+)
+
+/** An episode that was removed after it was watched. Kept for [AutoDownloadStore.RecentlyDeletedMs] so that the user can see it happened. */
+@Serializable
+internal data class AutoDownloadDeleted(
+    val title: String,
+    val seasonNumber: Int? = null,
+    val episodeNumber: Int? = null,
+    val atEpochMs: Long,
 )
 
 /** A watched automatic download that is removed once [dueAtEpochMs] has passed. */
@@ -71,11 +82,24 @@ internal class AutoDownloadStore(
 
     private val _removals = MutableStateFlow<List<AutoDownloadRemoval>>(emptyList())
 
+    private val _recentlyDeleted = MutableStateFlow<List<AutoDownloadDeleted>>(emptyList())
+
     /** The rules of the profile that was active at the last read or change. */
     val rules: StateFlow<List<AutoDownloadRule>> = _rules.asStateFlow()
 
     /** The removals scheduled for that profile. */
     val removals: StateFlow<List<AutoDownloadRemoval>> = _removals.asStateFlow()
+
+    /** The episodes of that profile that were removed after watching, oldest first. */
+    val recentlyDeleted: StateFlow<List<AutoDownloadDeleted>> = _recentlyDeleted.asStateFlow()
+
+    /** Notes that [entry] was removed. Entries older than a week are dropped. False when [profileId] is not the active profile. */
+    fun recordDeleted(profileId: Int, entry: AutoDownloadDeleted): Boolean = synchronized(lock) {
+        if (ensureLoaded() != profileId) return false
+        val cutoff = entry.atEpochMs - RecentlyDeletedMs
+        save(profileId, state.copy(recentlyDeleted = state.recentlyDeleted.filter { it.atEpochMs >= cutoff } + entry))
+        true
+    }
 
     /** The removals scheduled for [profileId]. Empty when it is not the active profile. */
     fun removals(profileId: Int): List<AutoDownloadRemoval> = synchronized(lock) {
@@ -179,6 +203,7 @@ internal class AutoDownloadStore(
         _rules.value = updated.rules
         _storageLimitGb.value = updated.storageLimitGb
         _removals.value = updated.removals
+        _recentlyDeleted.value = updated.recentlyDeleted
         payloads.save(profileId, json.encodeToString(updated))
     }
 
@@ -190,6 +215,7 @@ internal class AutoDownloadStore(
             _rules.value = state.rules
             _storageLimitGb.value = state.storageLimitGb
             _removals.value = state.removals
+            _recentlyDeleted.value = state.recentlyDeleted
         }
         return active
     }
@@ -206,6 +232,7 @@ internal class AutoDownloadStore(
 
     private fun StoredAutoDownloads.normalized(): StoredAutoDownloads = copy(
         rules = rules.map(AutoDownloadRule::normalized).distinctBy { it.key },
+        recentlyDeleted = recentlyDeleted.takeLast(MaxRecentlyDeleted),
         storageLimitGb = if (storageLimitGb in storageLimitOptionsGb) storageLimitGb else DefaultStorageLimitGb,
         // A removal lasts only as long as its rule asks for it.
         removals = removals
@@ -215,6 +242,8 @@ internal class AutoDownloadStore(
 
     companion object {
         const val DefaultStorageLimitGb = 50
+        const val RecentlyDeletedMs = 7L * 24 * 60 * 60 * 1000
+        const val MaxRecentlyDeleted = 20
         val storageLimitOptionsGb: List<Int?> = listOf(null, 10, 25, 50, 100, 250)
     }
 }

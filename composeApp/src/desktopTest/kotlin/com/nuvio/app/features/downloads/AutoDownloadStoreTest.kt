@@ -96,6 +96,40 @@ class AutoDownloadStoreTest {
         assertEquals(setOf("1|2"), AutoDownloadStore(payloads) { 1 }.currentRules().single().ownedEpisodeKeys)
     }
 
+    private fun reopened(profileId: Int = 1) = AutoDownloadStore(payloads) { profileId }.also { it.currentRules() }
+
+    @Test
+    fun removed_episodes_are_kept_per_profile_and_entries_older_than_a_week_are_dropped_when_one_is_added() {
+        val day = 24 * 3_600_000L
+        store.upsert(1, testRule())
+        store.recordDeleted(1, AutoDownloadDeleted("Show", 1, 1, atEpochMs = 0))
+        store.recordDeleted(1, AutoDownloadDeleted("Show", 1, 2, atEpochMs = 3 * day))
+        store.recordDeleted(1, AutoDownloadDeleted("Show", 1, 3, atEpochMs = 9 * day))
+
+        assertEquals(listOf(2, 3), store.recentlyDeleted.value.map { it.episodeNumber })
+        assertEquals(listOf(2, 3), reopened().recentlyDeleted.value.map { it.episodeNumber })
+        assertEquals(false, store.recordDeleted(2, AutoDownloadDeleted("Show", 1, 4, atEpochMs = 9 * day)))
+        assertEquals(emptyList(), reopened(2).recentlyDeleted.value)
+    }
+
+    @Test
+    fun a_payload_stored_before_removed_episodes_were_noted_loads_with_none_and_keeps_its_other_settings() {
+        payloads.saved[1] = "{\"rules\":[{\"parentMetaType\":\"series\",\"parentMetaId\":\"tt1\",\"title\":\"Show\"}],\"storageLimitGb\":25}"
+
+        assertEquals(testRule(), store.currentRules().single())
+        assertEquals(emptyList(), store.recentlyDeleted.value)
+        assertEquals(25, store.storageLimitGb.value)
+        assertEquals(emptyMap(), payloads.unreadable)
+    }
+
+    @Test
+    fun at_most_twenty_removed_episodes_are_kept() {
+        store.upsert(1, testRule())
+        (1..30).forEach { store.recordDeleted(1, AutoDownloadDeleted("Show", 1, it, atEpochMs = it.toLong())) }
+
+        assertEquals((11..30).toList(), store.recentlyDeleted.value.map { it.episodeNumber })
+    }
+
     @Test
     fun whether_episodes_are_deleted_after_watching_is_written_for_every_rule_and_is_off_unless_chosen() {
         store.upsert(1, testRule(showId = "tt1"))

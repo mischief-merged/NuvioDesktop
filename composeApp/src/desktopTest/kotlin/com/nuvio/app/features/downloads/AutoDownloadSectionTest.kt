@@ -39,6 +39,10 @@ import nuvio.composeapp.generated.resources.downloads_auto_delete_now_message_tr
 import nuvio.composeapp.generated.resources.downloads_auto_delete_now_title
 import nuvio.composeapp.generated.resources.downloads_auto_keep_description
 import nuvio.composeapp.generated.resources.downloads_auto_pending_heading
+import nuvio.composeapp.generated.resources.downloads_auto_recent_days_ago
+import nuvio.composeapp.generated.resources.downloads_auto_recent_heading
+import nuvio.composeapp.generated.resources.downloads_auto_recent_row
+import nuvio.composeapp.generated.resources.downloads_auto_recent_today
 import nuvio.composeapp.generated.resources.downloads_auto_pending_in_hours
 import nuvio.composeapp.generated.resources.downloads_auto_pending_row
 import nuvio.composeapp.generated.resources.downloads_auto_pending_soon
@@ -80,6 +84,7 @@ class AutoDownloadSectionTest {
         override val statuses = MutableStateFlow(emptyMap<String, AutoDownloadStatus>())
         override val storageLimitGb = MutableStateFlow<Int?>(50)
         override val removals = MutableStateFlow(emptyList<AutoDownloadRemoval>())
+        override val recentlyDeleted = MutableStateFlow(emptyList<AutoDownloadDeleted>())
         override var usesSystemTrash = true
         var checks = 0
         val limitsSet = mutableListOf<Pair<Int, Int?>>()
@@ -297,8 +302,8 @@ class AutoDownloadSectionTest {
     }
 
     @Test
-    fun the_last_hour_is_shown_in_words() {
-        scheduleRemoval(inMs = hour - 1)
+    fun the_last_half_hour_is_shown_in_words() {
+        scheduleRemoval(inMs = hour / 2 - 1)
         show()
 
         compose.onNodeWithText(pendingRow(text(Res.string.downloads_auto_pending_soon))).assertIsDisplayed()
@@ -379,6 +384,44 @@ class AutoDownloadSectionTest {
         compose.onNodeWithContentDescription(text(Res.string.downloads_auto_delete_now_description, "Show", 1, 4)).performClick()
 
         compose.onNodeWithText(text(Res.string.downloads_auto_delete_now_message_held, "Show", 1, 4)).assertIsDisplayed()
+    }
+
+    private fun recent(episode: Int, agoMs: Long) = AutoDownloadDeleted("Show", 1, episode, atEpochMs = shownNow - agoMs)
+
+    @Test
+    fun an_episode_deleted_after_watching_is_listed_under_recently_deleted_for_a_week() {
+        controller.rules.value = listOf(rule)
+        controller.recentlyDeleted.value = listOf(
+            recent(1, agoMs = 8 * 24 * hour),
+            recent(2, agoMs = 2 * 24 * hour),
+            recent(3, agoMs = hour),
+        )
+        show()
+
+        compose.onNode(
+            hasText(text(Res.string.downloads_auto_recent_heading)) and SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading),
+        ).assertIsDisplayed()
+        val twoDays = runBlocking { getPluralString(Res.plurals.downloads_auto_recent_days_ago, 2, 2) }
+        compose.onNodeWithText(text(Res.string.downloads_auto_recent_row, "Show", 1, 3, text(Res.string.downloads_auto_recent_today))).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_auto_recent_row, "Show", 1, 2, twoDays)).assertIsDisplayed()
+        compose.onNodeWithText("Show S1 E1", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun the_list_is_still_there_after_the_last_rule_was_turned_off() {
+        controller.recentlyDeleted.value = listOf(recent(3, agoMs = hour))
+        show()
+
+        compose.onNodeWithText(text(Res.string.downloads_auto_recent_heading)).assertIsDisplayed()
+    }
+
+    @Test
+    fun without_removed_episodes_the_heading_is_not_shown() {
+        controller.rules.value = listOf(rule)
+        controller.recentlyDeleted.value = listOf(recent(1, agoMs = 9 * 24 * hour))
+        show()
+
+        compose.onNodeWithText(text(Res.string.downloads_auto_recent_heading)).assertDoesNotExist()
     }
 
     private fun show() {

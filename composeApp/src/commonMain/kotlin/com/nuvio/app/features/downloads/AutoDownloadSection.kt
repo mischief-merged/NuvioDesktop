@@ -51,8 +51,9 @@ internal fun AutoDownloadSection(
     val statuses by controller.statuses.collectAsState()
     val storageLimitGb by controller.storageLimitGb.collectAsState()
     val removals by controller.removals.collectAsState()
+    val recentlyDeleted by controller.recentlyDeleted.collectAsState()
     val downloadsState by downloads.collectAsState()
-    if (rules.isEmpty()) return
+    if (rules.isEmpty() && recentlyDeletedShown(recentlyDeleted, nowEpochMs()).isEmpty()) return
     val tokens = MaterialTheme.nuvio
     val checkingText = stringResource(Res.string.downloads_auto_checking_toast)
     val checkNowText = stringResource(Res.string.downloads_auto_check_now)
@@ -116,6 +117,13 @@ internal fun AutoDownloadSection(
                 )
             }
         }
+        // Read again every minute, so the hours left stay right while the screen is open.
+        val now by produceState(initialValue = nowEpochMs()) {
+            while (true) {
+                delay(MillisPerMinute)
+                value = nowEpochMs()
+            }
+        }
         if (pending.isNotEmpty()) {
             NuvioSectionLabel(
                 text = stringResource(Res.string.downloads_auto_pending_heading),
@@ -123,17 +131,10 @@ internal fun AutoDownloadSection(
                     .padding(top = NuvioTokens.Space.s8)
                     .semantics { heading() },
             )
-            // Read again every minute, so the hours left stay right while the screen is open.
-            val now by produceState(initialValue = nowEpochMs()) {
-                while (true) {
-                    delay(MillisPerMinute)
-                    value = nowEpochMs()
-                }
-            }
             pending.forEach { (removal, item) ->
                 val season = item.seasonNumber ?: 0
                 val episode = item.episodeNumber ?: 0
-                val hoursLeft = ((removal.dueAtEpochMs - now) / MillisPerHour).toInt()
+                val hoursLeft = removalHoursLeft(removal.dueAtEpochMs, now)
                 val due = if (hoursLeft < 1) {
                     stringResource(Res.string.downloads_auto_pending_soon)
                 } else {
@@ -165,6 +166,35 @@ internal fun AutoDownloadSection(
                         Text(text = stringResource(Res.string.downloads_auto_delete_now), style = MaterialTheme.typography.labelLarge)
                     }
                 }
+            }
+        }
+        val recent = recentlyDeletedShown(recentlyDeleted, now)
+        if (recent.isNotEmpty()) {
+            NuvioSectionLabel(
+                text = stringResource(Res.string.downloads_auto_recent_heading),
+                modifier = Modifier
+                    .padding(top = NuvioTokens.Space.s8)
+                    .semantics { heading() },
+            )
+            recent.forEach { entry ->
+                val days = daysSinceDeleted(entry, now)
+                val ago = if (days < 1) {
+                    stringResource(Res.string.downloads_auto_recent_today)
+                } else {
+                    pluralStringResource(Res.plurals.downloads_auto_recent_days_ago, days, days)
+                }
+                Text(
+                    text = stringResource(
+                        Res.string.downloads_auto_recent_row,
+                        entry.title,
+                        entry.seasonNumber ?: 0,
+                        entry.episodeNumber ?: 0,
+                        ago,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = tokens.colors.textPrimary,
+                )
             }
         }
     }
@@ -209,7 +239,6 @@ internal fun AutoDownloadSection(
     }
 }
 
-private const val MillisPerHour = 3_600_000L
 private const val MillisPerMinute = 60_000L
 
 @Composable

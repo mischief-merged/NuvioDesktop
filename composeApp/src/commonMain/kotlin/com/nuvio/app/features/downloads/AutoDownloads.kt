@@ -31,6 +31,10 @@ import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.downloads_auto_delete_failed_toast
 import nuvio.composeapp.generated.resources.downloads_auto_delete_playing_toast
 import nuvio.composeapp.generated.resources.downloads_auto_deleted_toast
+import nuvio.composeapp.generated.resources.downloads_auto_keep
+import nuvio.composeapp.generated.resources.downloads_auto_scheduled_toast
+import nuvio.composeapp.generated.resources.downloads_auto_scheduled_toast_soon
+import org.jetbrains.compose.resources.getPluralString
 import org.jetbrains.compose.resources.getString
 
 /** Emits each time the internet can be reached again after it could not. */
@@ -48,6 +52,8 @@ internal fun Flow<NetworkCondition>.internetReturns(): Flow<Unit> = flow {
     }
 }
 
+private val NoDeletedEpisodes = kotlinx.coroutines.flow.MutableStateFlow(emptyList<AutoDownloadDeleted>())
+
 /** What the interface needs from automatic downloads. */
 internal interface AutoDownloadController {
     val rules: StateFlow<List<AutoDownloadRule>>
@@ -58,6 +64,9 @@ internal interface AutoDownloadController {
 
     /** The watched episodes that are going to be removed. */
     val removals: StateFlow<List<AutoDownloadRemoval>>
+
+    /** The watched episodes that were removed recently, oldest first. Only the last week is worth showing. */
+    val recentlyDeleted: StateFlow<List<AutoDownloadDeleted>> get() = NoDeletedEpisodes
 
     /** False when removed files are held in the downloads folder and then deleted for good. */
     val usesSystemTrash: Boolean
@@ -170,6 +179,7 @@ internal object AutoDownloads : AutoDownloadController {
     override val statuses: StateFlow<Map<String, AutoDownloadStatus>> get() = engine.statuses
     override val storageLimitGb: StateFlow<Int?> get() = store.storageLimitGb
     override val removals: StateFlow<List<AutoDownloadRemoval>> get() = store.removals
+    override val recentlyDeleted: StateFlow<List<AutoDownloadDeleted>> get() = store.recentlyDeleted
     override val usesSystemTrash: Boolean get() = DownloadsTrash.usesSystemTrash
 
     fun storageLimitBytes(): Long? = store.storageLimitBytes()
@@ -313,11 +323,24 @@ internal object AutoDownloads : AutoDownloadController {
         val profileId = ProfileRepository.activeProfileId
         scope.launch {
             val item = DownloadsRepository.findCompletedDownloadByLocalFile(localFileUri) ?: return@launch
-            runCatching { deleteAfterWatching.onLocalPlaybackCompleted(profileId, item) }
+            val scheduled = runCatching { deleteAfterWatching.onLocalPlaybackCompleted(profileId, item) }.getOrDefault(false)
+            if (scheduled) runCatching { announceScheduledDeletion(profileId, item) }
             // The watched state is saved by the player after it reports the end of playback.
             delay(PlaybackCheckDelayMs)
             checkSafely(autoDownloadRuleKey(item.parentMetaType, item.parentMetaId))
         }
+    }
+
+    /** Says that [item] will be deleted, with a Keep button for as long as the message stays. */
+    private suspend fun announceScheduledDeletion(profileId: Int, item: DownloadItem) {
+        val due = store.removals(profileId).firstOrNull { it.downloadId == item.id } ?: return
+        val message = scheduledDeletionMessage(item, removalHoursLeft(due.dueAtEpochMs, DownloadsClock.nowEpochMs()))
+        NuvioToastController.show(
+            message = message,
+            durationMillis = ScheduledDeletionToastMs,
+            actionLabel = getString(Res.string.downloads_auto_keep),
+            onAction = { keepDownload(profileId, item.id) },
+        )
     }
 
     fun onPrivateSourceSkipped(request: SeasonBatchRequest, episode: SeasonBatchEpisode) {
@@ -338,7 +361,19 @@ internal object AutoDownloads : AutoDownloadController {
         }
     }
 
+    private const val ScheduledDeletionToastMs = 10_000L
     private const val StartupDelayMs = 60_000L
     private const val PollIntervalMs = 10L * 60 * 1000
     private const val PlaybackCheckDelayMs = 5_000L
+}
+
+/** What is said when finishing [item] schedules its deletion in about [hours] hours. */
+private suspend fun scheduledDeletionMessage(item: DownloadItem, hours: Int): String {
+    val season = item.seasonNumber ?: 0
+    val episode = item.episodeNumber ?: 0
+    return if (hours < 1) {
+        getString(Res.string.downloads_auto_scheduled_toast_soon, item.title, season, episode)
+    } else {
+        getPluralString(Res.plurals.downloads_auto_scheduled_toast, hours, item.title, season, episode, hours)
+    }
 }

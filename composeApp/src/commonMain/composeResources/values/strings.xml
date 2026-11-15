@@ -2207,6 +2207,23 @@
     </plurals>
     <string name="downloads_auto_pending_soon">in less than an hour</string>
     <string name="downloads_auto_keep">Keep</string>
+    <plurals name="downloads_auto_scheduled_toast">
+        <item quantity="one">%1$s S%2$d E%3$d will be deleted in about %5$d hour</item>
+        <item quantity="other">%1$s S%2$d E%3$d will be deleted in about %5$d hours</item>
+    </plurals>
+    <string name="downloads_auto_scheduled_toast_soon">%1$s S%2$d E%3$d will be deleted soon</string>
+    <plurals name="downloads_row_deletes_in_hours">
+        <item quantity="one">Deletes in about %1$d hour</item>
+        <item quantity="other">Deletes in about %1$d hours</item>
+    </plurals>
+    <string name="downloads_row_deletes_soon">Deletes in less than an hour</string>
+    <string name="downloads_auto_recent_heading">Recently deleted</string>
+    <string name="downloads_auto_recent_row">%1$s S%2$d E%3$d • %4$s</string>
+    <string name="downloads_auto_recent_today">deleted after watching today</string>
+    <plurals name="downloads_auto_recent_days_ago">
+        <item quantity="one">deleted after watching %1$d day ago</item>
+        <item quantity="other">deleted after watching %1$d days ago</item>
+    </plurals>
     <string name="downloads_auto_keep_description">Keep %1$s S%2$d E%3$d</string>
     <string name="downloads_auto_delete_now">Delete now</string>
     <string name="downloads_auto_delete_now_description">Delete %1$s S%2$d E%3$d now</string>
