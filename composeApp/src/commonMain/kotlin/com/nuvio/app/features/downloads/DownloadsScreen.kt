@@ -29,6 +29,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -47,10 +48,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.app.core.i18n.localizedByteUnit
 import com.nuvio.app.core.network.NetworkStatusRepository
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import com.nuvio.app.core.ui.NuvioScreen
 import com.nuvio.app.core.ui.NuvioScreenHeader
 import com.nuvio.app.core.ui.NuvioStatusModal
 import com.nuvio.app.core.ui.NuvioToastController
+import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.isDesktop
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.pluralStringResource
@@ -74,6 +77,50 @@ fun DownloadsScreen(
     onBrowse: (() -> Unit)? = null,
     /** Whether the empty state mentions downloading whole seasons and auto-download. Only where those exist. */
     showSeasonHint: Boolean = showAutoDownloads,
+    /** Called before a download the user deletes is removed, so that auto-download does not fetch it again. */
+    rememberDeletion: suspend (DownloadItem) -> Unit = AutoDownloads::rememberUserDeletion,
+    /** Opens the page of a show, from its auto-download rule. Null where the screen cannot: the action is not offered. */
+    onOpenShowDetails: ((type: String, id: String, title: String) -> Unit)? = null,
+) {
+    DownloadsScreenContent(
+        onBack = onBack,
+        onOpenDownload = onOpenDownload,
+        initialShowId = initialShowId,
+        onNavigateToShow = onNavigateToShow,
+        onBackFromShow = onBackFromShow,
+        showAutoDownloads = showAutoDownloads,
+        onChooseAnotherSource = onChooseAnotherSource,
+        openDownloadsFolder = openDownloadsFolder,
+        onBrowse = onBrowse,
+        showSeasonHint = showSeasonHint,
+        rememberDeletion = rememberDeletion,
+        onOpenShowDetails = onOpenShowDetails,
+    )
+}
+
+@Composable
+internal fun DownloadsScreenContent(
+    onBack: () -> Unit,
+    onOpenDownload: (DownloadItem) -> Unit,
+    initialShowId: String? = null,
+    onNavigateToShow: ((showId: String, title: String) -> Unit)? = null,
+    onBackFromShow: (() -> Unit)? = null,
+    showAutoDownloads: Boolean = isDesktop,
+    /**
+     * Opens the list of sources for the title of a download, so that another one can be picked.
+     * Null where the screen cannot reach it: the action is then not offered.
+     */
+    onChooseAnotherSource: ((DownloadItem) -> Unit)? = null,
+    openDownloadsFolder: () -> Boolean = DownloadsPlatformDownloader::openDownloadsDirectory,
+    /** Takes the user to where titles are found, from the empty state. Null where the screen cannot: the action is not offered. */
+    onBrowse: (() -> Unit)? = null,
+    /** Whether the empty state mentions downloading whole seasons and auto-download. Only where those exist. */
+    showSeasonHint: Boolean = showAutoDownloads,
+    /** Called before a download the user deletes is removed, so that auto-download does not fetch it again. */
+    rememberDeletion: suspend (DownloadItem) -> Unit = AutoDownloads::rememberUserDeletion,
+    onOpenShowDetails: ((type: String, id: String, title: String) -> Unit)? = null,
+    /** Where the episodes that are about to be deleted after watching come from. Null where there is no auto-download. */
+    autoDownloads: AutoDownloadController? = if (showAutoDownloads) AutoDownloads else null,
 ) {
     val uiState by remember {
         DownloadsRepository.ensureLoaded()
@@ -83,11 +130,16 @@ fun DownloadsScreen(
         DownloadsRepository.markCompletedSeen()
     }
     val network by NetworkStatusRepository.uiState.collectAsStateWithLifecycle()
+    val scheduledRemovals by (autoDownloads?.removals ?: NoScheduledRemovals).collectAsStateWithLifecycle()
+    val removalByDownload = remember(scheduledRemovals) { scheduledRemovals.associateBy { it.downloadId } }
+    val activeProfileId = ProfileRepository.activeProfileId
     val anyDownloading = uiState.items.any { it.status == DownloadStatus.Downloading }
-    // Read again every few seconds while something downloads, so a transfer that went silent shows it.
-    val now by produceState(initialValue = DownloadsClock.nowEpochMs(), anyDownloading) {
+    val needsClock = anyDownloading || removalByDownload.isNotEmpty()
+    // Read again every few seconds while something downloads, so a transfer that went silent shows it,
+    // and while a deletion is waiting, so the hours left stay right.
+    val now by produceState(initialValue = DownloadsClock.nowEpochMs(), needsClock) {
         value = DownloadsClock.nowEpochMs()
-        while (anyDownloading) {
+        while (needsClock) {
             delay(StatusRefreshMs)
             value = DownloadsClock.nowEpochMs()
         }
@@ -97,6 +149,7 @@ fun DownloadsScreen(
     var selectedShowId by rememberSaveable(initialShowId) { mutableStateOf(initialShowId) }
     var downloadPendingDeletionId by rememberSaveable { mutableStateOf<String?>(null) }
     val openDownloadsDirectoryFailedText = stringResource(Res.string.downloads_open_directory_failed)
+    val deleteScope = rememberCoroutineScope()
 
     val completedEpisodes = remember(uiState.items) {
         uiState.completedItems
@@ -144,7 +197,16 @@ fun DownloadsScreen(
 
         if (selectedShowId == null) {
             if (showAutoDownloads) {
-                item { AutoDownloadSection() }
+                item {
+                    val goToShow = onOpenShowDetails?.let { open ->
+                        { rule: AutoDownloadRule -> open(rule.parentMetaType, rule.parentMetaId, rule.title) }
+                    }
+                    if (autoDownloads != null) {
+                        AutoDownloadSection(controller = autoDownloads, onGoToShow = goToShow)
+                    } else {
+                        AutoDownloadSection(onGoToShow = goToShow)
+                    }
+                }
             }
             downloadsRootContent(
                 uiState = uiState,
@@ -168,6 +230,8 @@ fun DownloadsScreen(
                 clock = clock,
                 onOpenDownload = onOpenDownload,
                 onDeleteDownload = { downloadPendingDeletionId = it },
+                scheduledDeletions = removalByDownload,
+                onKeepScheduled = { autoDownloads?.keepDownload(activeProfileId, it) },
             )
         }
     }
@@ -185,7 +249,11 @@ fun DownloadsScreen(
                     usesTrash -> Res.string.downloads_delete_message_trash
                     else -> Res.string.downloads_delete_message_held
                 },
-            ),
+            ) + if (pendingDeletion.autoDownloadRuleKey != null) {
+                " " + stringResource(Res.string.downloads_delete_auto_note)
+            } else {
+                ""
+            },
             isVisible = true,
             destructive = true,
             confirmText = stringResource(
@@ -198,8 +266,11 @@ fun DownloadsScreen(
             dismissText = stringResource(Res.string.action_cancel),
             onConfirm = {
                 downloadPendingDeletionId = null
-                if (DownloadsRepository.deleteDownload(pendingDeletion.id) == DownloadDeleteResult.NotMoved) {
-                    NuvioToastController.show(deleteNotMovedText)
+                deleteScope.launch {
+                    rememberDeletion(pendingDeletion)
+                    if (DownloadsRepository.deleteDownload(pendingDeletion.id) == DownloadDeleteResult.NotMoved) {
+                        NuvioToastController.show(deleteNotMovedText)
+                    }
                 }
             },
             onDismiss = { downloadPendingDeletionId = null },
@@ -208,6 +279,8 @@ fun DownloadsScreen(
 }
 
 private const val StatusRefreshMs = 5_000L
+
+private val NoScheduledRemovals = kotlinx.coroutines.flow.MutableStateFlow(emptyList<AutoDownloadRemoval>())
 
 /** The time and network state that the rows work out their status from. */
 private data class RowClock(val nowEpochMs: Long, val offline: Boolean)
@@ -356,6 +429,8 @@ private fun LazyListScope.downloadsShowContent(
     clock: RowClock,
     onOpenDownload: (DownloadItem) -> Unit,
     onDeleteDownload: (String) -> Unit,
+    scheduledDeletions: Map<String, AutoDownloadRemoval>,
+    onKeepScheduled: (downloadId: String) -> Unit,
 ) {
     val showEpisodes = episodes
         .filter { it.parentMetaId == showId }
@@ -414,6 +489,8 @@ private fun LazyListScope.downloadsShowContent(
                 onResume = { DownloadsRepository.resumeDownload(item.id) },
                 onRetry = { DownloadsRepository.retryDownload(item.id) },
                 onDelete = { onDeleteDownload(item.id) },
+                scheduledDeletionDueAtEpochMs = scheduledDeletions[item.id]?.dueAtEpochMs,
+                onKeepScheduled = { onKeepScheduled(item.id) },
             )
         }
     }
@@ -429,6 +506,9 @@ private fun DownloadRow(
     onResume: () -> Unit,
     onRetry: () -> Unit,
     onDelete: () -> Unit,
+    /** When finishing the episode scheduled its deletion: the time it is due. Null otherwise. */
+    scheduledDeletionDueAtEpochMs: Long? = null,
+    onKeepScheduled: () -> Unit = {},
 ) {
     val rowStatus = downloadRowStatus(item, clock.nowEpochMs, clock.offline)
     val displayTitle = item.displayTitle()
@@ -515,6 +595,32 @@ private fun DownloadRow(
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    }
+                    if (scheduledDeletionDueAtEpochMs != null) {
+                        val hours = removalHoursLeft(scheduledDeletionDueAtEpochMs, clock.nowEpochMs)
+                        val keepDescription = stringResource(
+                            Res.string.downloads_auto_keep_description,
+                            item.title,
+                            item.seasonNumber ?: 0,
+                            item.episodeNumber ?: 0,
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = if (hours < 1) {
+                                    stringResource(Res.string.downloads_row_deletes_soon)
+                                } else {
+                                    pluralStringResource(Res.plurals.downloads_row_deletes_in_hours, hours, hours)
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            TextButton(
+                                modifier = Modifier.semantics { contentDescription = keepDescription },
+                                onClick = onKeepScheduled,
+                            ) {
+                                Text(text = stringResource(Res.string.downloads_auto_keep), style = MaterialTheme.typography.labelLarge)
+                            }
+                        }
                     }
                 }
 

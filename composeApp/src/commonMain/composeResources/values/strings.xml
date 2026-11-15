@@ -727,6 +727,7 @@
     <string name="downloads_delete_title">Delete %1$s?</string>
     <string name="downloads_delete_message_trash">It moves to the Trash. You can put it back from there.</string>
     <string name="downloads_delete_message_held">It stays in the downloads folder for 7 days, then it is deleted for good.</string>
+    <string name="downloads_delete_auto_note">Auto-download will not fetch this episode again.</string>
     <string name="downloads_delete_message_partial">This stops the download and removes what was downloaded so far.</string>
     <string name="downloads_delete_confirm_trash">Move to Trash</string>
     <string name="downloads_delete_confirm_partial">Remove</string>
@@ -2206,6 +2207,23 @@
     </plurals>
     <string name="downloads_auto_pending_soon">in less than an hour</string>
     <string name="downloads_auto_keep">Keep</string>
+    <plurals name="downloads_auto_scheduled_toast">
+        <item quantity="one">%1$s S%2$d E%3$d will be deleted in about %5$d hour</item>
+        <item quantity="other">%1$s S%2$d E%3$d will be deleted in about %5$d hours</item>
+    </plurals>
+    <string name="downloads_auto_scheduled_toast_soon">%1$s S%2$d E%3$d will be deleted soon</string>
+    <plurals name="downloads_row_deletes_in_hours">
+        <item quantity="one">Deletes in about %1$d hour</item>
+        <item quantity="other">Deletes in about %1$d hours</item>
+    </plurals>
+    <string name="downloads_row_deletes_soon">Deletes in less than an hour</string>
+    <string name="downloads_auto_recent_heading">Recently deleted</string>
+    <string name="downloads_auto_recent_row">%1$s S%2$d E%3$d • %4$s</string>
+    <string name="downloads_auto_recent_today">deleted after watching today</string>
+    <plurals name="downloads_auto_recent_days_ago">
+        <item quantity="one">deleted after watching %1$d day ago</item>
+        <item quantity="other">deleted after watching %1$d days ago</item>
+    </plurals>
     <string name="downloads_auto_keep_description">Keep %1$s S%2$d E%3$d</string>
     <string name="downloads_auto_delete_now">Delete now</string>
     <string name="downloads_auto_delete_now_description">Delete %1$s S%2$d E%3$d now</string>
@@ -2219,6 +2237,16 @@
     <string name="downloads_auto_turn_off">Turn off</string>
     <string name="downloads_auto_toast_on">Auto-download on for this show</string>
     <string name="downloads_auto_toast_off">Auto-download off for this show</string>
+    <string name="downloads_auto_toast_save_failed">Couldn't save auto-download for this show. Try again.</string>
+    <string name="downloads_auto_toast_off_failed">Couldn't turn off auto-download for this show. Try again.</string>
+    <string name="downloads_auto_toast_limit_failed">Couldn't change the storage limit. Try again.</string>
+    <string name="quit_downloads_title">Quit Nuvio?</string>
+    <plurals name="quit_downloads_message">
+        <item quantity="one">%1$d download is in progress. It will pause and resume next time you open Nuvio.</item>
+        <item quantity="other">%1$d downloads are in progress. They will pause and resume next time you open Nuvio.</item>
+    </plurals>
+    <string name="quit_downloads_quit">Quit</string>
+    <string name="quit_downloads_keep_open">Keep open</string>
     <string name="downloads_auto_section_title">Auto-download</string>
     <string name="downloads_auto_check_now">Check now</string>
     <string name="downloads_auto_checking_toast">Checking for new episodes</string>
@@ -2238,6 +2266,10 @@
     <string name="downloads_auto_status_low_disk_space">Paused: not enough free disk space</string>
     <string name="downloads_auto_storage_limit">Storage limit for auto-downloads</string>
     <string name="downloads_auto_storage_limit_description">Auto-download stops adding episodes at this size. Your own downloads don't count.</string>
+    <string name="downloads_auto_storage_limit_profile_description">Auto-download stops adding episodes at this size. It counts only automatic downloads, and each profile has its own limit.</string>
+    <string name="downloads_auto_no_rules">No show uses auto-download. Open a show and choose Auto-download to turn it on.</string>
+    <string name="downloads_auto_rule_action">Change auto-download for %1$s</string>
+    <string name="downloads_auto_go_to_show">Go to show</string>
     <string name="downloads_auto_storage_limit_none">No limit</string>
     <string name="downloads_auto_storage_limit_value">%1$d GB</string>
     <string name="downloads_error_private_address">Automatic downloads can't use this address</string>

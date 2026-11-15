@@ -30,6 +30,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.performScrollTo
 import com.nuvio.app.core.ui.NuvioTheme
+import com.nuvio.app.core.ui.NuvioToastController
 import com.nuvio.app.features.details.components.SeasonDownloadButton
 import com.nuvio.app.features.downloads.AutoDownloadController
 import com.nuvio.app.features.downloads.AutoDownloadRemoval
@@ -158,6 +159,18 @@ class AutoDownloadDialogTest {
 
         assertEquals(listOf(Triple("auto-dialog-test", 5, AutoDownloadScope.LatestReleased)), controller.saved)
         compose.onNodeWithText(text(Res.string.downloads_auto_dialog_title, "Show")).assertDoesNotExist()
+    }
+
+    @Test
+    fun the_dialog_itself_says_nothing_about_the_result_the_controller_does_once_it_knows() {
+        NuvioToastController.dismiss()
+        showButton()
+        openDialog(Res.string.downloads_auto_button)
+
+        compose.onNodeWithText(text(Res.string.downloads_auto_turn_on)).performClick()
+
+        assertEquals(1, controller.saved.size)
+        assertEquals(null, NuvioToastController.currentToast.value)
     }
 
     @Test

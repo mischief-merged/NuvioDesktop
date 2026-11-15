@@ -42,6 +42,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -527,17 +531,48 @@ fun NuvioToastHost(
             contentAlignment = Alignment.TopCenter,
         ) {
             Surface(
+                // A message with a button is read out when it appears, as the button is time-limited.
+                modifier = if (currentToast.onAction != null) {
+                    Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                } else {
+                    Modifier
+                },
                 shape = RoundedCornerShape(NuvioTokens.Radius.xl),
                 color = tokens.colors.surfacePopover,
                 tonalElevation = tokens.elevation.raised,
                 shadowElevation = tokens.elevation.overlay,
             ) {
-                Text(
-                    text = currentToast.message,
-                    modifier = Modifier.padding(horizontal = NuvioTokens.Space.s16, vertical = NuvioTokens.Space.s12),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = tokens.colors.textPrimary,
-                )
+                val onAction = currentToast.onAction
+                val actionLabel = currentToast.actionLabel
+                if (onAction != null && actionLabel != null) {
+                    Row(
+                        modifier = Modifier.padding(start = NuvioTokens.Space.s16, end = NuvioTokens.Space.s8),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s8),
+                    ) {
+                        Text(
+                            text = currentToast.message,
+                            modifier = Modifier.weight(1f, fill = false).padding(vertical = NuvioTokens.Space.s12),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = tokens.colors.textPrimary,
+                        )
+                        TextButton(
+                            onClick = {
+                                onAction()
+                                NuvioToastController.dismiss(currentToast.id)
+                            },
+                        ) {
+                            Text(text = actionLabel, style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                } else {
+                    Text(
+                        text = currentToast.message,
+                        modifier = Modifier.padding(horizontal = NuvioTokens.Space.s16, vertical = NuvioTokens.Space.s12),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = tokens.colors.textPrimary,
+                    )
+                }
             }
         }
     }
@@ -547,6 +582,9 @@ data class NuvioToastMessage(
     val id: Long,
     val message: String,
     val durationMillis: Long,
+    /** A button shown next to the message, with what pressing it does. Both are set or both are null. */
+    val actionLabel: String? = null,
+    val onAction: (() -> Unit)? = null,
 )
 
 object NuvioToastController {
@@ -557,12 +595,16 @@ object NuvioToastController {
     fun show(
         message: String,
         durationMillis: Long = 2500L,
+        actionLabel: String? = null,
+        onAction: (() -> Unit)? = null,
     ) {
         nextToastId += 1L
         _currentToast.value = NuvioToastMessage(
             id = nextToastId,
             message = message,
             durationMillis = durationMillis,
+            actionLabel = actionLabel.takeIf { onAction != null },
+            onAction = onAction.takeIf { actionLabel != null },
         )
     }
 

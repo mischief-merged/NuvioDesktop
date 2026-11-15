@@ -26,10 +26,20 @@ import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.downloads_auto_delete_failed_toast
 import nuvio.composeapp.generated.resources.downloads_auto_delete_playing_toast
 import nuvio.composeapp.generated.resources.downloads_auto_deleted_toast
+import nuvio.composeapp.generated.resources.downloads_auto_keep
+import nuvio.composeapp.generated.resources.downloads_auto_toast_limit_failed
+import nuvio.composeapp.generated.resources.downloads_auto_toast_off
+import nuvio.composeapp.generated.resources.downloads_auto_toast_off_failed
+import nuvio.composeapp.generated.resources.downloads_auto_toast_on
+import nuvio.composeapp.generated.resources.downloads_auto_toast_save_failed
+import nuvio.composeapp.generated.resources.downloads_auto_scheduled_toast
+import nuvio.composeapp.generated.resources.downloads_auto_scheduled_toast_soon
+import org.jetbrains.compose.resources.getPluralString
 import org.jetbrains.compose.resources.getString
 
 /** Emits each time the internet can be reached again after it could not. */
@@ -47,6 +57,8 @@ internal fun Flow<NetworkCondition>.internetReturns(): Flow<Unit> = flow {
     }
 }
 
+private val NoDeletedEpisodes = kotlinx.coroutines.flow.MutableStateFlow(emptyList<AutoDownloadDeleted>())
+
 /** What the interface needs from automatic downloads. */
 internal interface AutoDownloadController {
     val rules: StateFlow<List<AutoDownloadRule>>
@@ -58,12 +70,16 @@ internal interface AutoDownloadController {
     /** The watched episodes that are going to be removed. */
     val removals: StateFlow<List<AutoDownloadRemoval>>
 
+    /** The watched episodes that were removed recently, oldest first. Only the last week is worth showing. */
+    val recentlyDeleted: StateFlow<List<AutoDownloadDeleted>> get() = NoDeletedEpisodes
+
     /** False when removed files are held in the downloads folder and then deleted for good. */
     val usesSystemTrash: Boolean
 
     /**
      * Turns automatic downloads on for [meta], or changes its rule, and checks the show. Nothing
-     * happens when [profileId] is no longer the active profile.
+     * is saved when [profileId] is no longer the active profile. The controller says "on" or that
+     * saving failed once it knows; the caller says nothing.
      */
     fun save(profileId: Int, meta: MetaDetails, keepCount: Int, scope: AutoDownloadScope, deleteAfterWatching: Boolean)
 
@@ -169,6 +185,7 @@ internal object AutoDownloads : AutoDownloadController {
     override val statuses: StateFlow<Map<String, AutoDownloadStatus>> get() = engine.statuses
     override val storageLimitGb: StateFlow<Int?> get() = store.storageLimitGb
     override val removals: StateFlow<List<AutoDownloadRemoval>> get() = store.removals
+    override val recentlyDeleted: StateFlow<List<AutoDownloadDeleted>> get() = store.recentlyDeleted
     override val usesSystemTrash: Boolean get() = DownloadsTrash.usesSystemTrash
 
     fun storageLimitBytes(): Long? = store.storageLimitBytes()
@@ -231,23 +248,47 @@ internal object AutoDownloads : AutoDownloadController {
             deleteAfterWatching = deleteAfterWatching,
         )
         this.scope.launch {
-            val saved = runCatching { store.upsert(profileId, rule) }.getOrDefault(false)
-            if (saved) checkSafely(rule.key, ignoreWaiting = true)
+            // What is said is what happened: "on" only once the rule is saved, an error when it is not.
+            val result = saveAutoDownloadRule(store, profileId, rule)
+            when (result) {
+                AutoDownloadSaveResult.TurnedOn -> NuvioToastController.show(getString(Res.string.downloads_auto_toast_on))
+                AutoDownloadSaveResult.Changed -> Unit
+                AutoDownloadSaveResult.NotSaved -> NuvioToastController.show(getString(Res.string.downloads_auto_toast_save_failed))
+            }
+            if (result != AutoDownloadSaveResult.NotSaved) checkSafely(rule.key, ignoreWaiting = true)
         }
     }
 
     override fun turnOff(profileId: Int, ruleKey: String) {
         scope.launch {
-            val removed = runCatching { store.remove(profileId, ruleKey) }.getOrDefault(false)
-            if (removed) engine.forget(ruleKey)
+            if (removeAutoDownloadRule(store, profileId, ruleKey)) {
+                engine.forget(ruleKey)
+                NuvioToastController.show(getString(Res.string.downloads_auto_toast_off))
+            } else {
+                NuvioToastController.show(getString(Res.string.downloads_auto_toast_off_failed))
+            }
         }
     }
 
     /** A higher limit may make room for what the old one held back, so the rules are checked. */
     override fun setStorageLimit(profileId: Int, limitGb: Int?) {
         scope.launch {
-            val saved = runCatching { store.setStorageLimit(profileId, limitGb) }.getOrDefault(false)
-            if (saved) checkSafely()
+            if (changeAutoDownloadStorageLimit(store, profileId, limitGb)) {
+                checkSafely()
+            } else {
+                NuvioToastController.show(getString(Res.string.downloads_auto_toast_limit_failed))
+            }
+        }
+    }
+
+    /**
+     * The user is deleting [item] from Downloads. Called before the download is removed, so that no
+     * check can queue the episode again in between. A rule that queued it remembers it.
+     */
+    suspend fun rememberUserDeletion(item: DownloadItem) {
+        if (item.autoDownloadRuleKey == null) return
+        withContext(Dispatchers.Default) {
+            runCatching { engine.onDeletedByUser(store.profileId(), item) }
         }
     }
 
@@ -301,11 +342,24 @@ internal object AutoDownloads : AutoDownloadController {
         val profileId = ProfileRepository.activeProfileId
         scope.launch {
             val item = DownloadsRepository.findCompletedDownloadByLocalFile(localFileUri) ?: return@launch
-            runCatching { deleteAfterWatching.onLocalPlaybackCompleted(profileId, item) }
+            val scheduled = runCatching { deleteAfterWatching.onLocalPlaybackCompleted(profileId, item) }.getOrDefault(false)
+            if (scheduled) runCatching { announceScheduledDeletion(profileId, item) }
             // The watched state is saved by the player after it reports the end of playback.
             delay(PlaybackCheckDelayMs)
             checkSafely(autoDownloadRuleKey(item.parentMetaType, item.parentMetaId))
         }
+    }
+
+    /** Says that [item] will be deleted, with a Keep button for as long as the message stays. */
+    private suspend fun announceScheduledDeletion(profileId: Int, item: DownloadItem) {
+        val due = store.removals(profileId).firstOrNull { it.downloadId == item.id } ?: return
+        val message = scheduledDeletionMessage(item, removalHoursLeft(due.dueAtEpochMs, DownloadsClock.nowEpochMs()))
+        NuvioToastController.show(
+            message = message,
+            durationMillis = ScheduledDeletionToastMs,
+            actionLabel = getString(Res.string.downloads_auto_keep),
+            onAction = { keepDownload(profileId, item.id) },
+        )
     }
 
     fun onPrivateSourceSkipped(request: SeasonBatchRequest, episode: SeasonBatchEpisode) {
@@ -326,7 +380,19 @@ internal object AutoDownloads : AutoDownloadController {
         }
     }
 
+    private const val ScheduledDeletionToastMs = 10_000L
     private const val StartupDelayMs = 60_000L
     private const val PollIntervalMs = 10L * 60 * 1000
     private const val PlaybackCheckDelayMs = 5_000L
+}
+
+/** What is said when finishing [item] schedules its deletion in about [hours] hours. */
+private suspend fun scheduledDeletionMessage(item: DownloadItem, hours: Int): String {
+    val season = item.seasonNumber ?: 0
+    val episode = item.episodeNumber ?: 0
+    return if (hours < 1) {
+        getString(Res.string.downloads_auto_scheduled_toast_soon, item.title, season, episode)
+    } else {
+        getPluralString(Res.plurals.downloads_auto_scheduled_toast, hours, item.title, season, episode, hours)
+    }
 }

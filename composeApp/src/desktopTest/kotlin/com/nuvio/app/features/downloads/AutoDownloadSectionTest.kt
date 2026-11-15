@@ -39,6 +39,15 @@ import nuvio.composeapp.generated.resources.downloads_auto_delete_now_message_tr
 import nuvio.composeapp.generated.resources.downloads_auto_delete_now_title
 import nuvio.composeapp.generated.resources.downloads_auto_keep_description
 import nuvio.composeapp.generated.resources.downloads_auto_pending_heading
+import nuvio.composeapp.generated.resources.downloads_auto_dialog_title
+import nuvio.composeapp.generated.resources.downloads_auto_go_to_show
+import nuvio.composeapp.generated.resources.downloads_auto_no_rules
+import nuvio.composeapp.generated.resources.downloads_auto_storage_limit_profile_description
+import nuvio.composeapp.generated.resources.downloads_auto_turn_off
+import nuvio.composeapp.generated.resources.downloads_auto_recent_days_ago
+import nuvio.composeapp.generated.resources.downloads_auto_recent_heading
+import nuvio.composeapp.generated.resources.downloads_auto_recent_row
+import nuvio.composeapp.generated.resources.downloads_auto_recent_today
 import nuvio.composeapp.generated.resources.downloads_auto_pending_in_hours
 import nuvio.composeapp.generated.resources.downloads_auto_pending_row
 import nuvio.composeapp.generated.resources.downloads_auto_pending_soon
@@ -60,7 +69,6 @@ import nuvio.composeapp.generated.resources.downloads_auto_status_low_disk_space
 import nuvio.composeapp.generated.resources.downloads_auto_status_storage_limit
 import nuvio.composeapp.generated.resources.downloads_auto_status_up_to_date
 import nuvio.composeapp.generated.resources.downloads_auto_storage_limit
-import nuvio.composeapp.generated.resources.downloads_auto_storage_limit_description
 import nuvio.composeapp.generated.resources.downloads_auto_storage_limit_none
 import nuvio.composeapp.generated.resources.downloads_auto_storage_limit_value
 import org.jetbrains.compose.resources.StringResource
@@ -80,6 +88,7 @@ class AutoDownloadSectionTest {
         override val statuses = MutableStateFlow(emptyMap<String, AutoDownloadStatus>())
         override val storageLimitGb = MutableStateFlow<Int?>(50)
         override val removals = MutableStateFlow(emptyList<AutoDownloadRemoval>())
+        override val recentlyDeleted = MutableStateFlow(emptyList<AutoDownloadDeleted>())
         override var usesSystemTrash = true
         var checks = 0
         val limitsSet = mutableListOf<Pair<Int, Int?>>()
@@ -101,7 +110,11 @@ class AutoDownloadSectionTest {
             deletedNow += profileId to downloadId
         }
 
-        override fun turnOff(profileId: Int, ruleKey: String) = Unit
+        val turnedOff = mutableListOf<Pair<Int, String>>()
+
+        override fun turnOff(profileId: Int, ruleKey: String) {
+            turnedOff += profileId to ruleKey
+        }
 
         override fun checkNow() {
             checks++
@@ -131,7 +144,8 @@ class AutoDownloadSectionTest {
     )
 
     @Test
-    fun nothing_is_shown_without_a_rule() {
+    fun nothing_is_shown_without_a_rule_or_automatic_downloads() {
+        downloads.value = DownloadsUiState()
         show()
 
         compose.onNodeWithText(text(Res.string.downloads_auto_section_title)).assertDoesNotExist()
@@ -185,7 +199,7 @@ class AutoDownloadSectionTest {
         show()
 
         compose.onNodeWithText(text(Res.string.downloads_auto_storage_limit)).assertIsDisplayed()
-        compose.onNodeWithText(text(Res.string.downloads_auto_storage_limit_description)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_auto_storage_limit_profile_description)).assertIsDisplayed()
         compose.onNodeWithText(text(Res.string.downloads_auto_storage_limit_value, 50)).assertIsDisplayed()
     }
 
@@ -297,8 +311,8 @@ class AutoDownloadSectionTest {
     }
 
     @Test
-    fun the_last_hour_is_shown_in_words() {
-        scheduleRemoval(inMs = hour - 1)
+    fun the_last_half_hour_is_shown_in_words() {
+        scheduleRemoval(inMs = hour / 2 - 1)
         show()
 
         compose.onNodeWithText(pendingRow(text(Res.string.downloads_auto_pending_soon))).assertIsDisplayed()
@@ -381,7 +395,149 @@ class AutoDownloadSectionTest {
         compose.onNodeWithText(text(Res.string.downloads_auto_delete_now_message_held, "Show", 1, 4)).assertIsDisplayed()
     }
 
-    private fun show() {
+    @Test
+    fun a_rule_row_is_a_button_with_a_named_action_that_works_from_the_keyboard() {
+        controller.rules.value = listOf(rule)
+        show()
+
+        compose.onNode(
+            hasText(text(Res.string.downloads_auto_status_not_checked)) and
+                SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button),
+        )
+            .assertHasClickAction()
+            .assert(SemanticsMatcher.keyIsDefined(androidx.compose.ui.semantics.SemanticsActions.OnClick))
+            .requestFocus()
+            .performKeyInput { pressKey(Key.Enter) }
+
+        compose.onNodeWithText(text(Res.string.downloads_auto_dialog_title, "Show")).assertIsDisplayed()
+    }
+
+    @Test
+    fun the_rule_dialog_turns_the_rule_off_for_the_profile_it_was_opened_for() {
+        controller.rules.value = listOf(rule)
+        show()
+        compose.onNodeWithText(text(Res.string.downloads_auto_status_not_checked)).performClick()
+
+        compose.runOnIdle { shownProfile = otherProfile }
+        compose.waitForIdle()
+        compose.onNode(hasText(text(Res.string.downloads_auto_turn_off)) and hasAnyAncestor(isDialog())).performClick()
+
+        assertEquals(listOf(profile to rule.key), controller.turnedOff)
+        compose.onNodeWithText(text(Res.string.downloads_auto_dialog_title, "Show")).assertDoesNotExist()
+    }
+
+    @Test
+    fun the_rule_dialog_goes_to_the_show_and_closes() {
+        controller.rules.value = listOf(rule)
+        show()
+        compose.onNodeWithText(text(Res.string.downloads_auto_status_not_checked)).performClick()
+
+        compose.onNodeWithText(text(Res.string.downloads_auto_go_to_show)).performClick()
+
+        assertEquals(listOf("tt1"), wentToShow)
+        compose.onNodeWithText(text(Res.string.downloads_auto_dialog_title, "Show")).assertDoesNotExist()
+    }
+
+    @Test
+    fun go_to_show_is_not_offered_where_the_screen_cannot_open_a_show() {
+        controller.rules.value = listOf(rule)
+        show(withGoToShow = false)
+        compose.onNodeWithText(text(Res.string.downloads_auto_status_not_checked)).performClick()
+
+        compose.onNodeWithText(text(Res.string.downloads_auto_turn_off)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_auto_go_to_show)).assertDoesNotExist()
+    }
+
+    @Test
+    fun the_dialog_closes_when_its_rule_is_gone() {
+        controller.rules.value = listOf(rule)
+        show()
+        compose.onNodeWithText(text(Res.string.downloads_auto_status_not_checked)).performClick()
+
+        compose.runOnIdle { controller.rules.value = emptyList() }
+        compose.waitForIdle()
+
+        compose.onNodeWithText(text(Res.string.downloads_auto_dialog_title, "Show")).assertDoesNotExist()
+    }
+
+    @Test
+    fun the_storage_limit_and_check_now_stay_when_automatic_downloads_exist_but_no_rule_does() {
+        downloads.value = DownloadsUiState(listOf(testDownload(4, DownloadStatus.Completed, ruleKey = rule.key)))
+        show()
+
+        compose.onNodeWithText(text(Res.string.downloads_auto_storage_limit)).assertIsDisplayed()
+        compose.onNodeWithContentDescription(text(Res.string.downloads_auto_check_now)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_auto_no_rules)).assertIsDisplayed()
+    }
+
+    @Test
+    fun the_storage_limit_stays_when_it_was_changed_and_no_rule_exists() {
+        controller.storageLimitGb.value = 100
+        show()
+
+        compose.onNodeWithText(text(Res.string.downloads_auto_storage_limit)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_auto_storage_limit_value, 100)).assertIsDisplayed()
+    }
+
+    @Test
+    fun the_limit_says_it_counts_only_automatic_downloads_and_is_per_profile() {
+        controller.rules.value = listOf(rule)
+        show()
+
+        compose.onNodeWithText(text(Res.string.downloads_auto_storage_limit_profile_description)).assertIsDisplayed()
+    }
+
+    @Test
+    fun the_section_is_shown_for_rules_automatic_downloads_history_or_a_changed_limit_only() {
+        assertEquals(false, autoDownloadSectionShown(false, false, false, 50))
+        assertEquals(true, autoDownloadSectionShown(true, false, false, 50))
+        assertEquals(true, autoDownloadSectionShown(false, true, false, 50))
+        assertEquals(true, autoDownloadSectionShown(false, false, true, 50))
+        assertEquals(true, autoDownloadSectionShown(false, false, false, null))
+        assertEquals(true, autoDownloadSectionShown(false, false, false, 250))
+    }
+
+    private fun recent(episode: Int, agoMs: Long) = AutoDownloadDeleted("Show", 1, episode, atEpochMs = shownNow - agoMs)
+
+    @Test
+    fun an_episode_deleted_after_watching_is_listed_under_recently_deleted_for_a_week() {
+        controller.rules.value = listOf(rule)
+        controller.recentlyDeleted.value = listOf(
+            recent(1, agoMs = 8 * 24 * hour),
+            recent(2, agoMs = 2 * 24 * hour),
+            recent(3, agoMs = hour),
+        )
+        show()
+
+        compose.onNode(
+            hasText(text(Res.string.downloads_auto_recent_heading)) and SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading),
+        ).assertIsDisplayed()
+        val twoDays = runBlocking { getPluralString(Res.plurals.downloads_auto_recent_days_ago, 2, 2) }
+        compose.onNodeWithText(text(Res.string.downloads_auto_recent_row, "Show", 1, 3, text(Res.string.downloads_auto_recent_today))).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_auto_recent_row, "Show", 1, 2, twoDays)).assertIsDisplayed()
+        compose.onNodeWithText("Show S1 E1", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun the_list_is_still_there_after_the_last_rule_was_turned_off() {
+        controller.recentlyDeleted.value = listOf(recent(3, agoMs = hour))
+        show()
+
+        compose.onNodeWithText(text(Res.string.downloads_auto_recent_heading)).assertIsDisplayed()
+    }
+
+    @Test
+    fun without_removed_episodes_the_heading_is_not_shown() {
+        controller.rules.value = listOf(rule)
+        controller.recentlyDeleted.value = listOf(recent(1, agoMs = 9 * 24 * hour))
+        show()
+
+        compose.onNodeWithText(text(Res.string.downloads_auto_recent_heading)).assertDoesNotExist()
+    }
+
+    private val wentToShow = mutableListOf<String>()
+
+    private fun show(withGoToShow: Boolean = true) {
         compose.setContent {
             NuvioTheme {
                 AutoDownloadSection(
@@ -389,6 +545,7 @@ class AutoDownloadSectionTest {
                     profileId = shownProfile,
                     downloads = downloads,
                     nowEpochMs = { shownNow },
+                    onGoToShow = if (withGoToShow) ({ wentToShow += it.parentMetaId }) else null,
                 )
             }
         }

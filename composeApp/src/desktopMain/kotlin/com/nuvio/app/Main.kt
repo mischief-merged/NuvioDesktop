@@ -11,6 +11,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
@@ -25,6 +27,7 @@ import com.nuvio.app.core.diagnostics.SentryInitializer
 import com.nuvio.app.core.ui.NuvioTheme
 import com.nuvio.app.core.ui.ProvideDesktopWindowInsets
 import com.nuvio.app.features.discordrpc.DiscordPresenceManager
+import com.nuvio.app.features.downloads.DownloadsRepository
 import com.nuvio.app.features.p2p.P2pStreamingEngine
 import com.nuvio.app.features.plugins.configureDesktopQuickJsLibrary
 import com.nuvio.app.features.player.PlatformPlayerSurface
@@ -131,16 +134,25 @@ fun main(args: Array<String>) {
             SentryInitializer.close()
             exitApplication()
         }
+        // The number of running downloads the user is being asked about, or null when no question is open.
+        var askedAboutDownloads by remember { mutableStateOf<Int?>(null) }
+        // Closing the window, or quitting from the menu, asks first only while downloads are running.
+        val requestClose = {
+            when (val decision = quitDecision(activeDownloadCount(DownloadsRepository.uiState.value.items))) {
+                QuitDecision.QuitNow -> closeApplication()
+                is QuitDecision.AskFirst -> askedAboutDownloads = decision.activeDownloads
+            }
+        }
 
         SwingWindow(
-            onCloseRequest = closeApplication,
+            onCloseRequest = requestClose,
             title = if (smokePlayerUrl == null) "Nuvio" else "Nuvio Player Smoke",
             state = windowState,
             icon = painterResource(appIconState.selected.transparentPreviewResource),
             init = ::configureMacosWindowBeforePeer,
         ) {
             MacosAppMenuBar(
-                onCloseRequest = closeApplication,
+                onCloseRequest = requestClose,
                 onMinimizeRequest = { windowState.isMinimized = true },
             )
             SideEffect {
@@ -233,6 +245,15 @@ fun main(args: Array<String>) {
                         isFullscreen = windowState.placement == WindowPlacement.Fullscreen,
                     ) {
                         MiddleClickAutoscroll { App() }
+                    }
+                    askedAboutDownloads?.let { running ->
+                        AppEnvironment {
+                            QuitWithDownloadsDialog(
+                                activeDownloads = running,
+                                onQuit = closeApplication,
+                                onKeepOpen = { askedAboutDownloads = null },
+                            )
+                        }
                     }
                 }
             } else {
