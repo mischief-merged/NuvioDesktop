@@ -147,4 +147,26 @@ class EpisodeNavigationTest {
         val v = video("sp", null, 4)
         assertEquals(0, show(v).trailFor(v).seasonNumber)
     }
+
+    private val now = 1_800_000_000_000L // 2027-01-15
+
+    @Test
+    fun playableWhenAiredAndAvailable() {
+        assertEquals(true, MetaVideo(id = "a", title = "a", released = "2000-01-01").isPlayableNow(now))
+    }
+
+    @Test
+    fun notPlayableWhenDatedInTheFuture() {
+        assertEquals(false, MetaVideo(id = "a", title = "a", released = "2999-01-01").isPlayableNow(now))
+    }
+
+    @Test
+    fun playableWhenNoDateIsKnown() {
+        assertEquals(true, MetaVideo(id = "a", title = "a", released = null).isPlayableNow(now))
+    }
+
+    @Test
+    fun notPlayableWhenMarkedUnavailable() {
+        assertEquals(false, MetaVideo(id = "a", title = "a", released = "2000-01-01", available = false).isPlayableNow(now))
+    }
 }
