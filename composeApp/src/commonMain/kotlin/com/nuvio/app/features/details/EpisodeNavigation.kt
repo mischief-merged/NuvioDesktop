@@ -57,16 +57,41 @@ internal fun MetaDetails.trailFor(video: MetaVideo): EpisodeTrail =
         episodeTitle = video.title,
     )
 
-/** True when the episode can be played now: listed as available and not dated in the future. */
-internal fun MetaVideo.isPlayableNow(nowEpochMs: Long? = null): Boolean {
-    if (!available) return false
+/** Why an episode can or cannot be played now. */
+internal enum class EpisodeAvailability {
+    Playable,
+
+    /** Dated in the future: the page says when it airs. */
+    NotReleased,
+
+    /** Listed as unavailable although the date is past or unknown: no air date is promised. */
+    Unavailable,
+}
+
+internal fun MetaVideo.availability(nowEpochMs: Long? = null): EpisodeAvailability {
     val aired = if (nowEpochMs == null) {
         isEpisodeReleaseAired(released)
     } else {
         isEpisodeReleaseAired(released, nowEpochMs)
     }
-    return aired != false
+    return when {
+        aired == false -> EpisodeAvailability.NotReleased
+        !available -> EpisodeAvailability.Unavailable
+        else -> EpisodeAvailability.Playable
+    }
 }
+
+/** True when the episode can be played now: listed as available and not dated in the future. */
+internal fun MetaVideo.isPlayableNow(nowEpochMs: Long? = null): Boolean =
+    availability(nowEpochMs) == EpisodeAvailability.Playable
+
+/** The position of [video] among the episodes of its season, or null when the show does not list it. */
+internal fun MetaDetails.episodeIndexInSeason(video: MetaVideo): Int? =
+    episodesInSeasonOf(video).indexOfFirst { it.id == video.id }.takeIf { it >= 0 }
+
+/** The outer list index of an episode row in the list layout: after the header, in season order. */
+internal fun episodeListItemIndex(headerIndex: Int, indexInSeason: Int): Int =
+    headerIndex + 1 + indexInSeason.coerceAtLeast(0)
 
 /**
  * The season a show page should open on when it was asked for [initialSeason] or for [focusVideo].

@@ -2979,6 +2979,7 @@
     <string name="episode_page_rating">Rating %1$s</string>
     <string name="episode_page_play_not_released">Not released yet</string>
     <string name="episode_page_play_not_released_date">Not released yet, airs %1$s</string>
+    <string name="episode_page_play_unavailable">Not available to play</string>
     <string name="episode_page_previous">Previous episode</string>
     <string name="episode_page_next">Next episode</string>
     <string name="episode_page_no_previous">No earlier episodes</string>

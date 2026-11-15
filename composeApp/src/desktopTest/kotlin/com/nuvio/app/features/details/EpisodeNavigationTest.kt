@@ -197,4 +197,68 @@ class EpisodeNavigationTest {
     fun requestedSeasonOfShowWithoutEpisodesIsNull() {
         assertNull(show().requestedSeason(1, null))
     }
+
+    @Test
+    fun futureDateIsNotReleasedEvenWhenAvailable() {
+        assertEquals(
+            EpisodeAvailability.NotReleased,
+            MetaVideo(id = "a", title = "a", released = "2999-01-01").availability(now),
+        )
+    }
+
+    @Test
+    fun futureDateWinsOverUnavailable() {
+        assertEquals(
+            EpisodeAvailability.NotReleased,
+            MetaVideo(id = "a", title = "a", released = "2999-01-01", available = false).availability(now),
+        )
+    }
+
+    @Test
+    fun unavailableWithPastDateIsUnavailableNotUnreleased() {
+        assertEquals(
+            EpisodeAvailability.Unavailable,
+            MetaVideo(id = "a", title = "a", released = "2000-01-01", available = false).availability(now),
+        )
+    }
+
+    @Test
+    fun unavailableWithoutDateIsUnavailable() {
+        assertEquals(
+            EpisodeAvailability.Unavailable,
+            MetaVideo(id = "a", title = "a", released = null, available = false).availability(now),
+        )
+    }
+
+    @Test
+    fun pastDateAndAvailableIsPlayable() {
+        assertEquals(
+            EpisodeAvailability.Playable,
+            MetaVideo(id = "a", title = "a", released = "2000-01-01").availability(now),
+        )
+    }
+
+    @Test
+    fun indexInSeasonFollowsDisplayOrderWithinTheSeason() {
+        assertEquals(0, sample.episodeIndexInSeason(sample.findEpisode("s1e1")!!))
+        assertEquals(1, sample.episodeIndexInSeason(sample.findEpisode("s2e2")!!))
+        assertEquals(1, sample.episodeIndexInSeason(sample.findEpisode("sp2")!!))
+    }
+
+    @Test
+    fun indexInSeasonOfUnlistedEpisodeIsNull() {
+        assertNull(sample.episodeIndexInSeason(video("ghost", 1, 5)))
+    }
+
+    @Test
+    fun indexOfLateEpisodeInALongSeason() {
+        val long = show(*(1..40).map { video("e$it", 1, it) }.toTypedArray())
+        assertEquals(37, long.episodeIndexInSeason(long.findEpisode("e38")!!))
+    }
+
+    @Test
+    fun listItemIndexSitsAfterTheHeader() {
+        assertEquals(8, episodeListItemIndex(headerIndex = 5, indexInSeason = 2))
+        assertEquals(6, episodeListItemIndex(headerIndex = 5, indexInSeason = -3))
+    }
 }

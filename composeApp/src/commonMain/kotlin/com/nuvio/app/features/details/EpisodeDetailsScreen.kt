@@ -401,7 +401,8 @@ private fun EpisodePageContent(
         episodeNumber = video.episode,
     )?.takeUnless { it.isCompleted }
     val resumeMs = savedProgress?.lastPositionMs?.takeIf { it > 0L }
-    val playable = video.isPlayableNow()
+    val availability = video.availability()
+    val playable = availability == EpisodeAvailability.Playable
     val showManualPlay = playable && StreamAutoPlayPolicy.isEffectivelyEnabled(playerSettings)
 
     val startPlayback: (ContentPlayAction) -> Unit = { action ->
@@ -461,11 +462,11 @@ private fun EpisodePageContent(
                             video = video,
                             isWatched = isWatched,
                             showRating = metaScreenSettings.episodeRatingsVisibility.showRating(isWatched),
-                            playable = playable,
+                            availability = availability,
                         )
                         EpisodeActions(
                             video = video,
-                            playable = playable,
+                            availability = availability,
                             resumeMs = resumeMs,
                             showManualPlay = showManualPlay,
                             isWatched = isWatched,
@@ -563,13 +564,13 @@ private fun EpisodeSummary(
     video: MetaVideo,
     isWatched: Boolean,
     showRating: Boolean,
-    playable: Boolean,
+    availability: EpisodeAvailability,
 ) {
     val title = localizedEpisodeTitle(video.title, video.episode) ?: video.title
     val code = localizedSeasonEpisodeCode(video.season, video.episode)
     val released = video.released?.takeIf { it.isNotBlank() }?.let(::formatReleaseDateForDisplay)
     val dateText = released?.let {
-        if (playable) it else stringResource(Res.string.cw_airs_date, it)
+        if (availability == EpisodeAvailability.NotReleased) stringResource(Res.string.cw_airs_date, it) else it
     }
     val runtimeText = video.runtime?.takeIf { it > 0 }?.let(::formatRuntimeFromMinutes)
     val ratingText = video.rating
@@ -611,7 +612,7 @@ private fun EpisodeSummary(
 @Composable
 private fun EpisodeActions(
     video: MetaVideo,
-    playable: Boolean,
+    availability: EpisodeAvailability,
     resumeMs: Long?,
     showManualPlay: Boolean,
     isWatched: Boolean,
@@ -619,8 +620,9 @@ private fun EpisodeActions(
     onPlayManually: () -> Unit,
     onToggleWatched: () -> Unit,
 ) {
+    val playable = availability == EpisodeAvailability.Playable
     val playLabel = when {
-        !playable -> {
+        availability == EpisodeAvailability.NotReleased -> {
             val date = video.released?.takeIf { it.isNotBlank() }?.let(::formatReleaseDateForDisplay)
             if (date != null) {
                 stringResource(Res.string.episode_page_play_not_released_date, date)
@@ -628,6 +630,7 @@ private fun EpisodeActions(
                 stringResource(Res.string.episode_page_play_not_released)
             }
         }
+        availability == EpisodeAvailability.Unavailable -> stringResource(Res.string.episode_page_play_unavailable)
         resumeMs != null -> stringResource(Res.string.streams_resume_from_time, formatPlaybackTime(resumeMs))
         else -> stringResource(Res.string.action_play)
     }
@@ -804,10 +807,13 @@ private fun SeasonStripItem(
     val currentText = stringResource(Res.string.episode_page_current_marker)
     val watchedText = stringResource(Res.string.episodes_cd_watched)
     val notReleasedText = stringResource(Res.string.episode_page_play_not_released)
+    val unavailableText = stringResource(Res.string.episodes_unavailable)
+    val availability = video.availability()
     val status = listOfNotNull(
         currentText.takeIf { isCurrent },
         watchedText.takeIf { isWatched },
-        notReleasedText.takeIf { !video.isPlayableNow() },
+        notReleasedText.takeIf { availability == EpisodeAvailability.NotReleased },
+        unavailableText.takeIf { availability == EpisodeAvailability.Unavailable },
     ).joinToString(separator = "  •  ")
     val openLabel = stringResource(Res.string.episode_page_open_episode, title)
     val colors = MaterialTheme.nuvio.colors
