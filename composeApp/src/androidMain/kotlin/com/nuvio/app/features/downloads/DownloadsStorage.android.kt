@@ -7,6 +7,7 @@ import com.nuvio.app.core.storage.ProfileScopedKey
 internal actual object DownloadsStorage {
     private const val preferencesName = "nuvio_downloads"
     private const val payloadKey = "downloads_payload"
+    private const val unreadablePayloadKey = "downloads_unreadable_payload"
 
     private var preferences: SharedPreferences? = null
 
@@ -21,6 +22,15 @@ internal actual object DownloadsStorage {
         preferences
             ?.edit()
             ?.putString(ProfileScopedKey.of(payloadKey), payload)
+            ?.apply()
+    }
+
+    actual fun loadPreviousPayload(): String? = null
+
+    actual fun saveUnreadablePayload(payload: String, atEpochMs: Long) {
+        preferences
+            ?.edit()
+            ?.putString("${ProfileScopedKey.of(unreadablePayloadKey)}_$atEpochMs", payload)
             ?.apply()
     }
 }

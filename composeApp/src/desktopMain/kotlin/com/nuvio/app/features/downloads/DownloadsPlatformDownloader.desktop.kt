@@ -1,11 +1,13 @@
 package com.nuvio.app.features.downloads
 
+import com.nuvio.app.core.network.NetworkStatusRepository
 import com.nuvio.app.core.storage.DesktopStorage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -14,11 +16,18 @@ import java.awt.Desktop
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.security.MessageDigest
+import kotlinx.coroutines.runBlocking
+import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.downloads_error_file_checksum
+import org.jetbrains.compose.resources.getString
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.io.path.createDirectories
 
 private val desktopDownloadHttpClient: HttpClient = HttpClient.newBuilder()
@@ -30,12 +39,20 @@ internal actual object DownloadsPlatformDownloader {
     private val downloadsDir: File
         get() = File(DesktopStorage.rootDir.resolve("downloads").also { it.createDirectories() }.toUri())
 
-    actual fun restoreItem(item: DownloadItem): DownloadItem =
-        if (item.status == DownloadStatus.Downloading) {
-            item.copy(status = DownloadStatus.Paused, errorMessage = null)
-        } else {
-            item
-        }
+    /**
+     * A download that is stored as downloading was cut off when the app was closed. It is left as it
+     * is, so that it is started again when the list is loaded and goes on from its partial file.
+     * One the user paused is stored as paused and stays paused.
+     */
+    /** Whether the internet cannot be reached right now, asked when a source keeps failing. */
+    internal var isOffline: suspend () -> Boolean = { !NetworkStatusRepository.isInternetReachable() }
+
+    internal var waitBeforeRetry: suspend (delayMs: Long) -> Unit = { delay(it) }
+
+    /** A transfer that receives nothing for this long is cut off and tried again. */
+    internal var stallTimeoutMs: Long = 60_000L
+
+    actual fun restoreItem(item: DownloadItem): DownloadItem = item
 
     actual fun start(
         request: DownloadPlatformRequest,
@@ -53,12 +70,20 @@ internal actual object DownloadsPlatformDownloader {
 
             // Dropped connections are retried in place (resuming from the .part file) with backoff.
             // The retry budget resets whenever an attempt makes progress, so long downloads survive
-            // periodic disconnects and only fail after repeated attempts that receive nothing.
-            var failedAttemptsWithoutProgress = 0
+            // periodic disconnects and only fail after repeated attempts that receive nothing while
+            // the internet can be reached. Without internet the download waits for it to come back.
+            val retries = DownloadRetries(isOffline, waitBeforeRetry)
             while (true) {
                 val bytesBeforeAttempt = tempFile.partialLength()
                 try {
-                    val totalBytes = transferToTempFile(request, tempFile, onProgress)
+                    val transfer = transferToTempFile(request, tempFile, onProgress)
+                    val totalBytes = transfer.totalBytes
+                    if (transfer.digestMatched == false) {
+                        // Not the body the server said it sent. Nothing of it is worth resuming.
+                        tempFile.delete()
+                        error(runBlocking { getString(Res.string.downloads_error_file_checksum) })
+                    }
+                    if (transfer.digestMatched == true) request.onDigestVerified()
 
                     if (destination.exists()) {
                         destination.delete()
@@ -75,15 +100,10 @@ internal actual object DownloadsPlatformDownloader {
                     onPaused()
                     throw error
                 } catch (error: IOException) {
-                    if (tempFile.partialLength() > bytesBeforeAttempt) {
-                        failedAttemptsWithoutProgress = 0
-                    }
-                    failedAttemptsWithoutProgress++
-                    if (failedAttemptsWithoutProgress > MaxTransientRetries) {
+                    if (!retries.awaitNextAttempt(madeProgress = tempFile.partialLength() > bytesBeforeAttempt)) {
                         onFailure(error.message?.takeIf { it.isNotBlank() && it != "closed" } ?: "Connection lost")
                         return@launch
                     }
-                    delay(retryDelayMs(failedAttemptsWithoutProgress))
                 } catch (error: Throwable) {
                     onFailure(error.message ?: "Download failed")
                     return@launch
@@ -130,12 +150,23 @@ internal actual object DownloadsPlatformDownloader {
         return openDirectoryWithPlatformCommand(directory)
     }
 
-    /** Downloads into [tempFile], resuming from its current length when possible. Returns the total size if known. */
+    private class Transferred(
+        val totalBytes: Long?,
+        /** Whether the body matched the digest the server sent. Null when there was none to compare. */
+        val digestMatched: Boolean?,
+    )
+
+    /**
+     * Downloads into [tempFile], resuming from its current length when possible. Reports the total
+     * size if known. A digest the server sent with the body is compared with what was written, but
+     * only for a body that was received whole in this transfer: a transfer that resumed a partial
+     * file saw only part of the body, so its digest is not checked.
+     */
     private suspend fun transferToTempFile(
         request: DownloadPlatformRequest,
         tempFile: File,
         onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
-    ): Long? {
+    ): Transferred {
         var resumeFromBytes = tempFile.partialLength()
         var attemptedRangeRequest = resumeFromBytes > 0L
         var response = sendDownloadRequest(request, if (attemptedRangeRequest) resumeFromBytes else null)
@@ -172,19 +203,51 @@ internal actual object DownloadsPlatformDownloader {
         )
         var downloadedBytes = startingBytes
         onProgress(downloadedBytes, totalBytes)
+        val expectedDigest = if (statusCode == 200 && !appendToTemp) {
+            expectedBodyDigest { name -> response.headers().firstValue(name).orElse(null) }
+        } else {
+            null
+        }
+        val digest = expectedDigest?.let { runCatching { MessageDigest.getInstance(it.algorithm) }.getOrNull() }
 
         response.body().use { input ->
-            FileOutputStream(tempFile, appendToTemp).use { output ->
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                while (true) {
-                    currentCoroutineContext().ensureActive()
-                    val read = input.read(buffer)
-                    if (read <= 0) break
-                    output.write(buffer, 0, read)
-                    downloadedBytes += read.toLong()
-                    onProgress(downloadedBytes, totalBytes)
+            coroutineScope {
+                // A connection that goes silent never ends the read by itself. Closing the body
+                // ends it, and the transfer is then tried again like any other dropped connection.
+                val lastReadAtNanos = AtomicLong(System.nanoTime())
+                val stalled = AtomicBoolean(false)
+                val stallWatch = launch {
+                    val timeoutMs = stallTimeoutMs
+                    while (true) {
+                        delay((timeoutMs / 4).coerceAtLeast(1L))
+                        if (System.nanoTime() - lastReadAtNanos.get() > timeoutMs * 1_000_000L) {
+                            stalled.set(true)
+                            runCatching { input.close() }
+                            break
+                        }
+                    }
                 }
-                output.flush()
+                try {
+                    FileOutputStream(tempFile, appendToTemp).use { output ->
+                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                        while (true) {
+                            currentCoroutineContext().ensureActive()
+                            val read = input.read(buffer)
+                            if (read <= 0) break
+                            lastReadAtNanos.set(System.nanoTime())
+                            output.write(buffer, 0, read)
+                            digest?.update(buffer, 0, read)
+                            downloadedBytes += read.toLong()
+                            onProgress(downloadedBytes, totalBytes)
+                        }
+                        output.flush()
+                    }
+                } catch (error: IOException) {
+                    throw if (stalled.get()) IOException("Connection stalled") else error
+                } finally {
+                    stallWatch.cancel()
+                }
+                if (stalled.get()) throw IOException("Connection stalled")
             }
         }
 
@@ -192,7 +255,10 @@ internal actual object DownloadsPlatformDownloader {
         if (totalBytes != null && downloadedBytes < totalBytes) {
             throw IOException("Connection closed after $downloadedBytes of $totalBytes bytes")
         }
-        return totalBytes
+        return Transferred(
+            totalBytes = totalBytes,
+            digestMatched = if (digest != null && expectedDigest != null) digest.digest().contentEquals(expectedDigest.value) else null,
+        )
     }
 
     private fun sendDownloadRequest(
@@ -232,13 +298,6 @@ private class DesktopDownloadsTaskHandle(
         job.cancel()
     }
 }
-
-private const val MaxTransientRetries = 10
-private const val MaxRetryDelayMs = 30_000L
-
-/** 2s, 4s, 8s, 16s, then capped at 30s. */
-private fun retryDelayMs(failedAttempts: Int): Long =
-    (1_000L shl failedAttempts.coerceIn(1, 5)).coerceAtMost(MaxRetryDelayMs)
 
 private fun File.partialLength(): Long =
     takeIf { it.exists() }?.length()?.coerceAtLeast(0L) ?: 0L

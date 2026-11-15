@@ -2,9 +2,12 @@ package com.nuvio.app.core.storage
 
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.OutputStream
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.nio.file.StandardCopyOption
 import java.util.Comparator
 import java.util.Locale
 import java.util.Properties
@@ -74,10 +77,16 @@ internal object DesktopStorage {
 
     internal class Store(
         private val file: Path,
+        private val write: (Properties, OutputStream) -> Unit = { properties, output ->
+            properties.store(output, "Nuvio desktop preferences")
+        },
     ) {
         private val lock = Any()
         private val properties = Properties()
         private var loaded = false
+        private var fileIsGood = false
+        private val temporaryFile = file.resolveSibling("${file.fileName}.tmp")
+        private val previousFile = file.resolveSibling("${file.fileName}.bak")
 
         fun contains(key: String): Boolean = synchronized(lock) {
             ensureLoaded()
@@ -87,6 +96,11 @@ internal object DesktopStorage {
         fun getString(key: String): String? = synchronized(lock) {
             ensureLoaded()
             properties.getProperty(key)
+        }
+
+        /** The value the previous copy of the store holds, for a value of the store that cannot be used. */
+        fun getPreviousString(key: String): String? = synchronized(lock) {
+            Properties().takeIf { read(previousFile, it) }?.getProperty(key)
         }
 
         fun putString(key: String, value: String?) = synchronized(lock) {
@@ -153,17 +167,48 @@ internal object DesktopStorage {
             loaded = true
             properties.clear()
             if (!file.exists()) return
-            runCatching {
-                Files.newInputStream(file).use { input ->
-                    properties.load(input)
-                }
+            fileIsGood = read(file, properties)
+            if (!fileIsGood) {
+                properties.clear()
+                read(previousFile, properties)
             }
         }
 
+        private fun read(source: Path, into: Properties): Boolean =
+            runCatching {
+                if (!Files.isRegularFile(source) || Files.size(source) == 0L) return false
+                Files.newInputStream(source).use(into::load)
+                true
+            }.getOrDefault(false)
+
+        /**
+         * The file is never written in place: the new content goes to a file beside it, which then
+         * takes its place in one step, so a write that is cut short leaves the file as it was. The
+         * content the file had before stays beside it as the previous copy.
+         */
         private fun persist() {
             Files.createDirectories(file.parent)
-            Files.newOutputStream(file).use { output ->
-                properties.store(output, "Nuvio desktop preferences")
+            Files.newOutputStream(temporaryFile).use { output ->
+                write(properties, output)
+                output.flush()
+            }
+            if (fileIsGood) keepPreviousCopy()
+            try {
+                Files.move(temporaryFile, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(temporaryFile, file, StandardCopyOption.REPLACE_EXISTING)
+            }
+            fileIsGood = true
+        }
+
+        private fun keepPreviousCopy() {
+            runCatching {
+                Files.deleteIfExists(previousFile)
+                try {
+                    Files.createLink(previousFile, file)
+                } catch (_: Exception) {
+                    Files.copy(file, previousFile, StandardCopyOption.REPLACE_EXISTING)
+                }
             }
         }
     }

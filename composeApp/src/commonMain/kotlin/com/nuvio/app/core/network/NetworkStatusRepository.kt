@@ -149,6 +149,9 @@ object NetworkStatusRepository {
         return NetworkCondition.Online
     }
 
+    /** Asks the public internet now, whatever [uiState] last said. */
+    suspend fun isInternetReachable(): Boolean = probePublicInternet()
+
     private suspend fun probePublicInternet(): Boolean =
         probeReachable(PUBLIC_PROBE_PRIMARY) || probeReachable(PUBLIC_PROBE_FALLBACK)
 
