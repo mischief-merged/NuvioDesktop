@@ -331,6 +331,8 @@ internal fun DownloadPreferenceRows(
     maxBitrateMbps: Int?,
     audioLanguage: DebridStreamLanguage?,
     onPick: (DownloadPreferencePicker) -> Unit,
+    /** Added to the audio language row's help, for a language that was taken from playback and is not saved yet. */
+    audioLanguageNote: String? = null,
 ) {
     val tokens = MaterialTheme.nuvio
     Column(verticalArrangement = Arrangement.spacedBy(tokens.spacing.controlGap)) {
@@ -347,6 +349,10 @@ internal fun DownloadPreferenceRows(
         )
         SeasonDownloadChoiceRow(
             title = stringResource(Res.string.downloads_season_audio_language),
+            description = listOfNotNull(
+                stringResource(Res.string.downloads_season_audio_language_description),
+                audioLanguageNote,
+            ).joinToString(" "),
             value = audioLanguageLabel(audioLanguage),
             onClick = { onPick(DownloadPreferencePicker.AudioLanguage) },
         )
@@ -419,9 +425,10 @@ internal fun DownloadPreferenceEditor(
     onQualityChange: (BatchQuality) -> Unit,
     onMaxBitrateChange: (Int?) -> Unit,
     onAudioLanguageChange: (DebridStreamLanguage?) -> Unit,
+    audioLanguageNote: String? = null,
 ) {
     var picker by remember { mutableStateOf<DownloadPreferencePicker?>(null) }
-    DownloadPreferenceRows(quality, maxBitrateMbps, audioLanguage, onPick = { picker = it })
+    DownloadPreferenceRows(quality, maxBitrateMbps, audioLanguage, onPick = { picker = it }, audioLanguageNote = audioLanguageNote)
     DownloadPreferencePickers(
         picker = picker,
         quality = quality,

@@ -1260,7 +1260,7 @@
     <string name="settings_playback_reuse_binge_group_description">Remember and reuse the last binge group across sessions (Continue Watching, Details, etc.).</string>
     <string name="settings_playback_preload_next_episode">Preload Next Episode Sources</string>
     <string name="settings_playback_preload_next_episode_description">Start searching for sources in the background before the next episode button appears.</string>
-    <string name="settings_playback_preferred_audio_language">Preferred Audio Language</string>
+    <string name="settings_playback_preferred_audio_language">Playback audio language</string>
     <string name="settings_playback_preferred_subtitle_language">Preferred Language</string>
     <string name="settings_playback_presets">Presets</string>
     <string name="settings_playback_regex_matches_against">Matches against stream name/title/description/addon/url. Example: 4K|2160p|Remux</string>
@@ -2194,7 +2194,9 @@
     <string name="downloads_season_max_bitrate_description">Lower means smaller files and lower picture quality. Sources above this are skipped.</string>
     <string name="downloads_season_bitrate_no_limit">No limit</string>
     <string name="downloads_season_bitrate_value">%1$d megabits per second</string>
-    <string name="downloads_season_audio_language">Audio language</string>
+    <string name="downloads_season_audio_language">Download audio language</string>
+    <string name="downloads_season_audio_language_description">Used when a download or Play picks a source. Playback audio language, under Settings, Playback, Audio, picks the track while you watch.</string>
+    <string name="downloads_season_audio_language_prefilled">Taken from your Playback audio language. It is saved when you save or change a choice here.</string>
     <string name="downloads_season_audio_language_any">Any language</string>
     <string name="downloads_season_started">Adding season to downloads</string>
     <string name="downloads_season_nothing">No released episodes to download</string>

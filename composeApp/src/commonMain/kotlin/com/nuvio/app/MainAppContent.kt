@@ -2246,6 +2246,7 @@ internal fun MainAppContent(
                         resumePromptItem == null,
                     playMode = playerSettingsUiState.streamAutoPlayMode,
                     onPlayModeChange = PlayerSettingsRepository::setStreamAutoPlayMode,
+                    playbackAudioLanguage = playerSettingsUiState.preferredAudioLanguage,
                 )
             }
 
