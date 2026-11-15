@@ -1,11 +1,14 @@
 package com.nuvio.app.features.downloads
 
+import com.nuvio.app.features.debrid.AudioLanguageReading
 import com.nuvio.app.features.debrid.DebridStreamLanguage
 import com.nuvio.app.features.debrid.DebridStreamMetadata
 import com.nuvio.app.features.debrid.DebridStreamPreferences
 import com.nuvio.app.features.debrid.DebridStreamResolution
 import com.nuvio.app.features.details.MetaDetails
+import com.nuvio.app.features.streams.StreamIdentity
 import com.nuvio.app.features.streams.StreamItem
+import com.nuvio.app.features.streams.WantedContent
 import com.nuvio.app.features.watched.releasedEpisodesForSeason
 import com.nuvio.app.features.watching.domain.WatchingContentRef
 import com.nuvio.app.features.watching.domain.buildPlaybackVideoId
@@ -166,11 +169,28 @@ internal fun isFarShorterThanRuntime(durationMs: Long?, runtimeMinutes: Int?): B
 
 internal const val MinPlausibleDurationDivisor = 10
 
+/** What a source for [episode] of this request has to be: the title, and the season and episode of a series. */
+internal fun SeasonBatchRequest.wantedContent(episode: SeasonBatchEpisode): WantedContent =
+    episode.movie?.let { WantedContent(title = it.title) }
+        ?: WantedContent(title = title, season = episode.seasonNumber, episode = episode.episodeNumber)
+
 /** The size the source says its file has, when it says so. */
 internal fun StreamItem.announcedSizeBytes(): Long? =
     DebridStreamMetadata.facts(this, parsingPreferences).size?.takeIf { it > 0L }
 
-private enum class LanguageMatch { Chosen, Unspecified, Other }
+private enum class LanguageMatch {
+    /** States the chosen language, or no language was chosen. */
+    Chosen,
+
+    /** Names no language, or several (multi-audio), which counts as containing the chosen one. */
+    Unspecified,
+
+    /** Names no listed language but looks foreign: a subtitle-only release, or a language that is not listed. */
+    LooksForeign,
+
+    /** States only other languages. */
+    Other,
+}
 
 private class BatchCandidate(
     val stream: StreamItem,
@@ -178,13 +198,18 @@ private class BatchCandidate(
     val language: LanguageMatch,
     /** File size, kept only when the episode runtime is known so a bitrate can be worked out from it. */
     val sizeBytes: Long?,
-)
+) {
+    /** The name says it is another title, episode or year than the one wanted. */
+    var otherContent: Boolean = false
+}
 
-private fun languageMatch(languages: List<DebridStreamLanguage>, chosen: DebridStreamLanguage?): LanguageMatch = when {
-    chosen == null || chosen in languages -> LanguageMatch.Chosen
-    languages.isEmpty() ||
-        DebridStreamLanguage.MULTI in languages ||
-        DebridStreamLanguage.UNKNOWN in languages -> LanguageMatch.Unspecified
+private fun languageMatch(reading: AudioLanguageReading, chosen: DebridStreamLanguage?): LanguageMatch = when {
+    chosen == null || chosen in reading.audio -> LanguageMatch.Chosen
+    reading.audio.isEmpty() ->
+        if (reading.looksForeign) LanguageMatch.LooksForeign else LanguageMatch.Unspecified
+    DebridStreamLanguage.MULTI in reading.audio -> LanguageMatch.Unspecified
+    // The languages may be subtitle languages the reader could not tie to their word: do not drop.
+    reading.possiblySubtitles -> LanguageMatch.Unspecified
     else -> LanguageMatch.Other
 }
 
@@ -195,9 +220,11 @@ private fun languageMatch(languages: List<DebridStreamLanguage>, chosen: DebridS
  * only with languages other than [audioLanguage], and sources whose bitrate (file size over
  * [runtimeMinutes]) is above [maxBitrateMbps].
  *
- * Order: the highest resolution first ([BatchQuality.BestAvailable] keeps them all), sources tagged
- * with the chosen language before untagged ones, and ready direct links before ones that still need
- * a debrid lookup. Only when a bitrate limit is set does bitrate matter for the order: sources whose
+ * Sources that are clearly another title, episode or year than [wanted] come last, and so do
+ * untagged ones that look foreign; [rankStreamsByPreferences] lists the rules and their order.
+ * Within those: the highest resolution first ([BatchQuality.BestAvailable] keeps them all), sources
+ * tagged with the chosen language before untagged ones, and ready direct links before ones that
+ * still need a debrid lookup. Only when a bitrate limit is set does bitrate matter for the order: sources whose
  * bitrate is unknown come after every source known to fit, and among those that fit the higher
  * bitrate comes before a direct link. Without any preference the order is by resolution and direct
  * link alone.
@@ -208,6 +235,7 @@ internal fun rankBatchCandidates(
     maxBitrateMbps: Int? = null,
     audioLanguage: DebridStreamLanguage? = null,
     runtimeMinutes: Int? = null,
+    wanted: WantedContent? = null,
 ): List<StreamItem> {
     val ordered = rankStreamsByPreferences(
         streams = streams.filter { stream ->
@@ -222,6 +250,7 @@ internal fun rankBatchCandidates(
         maxBitrateMbps = maxBitrateMbps,
         audioLanguage = audioLanguage,
         runtimeMinutes = runtimeMinutes,
+        wanted = wanted,
     )
     // Two sources with the same URL are the same request only when they also send the same headers.
     val seenRequests = mutableSetOf<Pair<String, List<Pair<String, String>>>>()
@@ -236,10 +265,26 @@ internal fun rankBatchCandidates(
 
 /**
  * The part of [rankBatchCandidates] that applies the saved quality, bitrate and language choices,
- * shared with auto-play so both pick a source by the same rules. It does not look at whether a
- * source can be downloaded or played: the caller passes only the sources it is willing to use.
- * Sources the choices rule out are dropped and the rest come back best first, as described on
- * [rankBatchCandidates].
+ * shared with auto-play and source failover so all of them pick a source by the same rules. It does
+ * not look at whether a source can be downloaded or played: the caller passes only the sources it
+ * is willing to use.
+ *
+ * The rules, in this order. Every sort is stable, so sources that tie keep the order they came in.
+ *  1. Hard filters, which drop a source: a resolution other than the chosen one, a bitrate (file
+ *     size over [runtimeMinutes]) above [maxBitrateMbps], and a source whose text states only
+ *     languages other than [audioLanguage]. A language that appears only as a subtitle language is
+ *     not an audio language, and multi-audio counts as containing the chosen one.
+ *  2. Identity demotions, which move a source behind all the others and never drop it: its release
+ *     name is clearly another title, another season or episode, or, for a film, a year more than
+ *     one off. This needs [wanted]; without it nothing is judged. A title is judged only when at
+ *     least one remaining source clearly matches it.
+ *  3. Looks-foreign demotion: a source that names no language but looks foreign (a subtitle-only
+ *     release, or a language this app does not list) goes behind every source that does not.
+ *  4. The existing order: when a bitrate limit is set, sources of unknown bitrate come after the
+ *     ones known to fit; then the highest resolution first ([BatchQuality.BestAvailable] keeps them
+ *     all); then sources that state the chosen language before untagged ones; then, only under a
+ *     bitrate limit, the higher bitrate; and last ready direct links before ones that still need a
+ *     debrid lookup. Without any preference the order is by resolution and direct link alone.
  */
 internal fun rankStreamsByPreferences(
     streams: List<StreamItem>,
@@ -247,6 +292,7 @@ internal fun rankStreamsByPreferences(
     maxBitrateMbps: Int? = null,
     audioLanguage: DebridStreamLanguage? = null,
     runtimeMinutes: Int? = null,
+    wanted: WantedContent? = null,
 ): List<StreamItem> {
     val runtimeSeconds = runtimeMinutes?.takeIf { it > 0 }?.let { it * 60L }
     val maxBitsPerEpisode = if (maxBitrateMbps != null && runtimeSeconds != null) {
@@ -254,13 +300,17 @@ internal fun rankStreamsByPreferences(
     } else {
         null
     }
-    return streams
+    val candidates = streams
         .map { stream ->
             val facts = DebridStreamMetadata.facts(stream, parsingPreferences)
             BatchCandidate(
                 stream = stream,
                 resolution = facts.resolution,
-                language = languageMatch(facts.languages, audioLanguage),
+                language = if (audioLanguage == null) {
+                    LanguageMatch.Chosen
+                } else {
+                    languageMatch(DebridStreamMetadata.audioLanguages(stream, wanted?.titles.orEmpty()), audioLanguage)
+                },
                 sizeBytes = facts.size?.takeIf { it > 0L && runtimeSeconds != null },
             )
         }
@@ -269,8 +319,14 @@ internal fun rankStreamsByPreferences(
                 candidate.language != LanguageMatch.Other &&
                 (maxBitsPerEpisode == null || candidate.sizeBytes == null || candidate.sizeBytes * 8 <= maxBitsPerEpisode)
         }
+    StreamIdentity.mismatches(candidates.map { it.stream }, wanted).forEachIndexed { index, mismatch ->
+        candidates[index].otherContent = mismatch != null
+    }
+    return candidates
         .sortedWith(
-            compareBy<BatchCandidate> { maxBitrateMbps != null && it.sizeBytes == null }
+            compareBy<BatchCandidate> { it.otherContent }
+                .thenBy { it.language == LanguageMatch.LooksForeign }
+                .thenBy { maxBitrateMbps != null && it.sizeBytes == null }
                 .thenByDescending { it.resolution.value }
                 .thenBy { it.language }
                 .thenByDescending { if (maxBitrateMbps != null) it.sizeBytes ?: -1L else 0L }
@@ -497,6 +553,7 @@ internal class SeasonBatchDownloader(
                     maxBitrateMbps = request.maxBitrateMbps,
                     audioLanguage = request.audioLanguage,
                     runtimeMinutes = episode.runtimeMinutes,
+                    wanted = request.wantedContent(episode),
                 )
             } catch (error: CancellationException) {
                 throw error

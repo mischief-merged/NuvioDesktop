@@ -108,6 +108,11 @@ object StreamsRepository {
         } else {
             null
         }
+        val autoPlayWanted = if (autoPlayMode == StreamAutoPlayMode.PREFERRED) {
+            MetaDetailsRepository.wantedContentFor(parentMetaId, season, episode)
+        } else {
+            null
+        }
         val autoPlayContext = if (autoPlayMode == StreamAutoPlayMode.PREFERRED) {
             autoPlayContextFor(autoPlayPreferences, autoPlayRuntimeMinutes)
         } else {
@@ -284,6 +289,7 @@ object StreamsRepository {
                     activeResolverProviderId = debridSettings.activeResolverProviderId,
                     preferences = autoPlayPreferences,
                     runtimeMinutes = autoPlayRuntimeMinutes,
+                    wanted = autoPlayWanted,
                 )
 
             fun settleAutoPlay(evaluation: StreamAutoPlayEvaluation) {

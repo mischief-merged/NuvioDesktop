@@ -165,6 +165,14 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
         resetAddonSubtitlesIfSourceChanged()
         WatchProgressRepository.ensureLoaded()
 
+        if (isDesktop) {
+            // A provider's status clip can be told from its link or file name before any frame.
+            checkForPlaceholderBySourceSignals()
+            // One watch decides about the start and about a stall later on; see monitorSourceHealth.
+            monitorSourceHealth()
+            return@LaunchedEffect
+        }
+
         // A source that does not finish loading within the configured time counts as failed when
         // falling back to the next source. It has an effect only where that fallback applies.
         val startupTimeoutSeconds = playerSettingsUiState.streamAutoPlayFallbackStartupTimeoutSeconds
@@ -437,7 +445,7 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
             return@LaunchedEffect
         }
 
-        controller.seekTo(targetPositionMs)
+        seekWithNote(controller, targetPositionMs)
         initialSeekApplied = true
     }
 
@@ -810,7 +818,7 @@ private fun PlayerScreenRuntime.BindPlayerMetadataAndSkipEffects() {
                 val rawMs = current.internalSkipAction(skipIntervals, durationMs)?.targetMs ?: return@LaunchedEffect
                 val seekPositionMs = if (durationMs > 0L) rawMs.coerceAtMost(durationMs - 1) else rawMs
                 val notification = current.autoSkipNotificationMessage(seekPositionMs)
-                if (!controller.trySeekTo(seekPositionMs)) return@LaunchedEffect
+                if (!trySeekWithNote(controller, seekPositionMs)) return@LaunchedEffect
                 autoSkippedIntervalKeys.add(intervalKey)
                 autoSkippedIntervals.add(current)
                 scheduleProgressSyncAfterSeek()
