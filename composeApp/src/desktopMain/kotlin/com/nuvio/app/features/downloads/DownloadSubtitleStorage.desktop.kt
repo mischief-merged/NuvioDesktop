@@ -17,13 +17,15 @@ internal actual class DownloadSubtitleStorage actual constructor(localVideoUri: 
      * leaves the old file or the new one and never half of one. Temporary files left by a crash are
      * never read (they have another name) and are removed here.
      */
-    actual fun write(fileName: String, text: String) {
+    actual fun write(fileName: String, text: String) = writeBytes(fileName, text.toByteArray(Charsets.UTF_8))
+
+    actual fun writeBytes(fileName: String, bytes: ByteArray) {
         check(directory.isDirectory || directory.mkdirs()) { "Cannot create subtitle directory" }
         val target = file(fileName)
         directory.listFiles { candidate -> candidate.name.endsWith(TemporarySuffix) }.orEmpty().forEach { it.delete() }
         val temporary = File(directory, "${target.name}$TemporarySuffix")
         try {
-            temporary.writeText(text, Charsets.UTF_8)
+            temporary.writeBytes(bytes)
             try {
                 Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
             } catch (_: AtomicMoveNotSupportedException) {

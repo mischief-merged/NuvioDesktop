@@ -176,6 +176,9 @@ private data class DownloadedSubtitle(
 internal expect class DownloadSubtitleStorage(localVideoUri: String) {
     fun read(fileName: String): String?
     fun write(fileName: String, text: String)
+
+    /** Writes bytes the same way [write] writes text: replacing the file in one step. */
+    fun writeBytes(fileName: String, bytes: ByteArray)
     fun localFileUri(fileName: String): String?
     fun remove()
 }

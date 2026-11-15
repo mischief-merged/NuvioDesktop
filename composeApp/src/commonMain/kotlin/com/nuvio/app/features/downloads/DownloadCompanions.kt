@@ -221,7 +221,7 @@ internal class DownloadCompanions(
 
         /** The one the app uses. */
         val app: DownloadCompanions by lazy {
-            DownloadCompanions(listOf(OfflineSkipTimes.app, SubtitlesCompanion(), EpisodeListCompanion()))
+            DownloadCompanions(listOf(OfflineSkipTimes.app, SubtitlesCompanion(), EpisodeListCompanion(), ArtworkCompanion()))
         }
     }
 }
