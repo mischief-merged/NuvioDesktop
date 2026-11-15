@@ -83,6 +83,8 @@ fun DownloadsScreen(
     rememberDeletion: suspend (DownloadItem) -> Unit = AutoDownloads::rememberUserDeletion,
     /** Opens the page of a show, from its auto-download rule. Null where the screen cannot: the action is not offered. */
     onOpenShowDetails: ((type: String, id: String, title: String) -> Unit)? = null,
+    /** Links from an episode download to its page, season and show. Null where they are not offered. */
+    episodeLinks: DownloadEpisodeLinks? = null,
 ) {
     DownloadsScreenContent(
         onBack = onBack,
@@ -97,6 +99,7 @@ fun DownloadsScreen(
         showSeasonHint = showSeasonHint,
         rememberDeletion = rememberDeletion,
         onOpenShowDetails = onOpenShowDetails,
+        episodeLinks = episodeLinks,
     )
 }
 
@@ -121,6 +124,7 @@ internal fun DownloadsScreenContent(
     /** Called before a download the user deletes is removed, so that auto-download does not fetch it again. */
     rememberDeletion: suspend (DownloadItem) -> Unit = AutoDownloads::rememberUserDeletion,
     onOpenShowDetails: ((type: String, id: String, title: String) -> Unit)? = null,
+    episodeLinks: DownloadEpisodeLinks? = null,
     /** Where the episodes that are about to be deleted after watching come from. Null where there is no auto-download. */
     autoDownloads: AutoDownloadController? = if (showAutoDownloads) AutoDownloads else null,
 ) {
@@ -249,6 +253,7 @@ internal fun DownloadsScreenContent(
                     onNavigateToShow?.invoke(showId, title) ?: run { selectedShowId = showId }
                 },
                 onDeleteDownload = { downloadPendingDeletionId = it },
+                episodeLinks = episodeLinks,
             )
         } else {
             downloadsShowContent(
@@ -259,6 +264,7 @@ internal fun DownloadsScreenContent(
                 onDeleteDownload = { downloadPendingDeletionId = it },
                 scheduledDeletions = removalByDownload,
                 onKeepScheduled = { autoDownloads?.keepDownload(activeProfileId, it) },
+                episodeLinks = episodeLinks,
             )
         }
     }
@@ -322,6 +328,7 @@ private fun LazyListScope.downloadsRootContent(
     onOpenDownload: (DownloadItem) -> Unit,
     onOpenShow: (showId: String, title: String) -> Unit,
     onDeleteDownload: (String) -> Unit,
+    episodeLinks: DownloadEpisodeLinks?,
 ) {
     uiState.storeProblem?.let { problem ->
         item(key = "store-problem") {
@@ -367,6 +374,7 @@ private fun LazyListScope.downloadsRootContent(
                 onResume = { DownloadsRepository.resumeDownload(item.id) },
                 onRetry = { DownloadsRepository.retryDownload(item.id) },
                 onDelete = { onDeleteDownload(item.id) },
+                episodeLinks = episodeLinks,
             )
         }
     }
@@ -458,6 +466,7 @@ private fun LazyListScope.downloadsShowContent(
     onDeleteDownload: (String) -> Unit,
     scheduledDeletions: Map<String, AutoDownloadRemoval>,
     onKeepScheduled: (downloadId: String) -> Unit,
+    episodeLinks: DownloadEpisodeLinks?,
 ) {
     val showEpisodes = episodes
         .filter { it.parentMetaId == showId }
@@ -518,6 +527,7 @@ private fun LazyListScope.downloadsShowContent(
                 onDelete = { onDeleteDownload(item.id) },
                 scheduledDeletionDueAtEpochMs = scheduledDeletions[item.id]?.dueAtEpochMs,
                 onKeepScheduled = { onKeepScheduled(item.id) },
+                episodeLinks = episodeLinks,
             )
         }
     }
@@ -536,6 +546,7 @@ private fun DownloadRow(
     /** When finishing the episode scheduled its deletion: the time it is due. Null otherwise. */
     scheduledDeletionDueAtEpochMs: Long? = null,
     onKeepScheduled: () -> Unit = {},
+    episodeLinks: DownloadEpisodeLinks? = null,
 ) {
     val rowStatus = downloadRowStatus(item, clock.nowEpochMs, clock.offline)
     val displayTitle = item.displayTitle()
@@ -688,6 +699,10 @@ private fun DownloadRow(
                 }
             }
 
+            if (episodeLinks != null && item.isEpisode) {
+                EpisodeLinkButtons(item = item, links = episodeLinks)
+            }
+
             if (item.status == DownloadStatus.Failed) {
                 FailureDetails(
                     item = item,
@@ -786,6 +801,50 @@ private fun failureReasonText(item: DownloadItem): String =
         is FailureText.Resource -> stringResource(reason.resource)
         is FailureText.Literal -> reason.text
     }
+
+/**
+ * Where the links of an episode download lead. Each one opens a page of the show the episode
+ * belongs to; the screen only offers them where this is given.
+ */
+class DownloadEpisodeLinks(
+    val onEpisodeDetails: (DownloadItem) -> Unit,
+    val onGoToSeason: (DownloadItem) -> Unit,
+    val onGoToShow: (DownloadItem) -> Unit,
+)
+
+/** "Episode details", "Go to season" and "Go to show" of an episode download, each with a label that names the episode. */
+@Composable
+private fun EpisodeLinkButtons(
+    item: DownloadItem,
+    links: DownloadEpisodeLinks,
+) {
+    val name = item.nameForLabels()
+    val detailsDescription = stringResource(Res.string.downloads_episode_details_description, name)
+    val seasonDescription = stringResource(Res.string.downloads_go_to_season_description, name)
+    val showDescription = stringResource(Res.string.downloads_go_to_show_description, name)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TextButton(
+            modifier = Modifier.semantics { contentDescription = detailsDescription },
+            onClick = { links.onEpisodeDetails(item) },
+        ) {
+            Text(text = stringResource(Res.string.nav_episode_details), style = MaterialTheme.typography.labelLarge)
+        }
+        if (item.seasonNumber != null) {
+            TextButton(
+                modifier = Modifier.semantics { contentDescription = seasonDescription },
+                onClick = { links.onGoToSeason(item) },
+            ) {
+                Text(text = stringResource(Res.string.nav_go_to_season), style = MaterialTheme.typography.labelLarge)
+            }
+        }
+        TextButton(
+            modifier = Modifier.semantics { contentDescription = showDescription },
+            onClick = { links.onGoToShow(item) },
+        ) {
+            Text(text = stringResource(Res.string.downloads_auto_go_to_show), style = MaterialTheme.typography.labelLarge)
+        }
+    }
+}
 
 /** The next step of a failed row and the buttons that take it. */
 @Composable

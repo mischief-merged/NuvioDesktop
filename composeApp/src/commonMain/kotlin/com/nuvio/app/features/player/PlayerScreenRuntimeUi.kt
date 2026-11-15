@@ -812,6 +812,27 @@ private fun PlayerScreenRuntime.RenderPlayerControls(
                 if (playerControlsLocked) unlockPlayerControls() else lockPlayerControls()
             },
             onBack = { requestBack() },
+            onOpenShow = if (isDesktop) {
+                { requestBack(PlayerExitTarget.Show(type = parentMetaType, id = parentMetaId, title = title)) }
+            } else {
+                null
+            },
+            onOpenEpisode = if (isDesktop && activeSeasonNumber != null && activeEpisodeNumber != null) {
+                {
+                    requestBack(
+                        PlayerExitTarget.Episode(
+                            type = parentMetaType,
+                            id = parentMetaId,
+                            title = title,
+                            videoId = activeVideoId,
+                            seasonNumber = activeSeasonNumber,
+                            episodeNumber = activeEpisodeNumber,
+                        ),
+                    )
+                }
+            } else {
+                null
+            },
             onPartyClick = if (PartyRepository.available.collectAsStateWithLifecycle().value) {
                 { openPartyPanel() }
             } else {
@@ -945,10 +966,13 @@ internal fun releaseRetainedPlayerBeforeNavigation(
     }
 }
 
-private fun PlayerScreenRuntime.requestBack() {
+private fun PlayerScreenRuntime.requestBack(exitTarget: PlayerExitTarget? = null) {
     flushWatchProgress()
     val exitingController = playerLifecycleController
     args.onBack { afterRelease, releaseFailed ->
+        // Only a request the Back guard accepted gets here, so a duplicate request that is turned
+        // away cannot replace the target of the exit that is already under way.
+        args.onExitTarget(exitTarget)
         val releaseAttemptId = playerReleaseSurfaceRetention.begin()
         try {
             releaseRetainedPlayerBeforeNavigation(

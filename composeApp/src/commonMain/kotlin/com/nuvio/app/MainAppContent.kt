@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CheckCircleOutline
@@ -1630,6 +1631,14 @@ internal fun MainAppContent(
                         animatedVisibilityScope = LocalNavAnimatedContentScope.current,
                     )
                 }
+                entry<EpisodeDetailRoute> { route ->
+                    EpisodeDestination(
+                        route = route,
+                        navController = navController,
+                        onPlay = onPlay,
+                        onPlayManually = onPlayManually,
+                    )
+                }
                 entry<PersonDetailRoute> { route ->
                     PersonDestination(
                         route = route,
@@ -2039,6 +2048,24 @@ internal fun MainAppContent(
                                         ),
                                     )
                                 }
+                                if (showDetailsOption && isDesktop && item.hasEpisodePage()) {
+                                    add(
+                                        PosterZoomOverlayAction(
+                                            icon = Icons.Default.Info,
+                                            label = stringResource(Res.string.nav_go_to_episode),
+                                            onSelected = { navController.navigate(item.toEpisodeRoute()) },
+                                        ),
+                                    )
+                                    if (item.seasonNumber != null) {
+                                        add(
+                                            PosterZoomOverlayAction(
+                                                icon = Icons.AutoMirrored.Filled.List,
+                                                label = stringResource(Res.string.nav_go_to_season),
+                                                onSelected = { navController.navigate(item.toSeasonRoute()) },
+                                            ),
+                                        )
+                                    }
+                                }
                                 if (showManualPlayOption) {
                                     add(
                                         PosterZoomOverlayAction(
@@ -2102,6 +2129,12 @@ internal fun MainAppContent(
                         )
                     }
                 },
+                onGoToEpisode = selectedContinueWatchingForActions
+                    ?.takeIf { isDesktop && it.hasEpisodePage() }
+                    ?.let { item -> { navController.navigate(item.toEpisodeRoute()) } },
+                onGoToSeason = selectedContinueWatchingForActions
+                    ?.takeIf { isDesktop && it.hasEpisodePage() && it.seasonNumber != null }
+                    ?.let { item -> { navController.navigate(item.toSeasonRoute()) } },
                 onStartFromBeginning = selectedContinueWatchingForActions
                     ?.takeIf { !it.isNextUp && canPlayContinueWatching(it) }
                     ?.let { item -> { onContinueWatchingStartFromBeginning(item) } },
@@ -2260,9 +2293,32 @@ internal fun MainAppContent(
         }
 }
 
+/** An episode entry of Continue Watching that can be shown on its own page. */
+private fun ContinueWatchingItem.hasEpisodePage(): Boolean =
+    episodeNumber != null && !isCloudLibraryContinueWatchingItem()
+
+private fun ContinueWatchingItem.toEpisodeRoute(): EpisodeDetailRoute =
+    EpisodeDetailRoute(
+        type = parentMetaType,
+        id = parentMetaId,
+        videoId = videoId,
+        season = seasonNumber,
+        episode = episodeNumber,
+        title = title,
+    )
+
+private fun ContinueWatchingItem.toSeasonRoute(): DetailRoute =
+    DetailRoute(
+        type = parentMetaType,
+        id = parentMetaId,
+        title = title,
+        season = seasonNumber,
+        focusVideoId = null,
+    )
+
 private fun AppRoute?.drawsUnderVerticalBar(selectedTab: AppScreenTab): Boolean =
     when (this) {
-        is DetailRoute, is StreamRoute, is PlayerRoute -> true
+        is DetailRoute, is EpisodeDetailRoute, is StreamRoute, is PlayerRoute -> true
         is TabsRoute -> selectedTab == AppScreenTab.Home || selectedTab == AppScreenTab.Library
         else -> false
     }

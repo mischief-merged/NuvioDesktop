@@ -227,6 +227,12 @@ fun MetaDetailsScreen(
     onCompanyClick: ((MetaCompany, String) -> Unit)? = null,
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
+    /** Desktop only: clicking an episode opens its page instead of playing it. */
+    onOpenEpisode: ((MetaVideo) -> Unit)? = null,
+    /** Opens with this season selected, when the show has it. */
+    initialSeason: Int? = null,
+    /** Scrolls to this episode and marks it briefly, when the show has it. */
+    focusVideoId: String? = null,
     modifier: Modifier = Modifier,
 ) {
     val playbackAvailability = rememberPlaybackAvailability()
@@ -725,10 +731,25 @@ fun MetaDetailsScreen(
                 val episodeListSeasons = remember(episodeListGroupedEpisodes) {
                     episodeListGroupedEpisodes.keys.sortedBy(::seasonSortKey)
                 }
+                val focusVideo = remember(meta, focusVideoId) {
+                    focusVideoId?.takeIf { it.isNotBlank() }?.let { meta.findEpisode(it) }
+                }
+                val requestedSeason = remember(meta, initialSeason, focusVideo) {
+                    meta.requestedSeason(initialSeason, focusVideo)
+                }
+                val preferredSeasonForDisplay = requestedSeason ?: seriesAction?.seasonNumber
+                val preferredEpisodeForDisplay = when {
+                    focusVideo != null -> focusVideo.episode
+                    requestedSeason != null && requestedSeason != seriesAction?.seasonNumber -> null
+                    else -> seriesAction?.episodeNumber
+                }
+                val episodeFocusState = remember(meta.id, focusVideo?.id) {
+                    focusVideo?.let { EpisodeFocusState(it.id, meta.episodeIndexInSeason(it) ?: 0) }
+                }
                 var selectedEpisodeListSeason by rememberSaveable(meta.id) {
                     mutableStateOf<Int?>(null)
                 }
-                val defaultEpisodeListSeason = seriesAction?.seasonNumber
+                val defaultEpisodeListSeason = preferredSeasonForDisplay
                     ?.takeIf { it in episodeListGroupedEpisodes }
                     ?: episodeListSeasons.firstOrNull()
                 val currentEpisodeListSeason = selectedEpisodeListSeason
@@ -1011,6 +1032,14 @@ fun MetaDetailsScreen(
                         savedProgress?.lastPositionMs,
                     )
                 }
+                // Desktop: a click opens the episode page and the thumbnail Play button plays it.
+                val opensEpisodePage = isDesktop && onOpenEpisode != null
+                val onEpisodeCardClick: (MetaVideo) -> Unit = if (opensEpisodePage) {
+                    { video -> onOpenEpisode?.invoke(video) }
+                } else {
+                    onEpisodePlayClick
+                }
+                val thumbnailPlayAction: ((MetaVideo) -> Unit)? = onEpisodePlayClick.takeIf { opensEpisodePage }
                 if (showShuffle && showShuffleButton) {
                     EpisodeShuffleSheet(
                         meta = meta,
@@ -1030,6 +1059,46 @@ fun MetaDetailsScreen(
                     )
                 }
                 val listState = rememberLazyListState()
+                LaunchedEffect(episodeFocusState) {
+                    val focusState = episodeFocusState ?: return@LaunchedEffect
+                    val originIndex = listState.firstVisibleItemIndex
+                    val originOffset = listState.firstVisibleItemScrollOffset
+                    delay(350)
+                    // The sections are lazy. Step down the page until the episodes section is composed:
+                    // a season row reports itself, and the list layout shows a header whose position
+                    // gives the row of the episode. Both searches end after a bounded number of steps.
+                    val maxSteps = listState.layoutInfo.totalItemsCount.coerceIn(1, 60)
+                    var index = 0
+                    var steps = 0
+                    while (!focusState.placed && !focusState.sectionReached && steps < maxSteps) {
+                        val header = listState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
+                            (item.key as? String)?.let { it.startsWith("detail-section") && it.endsWith("-header") } == true
+                        }
+                        if (header != null) {
+                            listState.scrollToItem(episodeListItemIndex(header.index, focusState.indexInSeason))
+                            break
+                        }
+                        listState.scrollToItem(index)
+                        index++
+                        steps++
+                        delay(80)
+                    }
+                    // Give the row or list a moment to put the card on screen and report it.
+                    var waits = 0
+                    while (!focusState.placed && waits < 20) {
+                        delay(80)
+                        waits++
+                    }
+                    // Never leave the page somewhere odd when the episode could not be reached.
+                    if (!focusState.placed) listState.scrollToItem(originIndex, originOffset)
+                }
+                LaunchedEffect(episodeFocusState?.highlighted) {
+                    val focusState = episodeFocusState ?: return@LaunchedEffect
+                    if (focusState.highlighted) {
+                        delay(2500)
+                        focusState.highlighted = false
+                    }
+                }
                 val heroStretchState = rememberHeroStretchState(listState)
                 val density = LocalDensity.current
                 val safeAreaTopPx = with(density) {
@@ -1300,7 +1369,11 @@ fun MetaDetailsScreen(
                                     .background(scrolledBackgroundColor),
                             )
                         }
-                        CompositionLocalProvider(LocalOnBackdrop provides backgroundMode.usesBackdropBackground) {
+                        CompositionLocalProvider(
+                            LocalOnBackdrop provides backgroundMode.usesBackdropBackground,
+                            LocalEpisodeFocus provides episodeFocusState,
+                            LocalEpisodeThumbnailPlay provides thumbnailPlayAction,
+                        ) {
                             LazyColumn(
                                 state = listState,
                                 modifier = Modifier
@@ -1364,8 +1437,8 @@ fun MetaDetailsScreen(
                                         onSaveLongClick = openLibraryListPicker,
                                         onWatchedClick = toggleWatched,
                                         showManualPlayOption = showManualPlayOption,
-                                        preferredEpisodeSeasonNumber = seriesAction?.seasonNumber,
-                                        preferredEpisodeNumber = seriesAction?.episodeNumber,
+                                        preferredEpisodeSeasonNumber = preferredSeasonForDisplay,
+                                        preferredEpisodeNumber = preferredEpisodeForDisplay,
                                         hasProductionSection = hasProductionSection,
                                         hasTrailersSection = hasTrailersSection,
                                         hasEpisodes = hasEpisodes,
@@ -1420,7 +1493,7 @@ fun MetaDetailsScreen(
                                         watchedKeys = watchedUiState.watchedKeys,
                                         fullyWatchedSeriesKeys = fullyWatchedSeriesKeys,
                                         blurUnwatchedEpisodes = metaScreenSettingsUiState.blurUnwatchedEpisodes,
-                                        onEpisodeClick = onEpisodePlayClick,
+                                        onEpisodeClick = onEpisodeCardClick,
                                         onEpisodeLongPress = { video ->
                                             selectedEpisodeZoomAnchor = PosterZoomAnchorHolder.consume()
                                             selectedEpisodeForActions = video
@@ -1537,8 +1610,8 @@ fun MetaDetailsScreen(
                                         onSaveLongClick = openLibraryListPicker,
                                         onWatchedClick = toggleWatched,
                                         showManualPlayOption = showManualPlayOption,
-                                        preferredEpisodeSeasonNumber = seriesAction?.seasonNumber,
-                                        preferredEpisodeNumber = seriesAction?.episodeNumber,
+                                        preferredEpisodeSeasonNumber = preferredSeasonForDisplay,
+                                        preferredEpisodeNumber = preferredEpisodeForDisplay,
                                         hasProductionSection = hasProductionSection,
                                         hasTrailersSection = hasTrailersSection,
                                         hasEpisodes = hasEpisodes,
@@ -1592,7 +1665,7 @@ fun MetaDetailsScreen(
                                         progressByVideoId = progressByVideoId,
                                         watchedKeys = watchedUiState.watchedKeys,
                                         blurUnwatchedEpisodes = metaScreenSettingsUiState.blurUnwatchedEpisodes,
-                                        onEpisodeClick = onEpisodePlayClick,
+                                        onEpisodeClick = onEpisodeCardClick,
                                         onEpisodeLongPress = { video -> selectedEpisodeForActions = video },
                                         onSeasonLongPress = { season -> selectedSeasonForActions = season },
                                         onOpenMeta = onOpenMeta,
@@ -2177,7 +2250,7 @@ private fun selectedSeasonLabel(season: Int): String =
         stringResource(Res.string.episodes_season, season)
     }
 
-private fun isEpisodeWatchedForActions(
+internal fun isEpisodeWatchedForActions(
     meta: MetaDetails,
     episode: MetaVideo,
     watchedKeys: Set<String>,

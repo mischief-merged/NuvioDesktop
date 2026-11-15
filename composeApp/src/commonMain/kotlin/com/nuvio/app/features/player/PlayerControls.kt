@@ -107,6 +107,10 @@ internal fun PlayerControlsShell(
     showPlaybackControls: Boolean = true,
     onLockToggle: () -> Unit,
     onBack: () -> Unit,
+    /** Desktop only: leaves the player and opens the show. Null leaves the title as plain text. */
+    onOpenShow: (() -> Unit)? = null,
+    /** Desktop only: leaves the player and opens the episode page. Null leaves the episode text plain. */
+    onOpenEpisode: (() -> Unit)? = null,
     onPartyClick: (() -> Unit)? = null,
     partyActive: Boolean = false,
     onTogglePlayback: () -> Unit,
@@ -244,6 +248,8 @@ internal fun PlayerControlsShell(
                     onPartyClick = onPartyClick,
                     partyActive = partyActive,
                     onBack = onBack,
+                    onOpenShow = onOpenShow,
+                    onOpenEpisode = onOpenEpisode,
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .fillMaxWidth()
@@ -345,6 +351,8 @@ internal fun PlayerControlsShell(
                             releaseInfo = releaseInfo,
                             metrics = metrics,
                             badges = badges,
+                            onOpenShow = onOpenShow,
+                            onOpenEpisode = onOpenEpisode,
                         )
                     }
                     PlayerChapterTitle(chapters = chapters, positionMs = displayedPositionMs)
@@ -406,6 +414,8 @@ private fun PlayerHeader(
     onPartyClick: (() -> Unit)?,
     partyActive: Boolean,
     onBack: () -> Unit,
+    onOpenShow: (() -> Unit)? = null,
+    onOpenEpisode: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val typeScale = MaterialTheme.nuvioTypeScale
@@ -429,6 +439,10 @@ private fun PlayerHeader(
                 ) {
                     Text(
                         text = title,
+                        modifier = Modifier.playerTitleLink(
+                            onClick = onOpenShow,
+                            label = stringResource(Res.string.episode_page_trail_show, title),
+                        ),
                         style = typeScale.titleLg.copy(
                             fontSize = metrics.titleSize,
                             lineHeight = metrics.titleSize * 1.16f,
@@ -437,16 +451,23 @@ private fun PlayerHeader(
                         color = Color.White,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
+                        textDecoration = playerTitleLinkDecoration(onOpenShow),
                     )
                     if (seasonNumber != null && episodeNumber != null && !episodeTitle.isNullOrBlank()) {
                         val displayEpisodeTitle = localizedEpisodeTitle(episodeTitle, episodeNumber) ?: episodeTitle
+                        val episodeText = stringResource(
+                            Res.string.compose_player_episode_title_format,
+                            seasonNumber,
+                            episodeNumber,
+                            displayEpisodeTitle,
+                        )
                         Text(
-                            text = stringResource(
-                                Res.string.compose_player_episode_title_format,
-                                seasonNumber,
-                                episodeNumber,
-                                displayEpisodeTitle,
+                            text = episodeText,
+                            modifier = Modifier.playerTitleLink(
+                                onClick = onOpenEpisode,
+                                label = stringResource(Res.string.player_go_to_episode, episodeText),
                             ),
+                            textDecoration = playerTitleLinkDecoration(onOpenEpisode),
                             style = typeScale.bodyMd.copy(
                                 fontSize = metrics.episodeInfoSize,
                                 lineHeight = metrics.episodeInfoSize * 1.3f,
