@@ -600,6 +600,41 @@ object DownloadsRepository {
         )
     }
 
+    /**
+     * Removes a finished automatic download: its file is moved to the trash and its entry dropped.
+     * Everything is looked at again here, under the state lock, so nothing that changed since the
+     * caller decided is acted on: the download must still be finished and still belong to [ruleKey],
+     * and [stillWanted] must say so.
+     * A file that another download also uses stays where it is and only the entry is dropped. When
+     * the file cannot be moved, the entry stays as well.
+     */
+    internal fun removeWatchedAutoDownload(
+        downloadId: String,
+        ruleKey: String,
+        stillWanted: () -> Boolean = { true },
+    ): AutoDownloadRemovalResult =
+        synchronized(stateLock) {
+            ensureLoaded()
+            val items = _uiState.value.items
+            val item = items.firstOrNull { it.id == downloadId } ?: return AutoDownloadRemovalResult.Changed
+            if (item.autoDownloadRuleKey != ruleKey || item.status != DownloadStatus.Completed) {
+                return AutoDownloadRemovalResult.Changed
+            }
+            if (!stillWanted()) return AutoDownloadRemovalResult.Changed
+            val fileUri = backend.resolveLocalFileUri(item.localFileUri, item.fileName)
+            if (fileUri != null) {
+                val usedByAnother = items.any { other ->
+                    other.id != item.id &&
+                        listOfNotNull(other.localFileUri, backend.resolveLocalFileUri(other.localFileUri, other.fileName))
+                            .any { backend.isSameFile(it, fileUri) }
+                }
+                if (!usedByAnother && !backend.trashFile(fileUri)) return AutoDownloadRemovalResult.NotMoved
+            }
+            publish(items.filterNot { it.id == downloadId })
+            persist()
+            AutoDownloadRemovalResult.Removed
+        }
+
     /** Runs [block] under the state lock, and only while [transfer] still owns the download. */
     private inline fun ifCurrent(downloadId: String, transfer: ActiveTransfer, block: () -> Unit) {
         synchronized(stateLock) {
@@ -729,6 +764,23 @@ internal interface DownloadsBackend {
 
     /** Looks at the file of a download. Null where that cannot be done. */
     fun inspectFile(localFileUri: String): DownloadedFileFacts? = null
+
+    /** Moves a file out of the downloads folder without deleting it at once. True when it is out, or was gone. */
+    fun trashFile(localFileUri: String): Boolean = false
+
+    /** Whether two addresses name the same file, however they are spelled. */
+    fun isSameFile(firstFileUri: String, secondFileUri: String): Boolean =
+        firstFileUri.trim().removePrefix("file:").trimStart('/') == secondFileUri.trim().removePrefix("file:").trimStart('/')
+}
+
+internal enum class AutoDownloadRemovalResult {
+    Removed,
+
+    /** The download is gone, is no longer finished, or no longer belongs to the rule. Nothing was touched. */
+    Changed,
+
+    /** The file could not be moved out of the downloads folder. Nothing was removed. */
+    NotMoved,
 }
 
 private object PlatformDownloadsBackend : DownloadsBackend {
@@ -760,6 +812,11 @@ private object PlatformDownloadsBackend : DownloadsBackend {
         DownloadsPlatformDownloader.resolveLocalFileUri(localFileUri, destinationFileName)
 
     override fun inspectFile(localFileUri: String): DownloadedFileFacts? = inspectDownloadedFile(localFileUri)
+
+    override fun trashFile(localFileUri: String): Boolean = DownloadsTrash.moveAway(localFileUri)
+
+    override fun isSameFile(firstFileUri: String, secondFileUri: String): Boolean =
+        DownloadsTrash.isSameFile(firstFileUri, secondFileUri)
 }
 
 /**

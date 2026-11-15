@@ -30,6 +30,17 @@ private data class StoredAutoDownloads(
     val rules: List<AutoDownloadRule> = emptyList(),
     /** Null means no limit. */
     val storageLimitGb: Int? = AutoDownloadStore.DefaultStorageLimitGb,
+    val removals: List<AutoDownloadRemoval> = emptyList(),
+    /** Downloads the user chose to keep. They are never removed after watching. */
+    val keptDownloadIds: Set<String> = emptySet(),
+)
+
+/** A watched automatic download that is removed once [dueAtEpochMs] has passed. */
+@Serializable
+internal data class AutoDownloadRemoval(
+    val downloadId: String,
+    val ruleKey: String,
+    val dueAtEpochMs: Long,
 )
 
 /**
@@ -58,8 +69,49 @@ internal class AutoDownloadStore(
 
     private val _storageLimitGb = MutableStateFlow<Int?>(DefaultStorageLimitGb)
 
+    private val _removals = MutableStateFlow<List<AutoDownloadRemoval>>(emptyList())
+
     /** The rules of the profile that was active at the last read or change. */
     val rules: StateFlow<List<AutoDownloadRule>> = _rules.asStateFlow()
+
+    /** The removals scheduled for that profile. */
+    val removals: StateFlow<List<AutoDownloadRemoval>> = _removals.asStateFlow()
+
+    /** The removals scheduled for [profileId]. Empty when it is not the active profile. */
+    fun removals(profileId: Int): List<AutoDownloadRemoval> = synchronized(lock) {
+        if (ensureLoaded() != profileId) emptyList() else state.removals
+    }
+
+    fun isKept(profileId: Int, downloadId: String): Boolean = synchronized(lock) {
+        ensureLoaded() == profileId && downloadId in state.keptDownloadIds
+    }
+
+    /** Schedules [removal], replacing an earlier one of the same download. Refused for a kept download. */
+    fun scheduleRemoval(profileId: Int, removal: AutoDownloadRemoval): Boolean = synchronized(lock) {
+        if (ensureLoaded() != profileId || removal.downloadId in state.keptDownloadIds) return false
+        save(profileId, state.copy(removals = state.removals.filterNot { it.downloadId == removal.downloadId } + removal))
+        true
+    }
+
+    /** Drops [removal] if it is still the one scheduled for its download. */
+    fun dropRemoval(profileId: Int, removal: AutoDownloadRemoval): Boolean = synchronized(lock) {
+        if (ensureLoaded() != profileId) return false
+        save(profileId, state.copy(removals = state.removals - removal))
+        true
+    }
+
+    /** Keeps a download for good: its scheduled removal is dropped and none is scheduled again. */
+    fun keep(profileId: Int, downloadId: String): Boolean = synchronized(lock) {
+        if (ensureLoaded() != profileId) return false
+        save(
+            profileId,
+            state.copy(
+                removals = state.removals.filterNot { it.downloadId == downloadId },
+                keptDownloadIds = state.keptDownloadIds + downloadId,
+            ),
+        )
+        true
+    }
 
     /** The storage limit for automatic downloads of that profile, in gigabytes. Null means no limit. */
     val storageLimitGb: StateFlow<Int?> = _storageLimitGb.asStateFlow()
@@ -96,8 +148,17 @@ internal class AutoDownloadStore(
         if (existing == null) rules + saved else rules.map { if (it.key == saved.key) saved else it }
     }
 
-    fun remove(profileId: Int, ruleKey: String): Boolean = change(profileId) { rules ->
-        rules.filterNot { it.key == ruleKey }
+    /** Removes a rule and the removals that were scheduled because of it. */
+    fun remove(profileId: Int, ruleKey: String): Boolean = synchronized(lock) {
+        if (ensureLoaded() != profileId) return false
+        save(
+            profileId,
+            state.copy(
+                rules = state.rules.filterNot { it.key == ruleKey },
+                removals = state.removals.filterNot { it.ruleKey == ruleKey },
+            ),
+        )
+        true
     }
 
     fun update(profileId: Int, ruleKey: String, transform: (AutoDownloadRule) -> AutoDownloadRule): Boolean =
@@ -111,11 +172,13 @@ internal class AutoDownloadStore(
             true
         }
 
-    private fun save(profileId: Int, updated: StoredAutoDownloads) {
+    private fun save(profileId: Int, changed: StoredAutoDownloads) {
+        val updated = changed.normalized()
         if (updated == state) return
         state = updated
         _rules.value = updated.rules
         _storageLimitGb.value = updated.storageLimitGb
+        _removals.value = updated.removals
         payloads.save(profileId, json.encodeToString(updated))
     }
 
@@ -126,6 +189,7 @@ internal class AutoDownloadStore(
             loadedProfileId = active
             _rules.value = state.rules
             _storageLimitGb.value = state.storageLimitGb
+            _removals.value = state.removals
         }
         return active
     }
@@ -143,6 +207,10 @@ internal class AutoDownloadStore(
     private fun StoredAutoDownloads.normalized(): StoredAutoDownloads = copy(
         rules = rules.map(AutoDownloadRule::normalized).distinctBy { it.key },
         storageLimitGb = if (storageLimitGb in storageLimitOptionsGb) storageLimitGb else DefaultStorageLimitGb,
+        // A removal lasts only as long as its rule asks for it.
+        removals = removals
+            .distinctBy { it.downloadId }
+            .filter { removal -> rules.any { it.key == removal.ruleKey && it.deleteAfterWatching } },
     )
 
     companion object {

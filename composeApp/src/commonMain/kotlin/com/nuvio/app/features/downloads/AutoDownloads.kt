@@ -3,6 +3,7 @@ package com.nuvio.app.features.downloads
 import com.nuvio.app.core.network.NetworkCondition
 import com.nuvio.app.core.network.NetworkStatusRepository
 import com.nuvio.app.core.build.AppFeaturePolicy
+import com.nuvio.app.core.ui.NuvioToastController
 import com.nuvio.app.features.details.MetaDetails
 import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.profiles.ProfileRepository
@@ -11,6 +12,7 @@ import com.nuvio.app.features.watched.releasedPlayableEpisodes
 import com.nuvio.app.features.watching.domain.WatchingContentRef
 import com.nuvio.app.features.watching.domain.buildPlaybackVideoId
 import com.nuvio.app.features.watchprogress.CurrentDateProvider
+import com.nuvio.app.features.watchprogress.WatchProgressRepository
 import com.nuvio.app.isDesktop
 import kotlinx.atomicfu.atomic
 import kotlinx.coroutines.CancellationException
@@ -24,6 +26,11 @@ import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.downloads_auto_delete_failed_toast
+import nuvio.composeapp.generated.resources.downloads_auto_delete_playing_toast
+import nuvio.composeapp.generated.resources.downloads_auto_deleted_toast
+import org.jetbrains.compose.resources.getString
 
 /** Emits each time the internet can be reached again after it could not. */
 internal fun Flow<NetworkCondition>.internetReturns(): Flow<Unit> = flow {
@@ -48,15 +55,27 @@ internal interface AutoDownloadController {
     /** The storage limit for automatic downloads, in gigabytes. Null means no limit. */
     val storageLimitGb: StateFlow<Int?>
 
+    /** The watched episodes that are going to be removed. */
+    val removals: StateFlow<List<AutoDownloadRemoval>>
+
+    /** False when removed files are held in the downloads folder and then deleted for good. */
+    val usesSystemTrash: Boolean
+
     /**
      * Turns automatic downloads on for [meta], or changes its rule, and checks the show. Nothing
      * happens when [profileId] is no longer the active profile.
      */
-    fun save(profileId: Int, meta: MetaDetails, keepCount: Int, scope: AutoDownloadScope)
+    fun save(profileId: Int, meta: MetaDetails, keepCount: Int, scope: AutoDownloadScope, deleteAfterWatching: Boolean)
 
     fun turnOff(profileId: Int, ruleKey: String)
 
     fun setStorageLimit(profileId: Int, limitGb: Int?)
+
+    /** Keeps a watched episode that was going to be removed. */
+    fun keepDownload(profileId: Int, downloadId: String)
+
+    /** Removes a watched episode now instead of when its time comes. */
+    fun deleteDownloadNow(profileId: Int, downloadId: String)
 
     fun checkNow()
 }
@@ -88,6 +107,9 @@ internal fun MetaDetails.releasedBatchEpisodes(todayIsoDate: String): List<Seaso
  * rule is saved, when the user asks, and after a downloaded episode was played to the end. Every
  * ten minutes the rules with an episode whose wait is over are checked as well. Storage is read and
  * written on a background thread, never on the caller's.
+ *
+ * The same poll removes the watched episodes whose time has come and deletes the held files whose
+ * days are over.
  */
 internal object AutoDownloads : AutoDownloadController {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -119,11 +141,35 @@ internal object AutoDownloads : AutoDownloadController {
         resumeDownload = DownloadsRepository::resumeDownload,
     )
 
+    // The local file the player has open, if any.
+    private val playingFileUri = atomic<String?>(null)
+
+    private val deleteAfterWatching = DeleteAfterWatching(
+        store = store,
+        downloads = { DownloadsRepository.uiState.value.items },
+        isWatchedToTheEnd = { item ->
+            WatchProgressRepository.progressForVideo(
+                videoId = item.videoId,
+                parentMetaId = item.parentMetaId,
+                seasonNumber = item.seasonNumber,
+                episodeNumber = item.episodeNumber,
+            )?.isCompleted == true
+        },
+        isInPlayer = { item ->
+            playingFileUri.value?.let { DownloadsRepository.findCompletedDownloadByLocalFile(it)?.id == item.id } == true
+        },
+        hasLaterEpisode = { rule, item -> engine.knownEpisodes(rule.key)?.let { hasLaterReleasedEpisode(item, it) } },
+        removeDownload = DownloadsRepository::removeWatchedAutoDownload,
+        nowEpochMs = { DownloadsClock.nowEpochMs() },
+    )
+
     val isAvailable: Boolean get() = isDesktop && AppFeaturePolicy.downloadsEnabled
 
     override val rules: StateFlow<List<AutoDownloadRule>> get() = store.rules
     override val statuses: StateFlow<Map<String, AutoDownloadStatus>> get() = engine.statuses
     override val storageLimitGb: StateFlow<Int?> get() = store.storageLimitGb
+    override val removals: StateFlow<List<AutoDownloadRemoval>> get() = store.removals
+    override val usesSystemTrash: Boolean get() = DownloadsTrash.usesSystemTrash
 
     fun storageLimitBytes(): Long? = store.storageLimitBytes()
 
@@ -136,6 +182,10 @@ internal object AutoDownloads : AutoDownloadController {
                     checkSafely()
                 } else {
                     engine.rulesWithDueRetry().forEach { checkSafely(it) }
+                }
+                runCatching {
+                    deleteAfterWatching.runDue(store.profileId())
+                    DownloadsTrash.purgeHeldFiles(DownloadsClock.nowEpochMs())
                 }
                 delay(PollIntervalMs)
             }
@@ -161,7 +211,13 @@ internal object AutoDownloads : AutoDownloadController {
         }
     }
 
-    override fun save(profileId: Int, meta: MetaDetails, keepCount: Int, scope: AutoDownloadScope) {
+    override fun save(
+        profileId: Int,
+        meta: MetaDetails,
+        keepCount: Int,
+        scope: AutoDownloadScope,
+        deleteAfterWatching: Boolean,
+    ) {
         if (!isAvailable) return
         val rule = AutoDownloadRule(
             parentMetaType = meta.type,
@@ -172,6 +228,7 @@ internal object AutoDownloads : AutoDownloadController {
             background = meta.background,
             keepCount = keepCount,
             scope = scope,
+            deleteAfterWatching = deleteAfterWatching,
         )
         this.scope.launch {
             val saved = runCatching { store.upsert(profileId, rule) }.getOrDefault(false)
@@ -194,6 +251,32 @@ internal object AutoDownloads : AutoDownloadController {
         }
     }
 
+    override fun keepDownload(profileId: Int, downloadId: String) {
+        scope.launch { runCatching { deleteAfterWatching.keep(profileId, downloadId) } }
+    }
+
+    override fun deleteDownloadNow(profileId: Int, downloadId: String) {
+        scope.launch {
+            val outcome = runCatching { deleteAfterWatching.deleteNow(profileId, downloadId) }.getOrNull()
+            val message = when (outcome) {
+                AutoDownloadRemovalOutcome.Removed -> Res.string.downloads_auto_deleted_toast
+                AutoDownloadRemovalOutcome.Playing -> Res.string.downloads_auto_delete_playing_toast
+                AutoDownloadRemovalOutcome.NotMoved -> Res.string.downloads_auto_delete_failed_toast
+                AutoDownloadRemovalOutcome.LastEpisode, AutoDownloadRemovalOutcome.Cancelled, null -> null
+            }
+            if (message != null) NuvioToastController.show(getString(message))
+        }
+    }
+
+    /** The player opened or closed a local file. A download that is open is not removed. */
+    fun onLocalFileOpened(localFileUri: String) {
+        playingFileUri.value = localFileUri
+    }
+
+    fun onLocalFileClosed(localFileUri: String) {
+        playingFileUri.compareAndSet(localFileUri, null)
+    }
+
     override fun checkNow() {
         if (!isAvailable) return
         scope.launch { checkSafely(ignoreWaiting = true) }
@@ -214,8 +297,11 @@ internal object AutoDownloads : AutoDownloadController {
      */
     fun onLocalPlaybackCompleted(localFileUri: String) {
         if (!started.value) return
+        // The profile that watched it. Nothing is scheduled when another one is active by then.
+        val profileId = ProfileRepository.activeProfileId
         scope.launch {
             val item = DownloadsRepository.findCompletedDownloadByLocalFile(localFileUri) ?: return@launch
+            runCatching { deleteAfterWatching.onLocalPlaybackCompleted(profileId, item) }
             // The watched state is saved by the player after it reports the end of playback.
             delay(PlaybackCheckDelayMs)
             checkSafely(autoDownloadRuleKey(item.parentMetaType, item.parentMetaId))

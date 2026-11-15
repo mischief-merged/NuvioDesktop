@@ -12,6 +12,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -20,12 +21,16 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import com.nuvio.app.core.ui.NuvioSectionLabel
+import com.nuvio.app.core.ui.NuvioStatusModal
 import com.nuvio.app.core.ui.NuvioToastController
 import com.nuvio.app.core.ui.NuvioTokens
 import com.nuvio.app.core.ui.nuvio
 import com.nuvio.app.features.details.components.DownloadChoiceDialog
 import com.nuvio.app.features.details.components.SeasonDownloadChoiceRow
 import com.nuvio.app.features.profiles.ProfileRepository
+import com.nuvio.app.features.settings.SettingsChoiceDialog
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.pluralStringResource
 import org.jetbrains.compose.resources.stringResource
@@ -39,16 +44,25 @@ internal fun AutoDownloadSection(
     modifier: Modifier = Modifier,
     controller: AutoDownloadController = AutoDownloads,
     profileId: Int = ProfileRepository.activeProfileId,
+    downloads: StateFlow<DownloadsUiState> = DownloadsRepository.uiState,
+    nowEpochMs: () -> Long = { DownloadsClock.nowEpochMs() },
 ) {
     val rules by controller.rules.collectAsState()
     val statuses by controller.statuses.collectAsState()
     val storageLimitGb by controller.storageLimitGb.collectAsState()
+    val removals by controller.removals.collectAsState()
+    val downloadsState by downloads.collectAsState()
     if (rules.isEmpty()) return
     val tokens = MaterialTheme.nuvio
     val checkingText = stringResource(Res.string.downloads_auto_checking_toast)
     val checkNowText = stringResource(Res.string.downloads_auto_check_now)
     // The profile the storage limit picker was opened for, while it is open.
     var storageLimitPickerProfileId by remember { mutableStateOf<Int?>(null) }
+    // The episode "Delete now" asks about, with the profile it was pressed for, until it is answered.
+    var deletionToConfirm by remember { mutableStateOf<Pair<Int, DownloadItem>?>(null) }
+    val pending = removals.mapNotNull { removal ->
+        downloadsState.items.firstOrNull { it.id == removal.downloadId }?.let { removal to it }
+    }
 
     Column(
         modifier = modifier
@@ -102,6 +116,82 @@ internal fun AutoDownloadSection(
                 )
             }
         }
+        if (pending.isNotEmpty()) {
+            NuvioSectionLabel(
+                text = stringResource(Res.string.downloads_auto_pending_heading),
+                modifier = Modifier
+                    .padding(top = NuvioTokens.Space.s8)
+                    .semantics { heading() },
+            )
+            // Read again every minute, so the hours left stay right while the screen is open.
+            val now by produceState(initialValue = nowEpochMs()) {
+                while (true) {
+                    delay(MillisPerMinute)
+                    value = nowEpochMs()
+                }
+            }
+            pending.forEach { (removal, item) ->
+                val season = item.seasonNumber ?: 0
+                val episode = item.episodeNumber ?: 0
+                val hoursLeft = ((removal.dueAtEpochMs - now) / MillisPerHour).toInt()
+                val due = if (hoursLeft < 1) {
+                    stringResource(Res.string.downloads_auto_pending_soon)
+                } else {
+                    pluralStringResource(Res.plurals.downloads_auto_pending_in_hours, hoursLeft, hoursLeft)
+                }
+                val keepDescription = stringResource(Res.string.downloads_auto_keep_description, item.title, season, episode)
+                val deleteDescription = stringResource(Res.string.downloads_auto_delete_now_description, item.title, season, episode)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s8),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = stringResource(Res.string.downloads_auto_pending_row, item.title, season, episode, due),
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = tokens.colors.textPrimary,
+                    )
+                    TextButton(
+                        modifier = Modifier.semantics { contentDescription = keepDescription },
+                        onClick = { controller.keepDownload(profileId, item.id) },
+                    ) {
+                        Text(text = stringResource(Res.string.downloads_auto_keep), style = MaterialTheme.typography.labelLarge)
+                    }
+                    TextButton(
+                        modifier = Modifier.semantics { contentDescription = deleteDescription },
+                        onClick = { deletionToConfirm = profileId to item },
+                    ) {
+                        Text(text = stringResource(Res.string.downloads_auto_delete_now), style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
+        }
+    }
+
+    deletionToConfirm?.let { (confirmProfileId, item) ->
+        NuvioStatusModal(
+            title = stringResource(Res.string.downloads_auto_delete_now_title),
+            message = stringResource(
+                if (controller.usesSystemTrash) {
+                    Res.string.downloads_auto_delete_now_message_trash
+                } else {
+                    Res.string.downloads_auto_delete_now_message_held
+                },
+                item.title,
+                item.seasonNumber ?: 0,
+                item.episodeNumber ?: 0,
+            ),
+            isVisible = true,
+            destructive = true,
+            confirmText = stringResource(Res.string.downloads_auto_delete_now),
+            dismissText = stringResource(Res.string.action_cancel),
+            onConfirm = {
+                controller.deleteDownloadNow(confirmProfileId, item.id)
+                deletionToConfirm = null
+            },
+            onDismiss = { deletionToConfirm = null },
+        )
     }
 
     storageLimitPickerProfileId?.let { pickerProfileId ->
@@ -118,6 +208,9 @@ internal fun AutoDownloadSection(
         )
     }
 }
+
+private const val MillisPerHour = 3_600_000L
+private const val MillisPerMinute = 60_000L
 
 @Composable
 private fun storageLimitLabel(limitGb: Int?): String =

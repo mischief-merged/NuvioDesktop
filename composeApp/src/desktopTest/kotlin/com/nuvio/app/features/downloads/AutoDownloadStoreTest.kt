@@ -87,6 +87,26 @@ class AutoDownloadStoreTest {
     }
 
     @Test
+    fun whether_episodes_are_deleted_after_watching_is_written_for_every_rule_and_is_off_unless_chosen() {
+        store.upsert(1, testRule(showId = "tt1"))
+        store.upsert(1, testRule(showId = "tt2").copy(deleteAfterWatching = true))
+
+        val payload = payloads.saved.getValue(1)
+
+        assertTrue("\"deleteAfterWatching\":false" in payload, payload)
+        assertTrue("\"deleteAfterWatching\":true" in payload, payload)
+        assertEquals(listOf(false, true), AutoDownloadStore(payloads) { 1 }.currentRules().map { it.deleteAfterWatching })
+    }
+
+    @Test
+    fun a_rule_stored_before_the_option_existed_does_not_delete_after_watching() {
+        payloads.saved[1] = "{\"rules\":[{\"parentMetaType\":\"series\",\"parentMetaId\":\"tt1\",\"title\":\"Show\",\"keepCount\":10}]}"
+
+        assertEquals(false, store.currentRules().single().deleteAfterWatching)
+        assertEquals(10, store.currentRules().single().keepCount)
+    }
+
+    @Test
     fun seven_episodes_is_a_keep_count_that_is_offered() {
         assertEquals(listOf(1, 2, 3, 5, 7, 10), AutoDownloadRule.keepCountOptions)
         store.upsert(1, testRule(keepCount = 7))
