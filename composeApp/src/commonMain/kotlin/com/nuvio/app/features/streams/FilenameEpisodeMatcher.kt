@@ -46,6 +46,64 @@ object FilenameEpisodeMatcher {
         return null
     }
 
+    /** The season and the episodes one marker in a release name stands for. */
+    data class EpisodeClaim(val season: Int, val episodes: Set<Int>)
+
+    private val seasonEpisodeMarker = Regex("""(?i)(?<![a-z0-9])s(\d{1,2})[ ._-]?e(\d{1,3})(?!\d)""")
+    private val crossMarker = Regex("""(?<![0-9a-zA-Z])(\d{1,2})[xX](\d{2,3})(?![0-9])""")
+    private val episodeTail = Regex("""^[ ._]?(-|&|[eE])[ ._]?[eE]?(\d{1,3})(?!\d)""")
+    private val standaloneYear = Regex("""(?<![0-9a-zA-Z])((?:19|20)\d{2})(?![0-9a-zA-Z])""")
+
+    /**
+     * Every season and episode marker in [name]: `S02E06`, `2x06`, and the chains and ranges that
+     * follow an `S02E06` (`S02E06E07`, `S02E01-E13`, `S02E01-13`, `S02E01&E02`). Empty when the name
+     * states none.
+     */
+    fun episodeClaims(name: String): List<EpisodeClaim> {
+        val claims = mutableListOf<EpisodeClaim>()
+        for (match in seasonEpisodeMarker.findAll(name)) {
+            val season = match.groupValues[1].toInt()
+            var last = match.groupValues[2].toInt()
+            val episodes = mutableSetOf(last)
+            var rest = name.substring(match.range.last + 1)
+            while (true) {
+                val tail = episodeTail.find(rest) ?: break
+                val next = tail.groupValues[2].toInt()
+                if (tail.groupValues[1] == "-" && next > last) episodes.addAll(last..next) else episodes.add(next)
+                last = next
+                rest = rest.substring(tail.range.last + 1)
+            }
+            claims += EpisodeClaim(season, episodes)
+        }
+        for (match in crossMarker.findAll(name)) {
+            claims += EpisodeClaim(match.groupValues[1].toInt(), setOf(match.groupValues[2].toInt()))
+        }
+        return claims
+    }
+
+    /**
+     * True when [name] states season and episode markers and none of them is the wanted one. A name
+     * that states none, or a request that does not know both numbers, proves nothing.
+     */
+    fun namesOtherEpisode(name: String?, wantedSeason: Int?, wantedEpisode: Int?): Boolean {
+        if (name.isNullOrBlank() || wantedSeason == null || wantedEpisode == null) return false
+        val claims = episodeClaims(name)
+        return claims.isNotEmpty() && claims.none { it.season == wantedSeason && wantedEpisode in it.episodes }
+    }
+
+    /**
+     * The first year in [name] that stands alone between separators. `2160p`, `x265` and the
+     * `1920` of `1920x1080` do not count.
+     */
+    fun releaseYear(name: String): Int? = standaloneYear.find(name)?.groupValues?.get(1)?.toIntOrNull()
+
+    /** True when [name] states a year that is more than [tolerance] years from [wantedYear]. */
+    fun namesOtherYear(name: String?, wantedYear: Int?, tolerance: Int = 1): Boolean {
+        if (name.isNullOrBlank() || wantedYear == null) return false
+        val year = releaseYear(name) ?: return false
+        return kotlin.math.abs(year - wantedYear) > tolerance
+    }
+
     private interface EpisodePattern {
         fun replace(filename: String, currentSeason: Int?, currentEpisode: Int, nextSeason: Int?, nextEpisode: Int): String?
     }
