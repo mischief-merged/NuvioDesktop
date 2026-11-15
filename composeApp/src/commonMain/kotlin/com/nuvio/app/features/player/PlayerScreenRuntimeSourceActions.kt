@@ -218,6 +218,7 @@ internal fun PlayerScreenRuntime.saveP2pStreamForReuse(
 internal fun PlayerScreenRuntime.switchToP2pSourceStream(stream: StreamItem) {
     val infoHash = stream.p2pInfoHash ?: return
     if (!P2pSettingsRepository.isVisible) return
+    restartSourceFailoverAfterUserChoice()
     if (!P2pSettingsRepository.uiState.value.p2pEnabled) {
         pendingP2pSwitch = PendingPlayerP2pSwitch(stream = stream, episode = null, isAutoPlay = false)
         return
@@ -333,6 +334,7 @@ internal fun PlayerScreenRuntime.switchToSource(
         activeSourceIdentityKey = sourceIdentityKey ?: activeSourceIdentityKey
         return
     }
+    restartSourceFailoverAfterUserChoice()
     val currentPositionMs = playbackSnapshot.positionMs.coerceAtLeast(0L)
     flushWatchProgress()
     stopActiveP2pStream()
@@ -420,6 +422,7 @@ internal fun PlayerScreenRuntime.switchToEpisodeStream(
 
 internal fun PlayerScreenRuntime.switchToDownloadedEpisode(downloadItem: DownloadItem, episode: MetaVideo) {
     val localFileUri = DownloadsRepository.playableLocalFileUri(downloadItem) ?: return
+    restartSourceFailoverAfterUserChoice(newVideo = true)
     resetEpisodePanelAndNextEpisodeState()
     flushWatchProgress()
     stopActiveP2pStream()
@@ -600,6 +603,7 @@ private fun PlayerScreenRuntime.applyEpisodeStreamMetadata(
     episode: MetaVideo,
     resume: EpisodeResume,
 ) {
+    restartSourceFailoverAfterUserChoice(newVideo = true)
     activeSourceIdentityKey = stream.playerSourceIdentityKey()
     activeSourceFilename = stream.behaviorHints.filename
     activeStreamTitle = stream.streamLabel

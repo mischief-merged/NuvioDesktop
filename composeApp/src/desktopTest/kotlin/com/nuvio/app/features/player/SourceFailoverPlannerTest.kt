@@ -23,7 +23,7 @@ class SourceFailoverPlannerTest {
         failure = failure,
         settingEnabled = settingEnabled,
         manualMode = manualMode,
-        failedSourceWasAutoSelected = autoSelected,
+        failedSourceChosenByApp = autoSelected,
         userCancelled = userCancelled,
         network = network,
         attempts = attempts,
@@ -74,7 +74,7 @@ class SourceFailoverPlannerTest {
             failure = SourceFailure.DiedDuringPlayback,
             settingEnabled = true,
             manualMode = false,
-            failedSourceWasAutoSelected = true,
+            failedSourceChosenByApp = true,
             userCancelled = false,
             network = NetworkCondition.Online,
             attempts = 3,
@@ -150,6 +150,11 @@ class SourceFailoverPlannerTest {
             decide(manualMode = true, autoSelected = false),
         )
         assertEquals(SourceFailoverDecision.TryNext("b"), decide(manualMode = true, autoSelected = false, failure = SourceFailure.DiedDuringPlayback))
+    }
+
+    @Test
+    fun manualModeMovesOnFromASourceTheAppChoseAfterAnEarlierFailure() {
+        assertEquals(SourceFailoverDecision.TryNext("b"), decide(manualMode = true, autoSelected = true))
     }
 
     @Test

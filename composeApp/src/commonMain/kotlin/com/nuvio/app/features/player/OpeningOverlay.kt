@@ -42,6 +42,9 @@ import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -66,6 +69,8 @@ internal fun OpeningOverlay(
     modifier: Modifier = Modifier,
     message: String? = null,
     progress: Float? = null,
+    /** Reads the message out when it changes, for one that reports something the user did not ask for. */
+    announceMessage: Boolean = false,
 ) {
     val contentAlpha by animateFloatAsState(
         targetValue = 1f,
@@ -218,7 +223,14 @@ internal fun OpeningOverlay(
                             .fillMaxWidth()
                             .height(40.dp),
                     ) { loadingMessage ->
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Box(
+                            if (announceMessage) {
+                                Modifier.fillMaxSize().semantics { liveRegion = LiveRegionMode.Polite }
+                            } else {
+                                Modifier.fillMaxSize()
+                            },
+                            contentAlignment = Alignment.Center,
+                        ) {
                             if (loadingMessage != null) {
                                 Text(
                                     text = loadingMessage,

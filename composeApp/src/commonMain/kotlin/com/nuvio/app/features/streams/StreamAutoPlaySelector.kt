@@ -229,6 +229,13 @@ object StreamAutoPlaySelector {
         )
     }
 
+    /** Whether the player can start [stream] as it is or after resolving it. Used to pick a replacement. */
+    internal fun canStartInPlayer(
+        stream: StreamItem,
+        debridEnabled: Boolean,
+        activeResolverProviderId: String?,
+    ): Boolean = stream.isAutoPlayable(debridEnabled, activeResolverProviderId)
+
     private fun StreamItem.isAutoPlayable(
         debridEnabled: Boolean,
         activeResolverProviderId: String?,

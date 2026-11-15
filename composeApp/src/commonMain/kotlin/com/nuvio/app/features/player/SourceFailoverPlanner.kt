@@ -52,6 +52,7 @@ internal sealed interface SourceFailoverDecision<out T> {
 /**
  * Decides what to do after a source failed. It looks at nothing but its arguments.
  *
+ * [failedSourceChosenByApp] is true when the app picked the failed source and not the user.
  * [ranked] is the list in the order the user's mode produced it. [failedKeys] holds the identity of
  * every source that already failed in this playback session, [keyOf] gives that identity (a source
  * without one is never treated as failed, the [attempts] limit still bounds it).
@@ -60,7 +61,7 @@ internal fun <T> decideSourceFailover(
     failure: SourceFailure,
     settingEnabled: Boolean,
     manualMode: Boolean,
-    failedSourceWasAutoSelected: Boolean,
+    failedSourceChosenByApp: Boolean,
     userCancelled: Boolean,
     network: NetworkCondition,
     attempts: Int,
@@ -72,7 +73,9 @@ internal fun <T> decideSourceFailover(
     if (userCancelled) return SourceFailoverDecision.Stop(SourceFailoverStop.UserCancelled)
     if (!settingEnabled) return SourceFailoverDecision.Stop(SourceFailoverStop.Disabled)
     if (failure == SourceFailure.FailedToStart) {
-        val appliesToStart = if (manualMode) SOURCE_FAILOVER_ON_START_IN_MANUAL_MODE else failedSourceWasAutoSelected
+        // A source the app chose (auto-play, or an earlier move to the next source) may be replaced. A source
+        // the user picked by hand may not, unless the constant above says so for Manual mode.
+        val appliesToStart = failedSourceChosenByApp || (manualMode && SOURCE_FAILOVER_ON_START_IN_MANUAL_MODE)
         if (!appliesToStart) return SourceFailoverDecision.Stop(SourceFailoverStop.NotApplicable)
     }
     if (network == NetworkCondition.NoInternet || network == NetworkCondition.ServersUnreachable) {

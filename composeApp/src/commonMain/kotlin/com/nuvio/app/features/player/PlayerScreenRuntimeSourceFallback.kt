@@ -1,32 +1,53 @@
 package com.nuvio.app.features.player
 
 import co.touchlab.kermit.Logger
+import com.nuvio.app.core.network.NetworkStatusRepository
+import com.nuvio.app.core.ui.NuvioToastController
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.addons.enabledAddons
 import com.nuvio.app.features.debrid.DebridSettingsRepository
 import com.nuvio.app.features.debrid.DirectDebridPlayableResult
 import com.nuvio.app.features.debrid.DirectDebridPlaybackResolver
+import com.nuvio.app.features.details.MetaDetailsRepository
+import com.nuvio.app.features.streams.StreamAutoPlayMode
+import com.nuvio.app.features.streams.StreamAutoPlayPolicy
 import com.nuvio.app.features.streams.StreamAutoPlaySelector
 import com.nuvio.app.features.streams.StreamItem
-import com.nuvio.app.isIos
+import com.nuvio.app.isDesktop
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.player_failover_exhausted
+import nuvio.composeapp.generated.resources.player_failover_now_playing
+import org.jetbrains.compose.resources.getString
 
 private const val SOURCE_FALLBACK_POLL_COUNT = 30
 private const val SOURCE_FALLBACK_POLL_INTERVAL_MS = 500L
+private const val SOURCE_FAILOVER_NOTICE_DURATION_MS = 4_000L
 
 private val log = Logger.withTag("PlayerSourceFallback")
 
 /**
- * Plays [stream] at [url] in place of the current source. Before playback has started the
- * pending resume position is kept, otherwise playback continues from the current position.
+ * Plays [stream] at [url] in place of the current source. Playback resumes at [resumePositionMs]
+ * when it is given. Otherwise, before playback has started the pending resume position is kept,
+ * and after it continues from the current position. A source chosen by moving on from a failed
+ * one counts as chosen by the app ([byFailover]), so it can be replaced in turn.
  */
-internal fun PlayerScreenRuntime.playReplacementSource(stream: StreamItem, url: String, videoId: String) {
+internal fun PlayerScreenRuntime.playReplacementSource(
+    stream: StreamItem,
+    url: String,
+    videoId: String,
+    resumePositionMs: Long? = null,
+    byFailover: Boolean = false,
+) {
     if (playerSettingsUiState.streamReuseLastLinkEnabled) {
         saveDirectStreamForReuse(stream, url, videoId, activeSeasonNumber, activeEpisodeNumber)
     }
-    if (activeSourceUrl == autoSelectedSourceUrl) autoSelectedSourceUrl = url
-    if (initialLoadCompleted) {
+    if (byFailover || activeSourceUrl == autoSelectedSourceUrl) autoSelectedSourceUrl = url
+    if (resumePositionMs != null) {
+        activeInitialPositionMs = resumePositionMs.coerceAtLeast(0L)
+        activeInitialProgressFraction = null
+    } else if (initialLoadCompleted) {
         activeInitialPositionMs = playbackSnapshot.positionMs.coerceAtLeast(0L)
         activeInitialProgressFraction = null
     }
@@ -54,39 +75,120 @@ internal fun PlayerScreenRuntime.playReplacementSource(stream: StreamItem, url: 
     controlsVisible = true
 }
 
-/** Shows [message] as the playback error unless the next matching source is tried instead. */
+/** Shows [message] as the playback error unless the next source is tried instead. */
 internal fun PlayerScreenRuntime.showErrorUnlessSourceFallback(message: String?) {
     if (tryFallbackToNextSourceAfterError(message)) return
     errorMessage = message
     controlsVisible = !playerControlsLocked
 }
 
+/** The user pressed Back: nothing is started after this, and a source being looked up is dropped. */
+internal fun PlayerScreenRuntime.cancelSourceFailoverOnExit() {
+    sourceFailoverCancelled = true
+    endSourceFailover()
+}
+
 /**
- * When the auto-selected source fails before playback starts, quietly plays the next source that
- * auto source selection would pick, up to the configured number of further sources. It never
- * applies to a source the user picked, and it excludes the engine switch on error.
+ * The user picked a source (or an episode) themselves. A source being looked up is dropped. A
+ * source that failed earlier is still never tried again, but the count of sources tried starts
+ * over; a new episode forgets the failed sources too, as they belonged to another video.
+ */
+internal fun PlayerScreenRuntime.restartSourceFailoverAfterUserChoice(newVideo: Boolean = false) {
+    endSourceFailover()
+    sourceFallbackAttempts = 0
+    if (newVideo) sourceFallbackTriedKeys.clear()
+}
+
+private fun PlayerScreenRuntime.endSourceFailover() {
+    sourceFallbackJob?.cancel()
+    sourceFallbackJob = null
+    sourceFailoverTryingName = null
+    sourceFailoverPlayingName = null
+}
+
+/** The name of a source as the loading screen and the messages give it. */
+private fun StreamItem.failoverDisplayName(): String =
+    addonName.takeIf { it.isNotBlank() } ?: streamLabel
+
+/** Called on the first frame of a source that replaced a failed one: says which source plays now. */
+internal fun PlayerScreenRuntime.announceSourceFailoverIfPending() {
+    val name = sourceFailoverPlayingName ?: return
+    sourceFailoverPlayingName = null
+    sourceFailoverTryingName = null
+    scope.launch {
+        val text = getString(Res.string.player_failover_now_playing, name)
+        if (isDesktop) {
+            playerNotificationMessage = text
+            playerNotificationToken += 1L
+        } else {
+            NuvioToastController.show(text, SOURCE_FAILOVER_NOTICE_DURATION_MS, announce = true)
+        }
+    }
+}
+
+/**
+ * Called when a source fails and the user's setting asks for the next one to be tried. Before
+ * playback starts it applies to a source the app chose, never to one the user picked by hand
+ * (see [SOURCE_FAILOVER_ON_START_IN_MANUAL_MODE]); after playback started it applies to any
+ * source and resumes a couple of seconds before where it died. It excludes the engine switch on
+ * error, never runs while the device is offline, never tries a source that already failed and
+ * stops at the number of sources set. The order is the one the user's mode produced.
  *
- * Returns `true` when a fallback was started and the error must not be shown yet.
+ * Returns `true` when the failure is taken care of (a replacement is being looked up, or the final
+ * message is being shown) and the caller must not show the error itself.
  */
 internal fun PlayerScreenRuntime.tryFallbackToNextSourceAfterError(message: String?): Boolean {
     if (sourceFallbackJob?.isActive == true) return true
     val settings = playerSettingsUiState
     if (!settings.streamAutoPlayFallbackActive) return false
-    if (!isIos && settings.autoSwitchPlaybackEngineOnError) return false
-    if (initialLoadCompleted) return false
+    if (settings.engineSwitchOnErrorBlocksSourceFailover) return false
     val failedUrl = activeSourceUrl
-    if (failedUrl.isBlank() || failedUrl != autoSelectedSourceUrl) return false
-    if (sourceFallbackAttempts >= settings.streamAutoPlayFallbackMaxSources) return false
+    if (failedUrl.isBlank()) return false
     val videoId = activeVideoId ?: return false
 
+    val failure = if (initialLoadCompleted) SourceFailure.DiedDuringPlayback else SourceFailure.FailedToStart
+    val manualMode = settings.streamAutoPlayMode == StreamAutoPlayMode.MANUAL
+    val chosenByApp = failedUrl == autoSelectedSourceUrl
+    // Everything except the list is checked first, so a failure that does not apply is left alone.
+    val preflight = decideSourceFailover(
+        failure = failure,
+        settingEnabled = true,
+        manualMode = manualMode,
+        failedSourceChosenByApp = chosenByApp,
+        userCancelled = sourceFailoverCancelled,
+        network = NetworkStatusRepository.uiState.value.condition,
+        attempts = sourceFallbackAttempts,
+        maxAttempts = settings.streamAutoPlayFallbackMaxSources,
+        ranked = listOf(""),
+        failedKeys = emptySet(),
+        keyOf = { it },
+    )
+    if (preflight is SourceFailoverDecision.Stop) {
+        if (preflight.reason == SourceFailoverStop.LimitReached && sourceFallbackAttempts > 0) {
+            scope.launch { finishSourceFailover(message, preflight.reason) }
+            return true
+        }
+        return false
+    }
+
     activeStream?.playerSourceIdentityKey()?.let(sourceFallbackTriedKeys::add)
+    activeSourceIdentityKey?.let(sourceFallbackTriedKeys::add)
     val failedInfoHash = activeStream?.p2pInfoHash ?: currentStreamInfoHash
     val failedAddonId = activeProviderAddonId
     val season = activeSeasonNumber
     val episode = activeEpisodeNumber
+    val resumeMs = if (failure == SourceFailure.DiedDuringPlayback) {
+        sourceFailoverResumePositionMs(
+            positionMs = playbackSnapshot.positionMs,
+            durationMs = playbackSnapshot.durationMs,
+        )
+    } else {
+        null
+    }
     errorMessage = null
 
     sourceFallbackJob = scope.launch {
+        var stopReason = SourceFailoverStop.Exhausted
         try {
             // Joins the shared source search, so results the stream screen already found are reused.
             PlayerStreamsRepository.loadSources(
@@ -95,25 +197,50 @@ internal fun PlayerScreenRuntime.tryFallbackToNextSourceAfterError(message: Stri
                 season = season,
                 episode = episode,
             )
+            val preferences = StreamAutoPlayPolicy.preferencesFor(settings.streamAutoPlayMode)
+            val runtimeMinutes = if (settings.streamAutoPlayMode == StreamAutoPlayMode.PREFERRED) {
+                MetaDetailsRepository.runtimeMinutesFor(parentMetaId, videoId, season, episode)
+            } else {
+                null
+            }
             var polls = 0
-            while (sourceFallbackAttempts < playerSettingsUiState.streamAutoPlayFallbackMaxSources) {
+            while (true) {
                 val state = PlayerStreamsRepository.sourceState.value
-                val next = nextSourceFallbackCandidate(
+                val ranked = rankedSourceFailoverCandidates(
                     streams = state.groups.flatMap { it.streams },
                     settings = playerSettingsUiState,
-                    triedKeys = sourceFallbackTriedKeys,
                     failedAddonId = failedAddonId,
                     failedInfoHash = failedInfoHash,
+                    preferences = preferences,
+                    runtimeMinutes = runtimeMinutes,
                 )
-                if (next == null) {
+                val decision = decideSourceFailover(
+                    failure = failure,
+                    settingEnabled = playerSettingsUiState.streamAutoPlayFallbackActive,
+                    manualMode = manualMode,
+                    failedSourceChosenByApp = chosenByApp,
+                    userCancelled = sourceFailoverCancelled,
+                    network = NetworkStatusRepository.uiState.value.condition,
+                    attempts = sourceFallbackAttempts,
+                    maxAttempts = playerSettingsUiState.streamAutoPlayFallbackMaxSources,
+                    ranked = ranked,
+                    failedKeys = sourceFallbackTriedKeys,
+                    keyOf = { it.playerSourceIdentityKey() },
+                )
+                if (decision is SourceFailoverDecision.Stop) {
+                    stopReason = decision.reason
                     val searchDone = state.emptyStateReason != null || (!state.isAnyLoading && state.groups.isNotEmpty())
-                    if (searchDone || polls >= SOURCE_FALLBACK_POLL_COUNT) break
-                    delay(SOURCE_FALLBACK_POLL_INTERVAL_MS)
-                    polls++
-                    continue
+                    if (decision.reason == SourceFailoverStop.Exhausted && !searchDone && polls < SOURCE_FALLBACK_POLL_COUNT) {
+                        delay(SOURCE_FALLBACK_POLL_INTERVAL_MS)
+                        polls++
+                        continue
+                    }
+                    break
                 }
+                val next = (decision as SourceFailoverDecision.TryNext).candidate
                 next.playerSourceIdentityKey()?.let(sourceFallbackTriedKeys::add)
                 sourceFallbackAttempts++
+                sourceFailoverTryingName = next.failoverDisplayName()
 
                 val playable = when (
                     val resolved = DirectDebridPlaybackResolver.resolveToPlayableStream(next, season, episode)
@@ -126,43 +253,65 @@ internal fun PlayerScreenRuntime.tryFallbackToNextSourceAfterError(message: Stri
                     log.d { "Fallback source from ${next.addonName} has no playable link, trying the next one" }
                     continue
                 }
-                log.i { "Source failed to start, falling back to ${playable.streamLabel} from ${playable.addonName}" }
-                playReplacementSource(playable, url, videoId)
+                if (sourceFailoverCancelled) return@launch
+                log.i { "Source failed (${failure.name}), moving on to ${playable.streamLabel} from ${playable.addonName}" }
+                playReplacementSource(playable, url, videoId, resumePositionMs = resumeMs, byFailover = true)
+                sourceFailoverPlayingName = next.failoverDisplayName()
                 return@launch
             }
         } finally {
             PlayerStreamsRepository.stopSourcesLoading()
         }
-        // The last source that failed may have been saved for reuse.
-        removeFailedStreamFromCache()
-        errorMessage = message
-        controlsVisible = !playerControlsLocked
+        if (sourceFailoverCancelled) return@launch
+        finishSourceFailover(message, stopReason)
     }
     return true
 }
 
 /**
- * The best stream auto source selection would pick from [streams], leaving out the sources
- * already tried and other copies of the torrent that failed.
+ * Ends moving on with the error screen. When at least one other source was tried, the message says
+ * that the sources tried did not play. When the device is offline, the original error stays: the
+ * sources were not at fault.
  */
-internal fun nextSourceFallbackCandidate(
+private suspend fun PlayerScreenRuntime.finishSourceFailover(message: String?, reason: SourceFailoverStop) {
+    // The last source that failed may have been saved for reuse.
+    removeFailedStreamFromCache()
+    sourceFailoverTryingName = null
+    sourceFailoverPlayingName = null
+    errorMessage = if (sourceFallbackAttempts > 0 && reason != SourceFailoverStop.Offline) {
+        getString(Res.string.player_failover_exhausted)
+    } else {
+        message
+    }
+    controlsVisible = !playerControlsLocked
+}
+
+/**
+ * The sources to try after one failed, best first, in the order the user's mode produced: the
+ * saved preferences in [StreamAutoPlayMode.PREFERRED], the rules of the mode otherwise, and the
+ * order of the source list in Manual mode. Other copies of the torrent that failed are left out.
+ * Sources that already failed are skipped by the caller.
+ */
+internal fun rankedSourceFailoverCandidates(
     streams: List<StreamItem>,
     settings: PlayerSettingsUiState,
-    triedKeys: Set<String>,
     failedAddonId: String?,
     failedInfoHash: String?,
+    preferences: com.nuvio.app.features.downloads.SeasonDownloadDefaults = com.nuvio.app.features.downloads.SeasonDownloadDefaults(),
+    runtimeMinutes: Int? = null,
     installedAddonNames: Set<String> = AddonRepository.uiState.value.addons.enabledAddons().map { it.displayTitle }.toSet(),
     debridEnabled: Boolean = DebridSettingsRepository.snapshot().canResolvePlayableLinks,
     activeResolverProviderId: String? = DebridSettingsRepository.snapshot().activeResolverProviderId,
-): StreamItem? {
-    val untried = streams.filterNot { stream ->
-        val key = stream.playerSourceIdentityKey()
-        (key != null && key in triedKeys) ||
-            (failedInfoHash != null && stream.addonId == failedAddonId &&
-                stream.p2pInfoHash.equals(failedInfoHash, ignoreCase = true))
+): List<StreamItem> {
+    val candidates = streams.filterNot { stream ->
+        failedInfoHash != null && stream.addonId == failedAddonId &&
+            stream.p2pInfoHash.equals(failedInfoHash, ignoreCase = true)
+    }
+    if (settings.streamAutoPlayMode == StreamAutoPlayMode.MANUAL) {
+        return candidates.filter { StreamAutoPlaySelector.canStartInPlayer(it, debridEnabled, activeResolverProviderId) }
     }
     return StreamAutoPlaySelector.evaluateAutoPlayStream(
-        streams = untried,
+        streams = candidates,
         mode = settings.streamAutoPlayMode,
         regexPattern = settings.streamAutoPlayRegex,
         source = settings.streamAutoPlaySource,
@@ -171,5 +320,34 @@ internal fun nextSourceFallbackCandidate(
         selectedPlugins = settings.streamAutoPlaySelectedPlugins,
         debridEnabled = debridEnabled,
         activeResolverProviderId = activeResolverProviderId,
-    ).readyStreams.firstOrNull()
+        preferences = preferences,
+        runtimeMinutes = runtimeMinutes,
+    ).readyStreams
 }
+
+/**
+ * The best stream the user's mode would pick from [streams], leaving out the sources already
+ * tried and other copies of the torrent that failed.
+ */
+internal fun nextSourceFallbackCandidate(
+    streams: List<StreamItem>,
+    settings: PlayerSettingsUiState,
+    triedKeys: Set<String>,
+    failedAddonId: String? = null,
+    failedInfoHash: String? = null,
+    installedAddonNames: Set<String> = AddonRepository.uiState.value.addons.enabledAddons().map { it.displayTitle }.toSet(),
+    debridEnabled: Boolean = DebridSettingsRepository.snapshot().canResolvePlayableLinks,
+    activeResolverProviderId: String? = DebridSettingsRepository.snapshot().activeResolverProviderId,
+): StreamItem? =
+    rankedSourceFailoverCandidates(
+        streams = streams,
+        settings = settings,
+        failedAddonId = failedAddonId,
+        failedInfoHash = failedInfoHash,
+        installedAddonNames = installedAddonNames,
+        debridEnabled = debridEnabled,
+        activeResolverProviderId = activeResolverProviderId,
+    ).firstOrNull { stream ->
+        val key = stream.playerSourceIdentityKey()
+        key == null || key !in triedKeys
+    }
