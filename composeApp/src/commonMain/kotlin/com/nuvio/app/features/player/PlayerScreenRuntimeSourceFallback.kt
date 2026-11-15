@@ -253,7 +253,17 @@ internal fun PlayerScreenRuntime.tryFallbackToNextSourceAfterError(message: Stri
                     log.d { "Fallback source from ${next.addonName} has no playable link, trying the next one" }
                     continue
                 }
-                if (sourceFailoverCancelled) return@launch
+                val stopBeforeLoading = sourceFailoverStopBeforeLoading(
+                    userCancelled = sourceFailoverCancelled,
+                    network = NetworkStatusRepository.uiState.value.condition,
+                )
+                if (stopBeforeLoading == SourceFailoverStop.UserCancelled) return@launch
+                if (stopBeforeLoading != null) {
+                    // Went offline while the link was resolved: nothing is loaded and the attempt is given back.
+                    sourceFallbackAttempts = (sourceFallbackAttempts - 1).coerceAtLeast(0)
+                    stopReason = stopBeforeLoading
+                    break
+                }
                 log.i { "Source failed (${failure.name}), moving on to ${playable.streamLabel} from ${playable.addonName}" }
                 playReplacementSource(playable, url, videoId, resumePositionMs = resumeMs, byFailover = true)
                 sourceFailoverPlayingName = next.failoverDisplayName()

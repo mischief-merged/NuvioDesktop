@@ -196,4 +196,23 @@ class SourceFailoverPlannerTest {
         assertEquals(98_000L, sourceFailoverResumePositionMs(positionMs = 100_000L, durationMs = 0L))
         assertEquals(98_000L, sourceFailoverResumePositionMs(positionMs = 100_000L, durationMs = -1L))
     }
+
+    @Test
+    fun goingOfflineWhileALinkIsResolvedStopsBeforeLoading() {
+        assertEquals(SourceFailoverStop.Offline, sourceFailoverStopBeforeLoading(false, NetworkCondition.NoInternet))
+        assertEquals(SourceFailoverStop.Offline, sourceFailoverStopBeforeLoading(false, NetworkCondition.ServersUnreachable))
+    }
+
+    @Test
+    fun leavingWhileALinkIsResolvedStopsBeforeLoadingEvenWhenOffline() {
+        assertEquals(SourceFailoverStop.UserCancelled, sourceFailoverStopBeforeLoading(true, NetworkCondition.NoInternet))
+        assertEquals(SourceFailoverStop.UserCancelled, sourceFailoverStopBeforeLoading(true, NetworkCondition.Online))
+    }
+
+    @Test
+    fun anOnlineOrUnknownNetworkLetsTheReplacementLoad() {
+        assertEquals(null, sourceFailoverStopBeforeLoading(false, NetworkCondition.Online))
+        assertEquals(null, sourceFailoverStopBeforeLoading(false, NetworkCondition.Unknown))
+        assertEquals(null, sourceFailoverStopBeforeLoading(false, NetworkCondition.Checking))
+    }
 }

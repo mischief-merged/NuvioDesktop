@@ -91,6 +91,18 @@ internal fun <T> decideSourceFailover(
 }
 
 /**
+ * Checked right before a replacement is loaded, after its link was resolved, which can take a
+ * while: the device may have gone offline or the user may have left in the meantime. Returns the
+ * reason to stop, or null when loading the replacement is fine.
+ */
+internal fun sourceFailoverStopBeforeLoading(userCancelled: Boolean, network: NetworkCondition): SourceFailoverStop? =
+    when {
+        userCancelled -> SourceFailoverStop.UserCancelled
+        network == NetworkCondition.NoInternet || network == NetworkCondition.ServersUnreachable -> SourceFailoverStop.Offline
+        else -> null
+    }
+
+/**
  * Where the next source starts after one died at [positionMs]: a couple of seconds earlier, never
  * before the start, and when the length is known never past [SOURCE_FAILOVER_END_MARGIN_MS] before the end.
  */
