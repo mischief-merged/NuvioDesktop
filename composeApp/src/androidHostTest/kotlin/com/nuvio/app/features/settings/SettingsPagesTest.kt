@@ -228,6 +228,8 @@ class SettingsPagesTest {
             mapOf(
                 "playback-touch-gestures" to SettingsPage.PlaybackInterface,
                 "playback-preferred-audio" to SettingsPage.PlaybackAudio,
+                "playback-preferred-quality" to SettingsPage.PlaybackPreferences,
+                "playback-when-i-press-play" to SettingsPage.PlaybackPreferences,
                 "playback-preferred-subtitles" to SettingsPage.PlaybackSubtitles,
                 "playback-auto-switch-engine" to SettingsPage.PlaybackPlayer,
                 "playback-libass-render-mode" to SettingsPage.PlaybackSubtitles,

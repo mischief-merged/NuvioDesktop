@@ -92,7 +92,7 @@ internal fun AutoDownloadSection(
         SeasonDownloadChoiceRow(
             title = stringResource(Res.string.downloads_auto_storage_limit),
             description = stringResource(Res.string.downloads_auto_storage_limit_description),
-            value = storageLimitLabel(storageLimitGb),
+            value = autoDownloadStorageLimitLabel(storageLimitGb),
             onClick = { storageLimitPickerProfileId = profileId },
         )
         rules.forEach { rule ->
@@ -199,7 +199,7 @@ internal fun AutoDownloadSection(
             title = stringResource(Res.string.downloads_auto_storage_limit),
             options = AutoDownloadStore.storageLimitOptionsGb,
             selected = storageLimitGb,
-            label = { storageLimitLabel(it) },
+            label = { autoDownloadStorageLimitLabel(it) },
             onSelect = {
                 controller.setStorageLimit(pickerProfileId, it)
                 storageLimitPickerProfileId = null
@@ -213,7 +213,7 @@ private const val MillisPerHour = 3_600_000L
 private const val MillisPerMinute = 60_000L
 
 @Composable
-private fun storageLimitLabel(limitGb: Int?): String =
+internal fun autoDownloadStorageLimitLabel(limitGb: Int?): String =
     if (limitGb == null) {
         stringResource(Res.string.downloads_auto_storage_limit_none)
     } else {
