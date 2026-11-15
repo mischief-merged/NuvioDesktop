@@ -57,11 +57,18 @@ internal fun PlayerTimelineDetails(
     releaseInfo: String?,
     metrics: PlayerLayoutMetrics,
     badges: List<StreamBadge> = emptyList(),
+    onOpenShow: (() -> Unit)? = null,
+    onOpenEpisode: (() -> Unit)? = null,
 ) {
     val typeScale = MaterialTheme.nuvioTypeScale
     Column(Modifier.padding(horizontal = PlayerTimelineContentInset)) {
         Text(
             text = title,
+            modifier = Modifier.playerTitleLink(
+                onClick = onOpenShow,
+                label = stringResource(Res.string.episode_page_trail_show, title),
+            ),
+            textDecoration = playerTitleLinkDecoration(onOpenShow),
             style = typeScale.titleLg.copy(
                 fontSize = metrics.titleSize,
                 lineHeight = metrics.titleSize * 1.16f,
@@ -74,8 +81,14 @@ internal fun PlayerTimelineDetails(
         if (seasonNumber != null && episodeNumber != null) {
             val episodeCode = stringResource(Res.string.compose_player_episode_code_full, seasonNumber, episodeNumber)
             val displayEpisodeTitle = localizedEpisodeTitle(episodeTitle, episodeNumber)
+            val episodeText = if (displayEpisodeTitle.isNullOrBlank()) episodeCode else "$episodeCode • $displayEpisodeTitle"
             Text(
-                text = if (displayEpisodeTitle.isNullOrBlank()) episodeCode else "$episodeCode • $displayEpisodeTitle",
+                text = episodeText,
+                modifier = Modifier.playerTitleLink(
+                    onClick = onOpenEpisode,
+                    label = stringResource(Res.string.player_go_to_episode, episodeText),
+                ),
+                textDecoration = playerTitleLinkDecoration(onOpenEpisode),
                 style = typeScale.bodyMd.copy(fontSize = metrics.episodeInfoSize),
                 color = Color.White.copy(alpha = 0.9f),
                 maxLines = 1,

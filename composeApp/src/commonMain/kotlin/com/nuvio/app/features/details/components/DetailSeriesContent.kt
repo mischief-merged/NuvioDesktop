@@ -32,6 +32,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -54,6 +56,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -78,6 +83,8 @@ import com.nuvio.app.features.details.MetaDetails
 import com.nuvio.app.isDesktop
 import com.nuvio.app.features.details.EpisodeRatingsVisibility
 import com.nuvio.app.features.details.MetaEpisodeCardStyle
+import com.nuvio.app.features.details.LocalEpisodeFocus
+import com.nuvio.app.features.details.LocalEpisodeThumbnailPlay
 import com.nuvio.app.features.details.MetaVideo
 import com.nuvio.app.features.details.SeasonViewMode
 import com.nuvio.app.features.details.SeasonViewModeStorage
@@ -731,7 +738,20 @@ private fun EpisodeHorizontalRow(
     val listState = rememberLazyListState()
     var hasPositioned by remember(episodes) { mutableStateOf(false) }
 
+    val focus = LocalEpisodeFocus.current
+    val focusIndex = remember(episodes, focus) {
+        focus?.let { target -> episodes.indexOfFirst { it.id == target.videoId } }?.takeIf { it >= 0 }
+    }
+    // The show page was opened on one episode: this row reports that it is on screen, then goes to it.
+    LaunchedEffect(focus, focusIndex) {
+        if (focus != null && focusIndex != null && focus.needsPositioning) {
+            focus.markSectionReached()
+            listState.scrollToItem(focusIndex)
+        }
+    }
+
     LaunchedEffect(episodes, preferredEpisodeNumber) {
+        if (focusIndex != null) return@LaunchedEffect
         val targetIndex = if (preferredEpisodeNumber != null) {
             episodes.indexOfFirst { it.episode == preferredEpisodeNumber }
         } else {
@@ -806,6 +826,10 @@ private fun EpisodeHorizontalCard(
     onLongPress: (() -> Unit)? = null,
 ) {
     val cardShape = RoundedCornerShape(metrics.cornerRadius)
+    val focus = LocalEpisodeFocus.current?.takeIf { it.videoId == video.id }
+    val bringIntoView = remember { BringIntoViewRequester() }
+    FocusTargetEffect(focus, bringIntoView)
+    val thumbnailPlay = LocalEpisodeThumbnailPlay.current
     val ratingLabel = remember(imdbRating, episodeRatingsVisibility, isWatched) {
         imdbRating?.takeIf { it > 0.0 && episodeRatingsVisibility.showRating(isWatched) }
             ?.let(::formatEpisodeRating)
@@ -826,6 +850,7 @@ private fun EpisodeHorizontalCard(
         modifier = Modifier
             .width(metrics.cardWidth)
             .height(metrics.cardHeight)
+            .bringIntoViewRequester(bringIntoView)
             .clip(cardShape)
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
             .nuvioCardDepth(
@@ -833,6 +858,8 @@ private fun EpisodeHorizontalCard(
                 surface = NuvioCardDepthSurface.EpisodeCards,
                 fallbackBorderAlpha = 0.12f,
             )
+            .episodeFocusMarker(focus, cardShape)
+            .then(if (thumbnailPlay != null) Modifier.semantics { role = Role.Button } else Modifier)
             .posterCardClickable(
                 onClick = onClick,
                 onLongClick = onLongPress,
@@ -881,6 +908,16 @@ private fun EpisodeHorizontalCard(
                 .align(if (isWatched) Alignment.TopStart else Alignment.TopEnd)
                 .padding(metrics.contentPadding),
         )
+
+        if (thumbnailPlay != null) {
+            EpisodeThumbnailPlayButton(
+                video = video,
+                onPlay = thumbnailPlay,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(metrics.contentPadding),
+            )
+        }
 
         Column(
             modifier = Modifier
@@ -983,6 +1020,35 @@ private fun EpisodeHorizontalCard(
         }
     }
 }
+
+/** Reports a card that is the scroll target of the show page and brings it into view. */
+@Composable
+private fun FocusTargetEffect(
+    focus: com.nuvio.app.features.details.EpisodeFocusState?,
+    bringIntoView: BringIntoViewRequester,
+) {
+    if (focus == null) return
+    LaunchedEffect(focus) {
+        // Only the first time the card is composed: later it must not pull the page back.
+        if (focus.markPlaced()) bringIntoView.bringIntoView()
+    }
+}
+
+/** A clear frame around the episode the show page was opened on, until the highlight ends. */
+@Composable
+private fun Modifier.episodeFocusMarker(
+    focus: com.nuvio.app.features.details.EpisodeFocusState?,
+    shape: androidx.compose.ui.graphics.Shape,
+): Modifier =
+    if (focus != null && focus.highlighted) {
+        this.border(
+            width = 3.dp,
+            color = MaterialTheme.colorScheme.primary,
+            shape = shape,
+        )
+    } else {
+        this
+    }
 
 private data class EpisodeHorizontalCardMetrics(
     val rowHorizontalPadding: Dp,
@@ -1202,6 +1268,10 @@ private fun EpisodeListCard(
 ) {
     val cornerRadius = rememberPosterCardStyleUiState().cornerRadiusDp.dp
     val cardShape = RoundedCornerShape(cornerRadius)
+    val focus = LocalEpisodeFocus.current?.takeIf { it.videoId == video.id }
+    val bringIntoView = remember { BringIntoViewRequester() }
+    FocusTargetEffect(focus, bringIntoView)
+    val thumbnailPlay = LocalEpisodeThumbnailPlay.current
     val ratingLabel = remember(imdbRating, episodeRatingsVisibility, isWatched) {
         imdbRating?.takeIf { it > 0.0 && episodeRatingsVisibility.showRating(isWatched) }
             ?.let(::formatEpisodeRating)
@@ -1211,6 +1281,7 @@ private fun EpisodeListCard(
         modifier = modifier
             .fillMaxWidth()
             .height(sizing.cardHeight)
+            .bringIntoViewRequester(bringIntoView)
             .clip(cardShape)
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
             .border(
@@ -1218,6 +1289,8 @@ private fun EpisodeListCard(
                 color = Color.White.copy(alpha = 0.1f),
                 shape = cardShape,
             )
+            .episodeFocusMarker(focus, cardShape)
+            .then(if (thumbnailPlay != null) Modifier.semantics { role = Role.Button } else Modifier)
             .combinedClickable(
                 enabled = onClick != null || onLongPress != null,
                 onClick = { onClick?.invoke() },
@@ -1273,6 +1346,14 @@ private fun EpisodeListCard(
                         .align(Alignment.TopEnd)
                         .padding(8.dp),
                 )
+
+                if (thumbnailPlay != null) {
+                    EpisodeThumbnailPlayButton(
+                        video = video,
+                        onPlay = thumbnailPlay,
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                }
 
                 EpisodeAvailabilityBadge(
                     video = video,

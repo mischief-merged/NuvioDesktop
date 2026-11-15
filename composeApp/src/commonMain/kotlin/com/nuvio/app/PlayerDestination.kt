@@ -11,9 +11,12 @@ import com.nuvio.app.features.party.PartyMedia
 import com.nuvio.app.features.player.ExternalPlayerIntentResult
 import com.nuvio.app.features.player.ExternalPlayerPlatform
 import com.nuvio.app.features.player.PlayerLaunch
+import com.nuvio.app.features.player.PlayerExitTarget
+import com.nuvio.app.features.player.PlayerExitTargetHolder
 import com.nuvio.app.features.player.PlayerLaunchStore
 import com.nuvio.app.features.player.PlayerScreen
 import com.nuvio.app.features.watchprogress.ResumePromptRepository
+import com.nuvio.app.navigation.EpisodeDetailRoute
 import com.nuvio.app.navigation.NuvioNavigator
 import com.nuvio.app.navigation.PlayerRoute
 
@@ -35,6 +38,8 @@ internal fun PlayerDestination(
         route = route,
         beforePop = ResumePromptRepository::markPlayerExitedNormally,
     )
+    // Where to go once Back has finished, when the title or episode text of the player was used.
+    val exitTarget = remember(route) { PlayerExitTargetHolder() }
     val launch = remember(route.launchId) { PlayerLaunchStore.get(route.launchId) }
     if (launch == null) {
         LaunchedEffect(route.launchId) {
@@ -45,10 +50,14 @@ internal fun PlayerDestination(
     }
     val currentFullscreen = com.nuvio.app.core.ui.isFullscreenActionActive()
     val initialFullscreen = remember { currentFullscreen }
+    val afterPop = remember(navController, exitTarget) {
+        { exitTarget.target?.let { navController.openPlayerExitTarget(it) }; Unit }
+    }
     val onBackBase = rememberGuardedPlayerPopBackStack(
         navController = navController,
         route = route,
         beforePop = ResumePromptRepository::markPlayerExitedNormally,
+        afterPop = afterPop,
     )
     val onBack = remember(onBackBase, initialFullscreen, currentFullscreen) {
         { releaseBeforeBack: com.nuvio.app.features.player.PlayerReleaseBeforeBack ->
@@ -104,6 +113,7 @@ internal fun PlayerDestination(
         sourceFromLinkCache = launch.sourceFromLinkCache,
         sourceAutoSelected = launch.sourceAutoSelected,
         onBack = onBack,
+        onExitTarget = { exitTarget.target = it },
         onSystemBackHandlerChanged = registerSystemBack,
         onOpenInExternalPlayer = if (externalPlayerSupported) { { request ->
             val playerLaunch = PlayerLaunch(
@@ -159,4 +169,28 @@ internal fun PlayerDestination(
         onOpenPartyMedia = onOpenPartyMedia,
         modifier = Modifier.fillMaxSize(),
     )
+}
+
+/** Runs after the player has been popped, so the usual guards and the progress save have already happened. */
+private fun NuvioNavigator.openPlayerExitTarget(target: PlayerExitTarget) {
+    when (target) {
+        is PlayerExitTarget.Show -> openShowPage(target.type, target.id, target.title)
+        is PlayerExitTarget.Episode -> {
+            val videoId = target.videoId
+            if (videoId.isNullOrBlank() && target.episodeNumber == null) {
+                openShowPage(target.type, target.id, target.title)
+            } else {
+                openEpisodePage(
+                    EpisodeDetailRoute(
+                        type = target.type,
+                        id = target.id,
+                        videoId = videoId.orEmpty(),
+                        season = target.seasonNumber,
+                        episode = target.episodeNumber,
+                        title = target.title,
+                    ),
+                )
+            }
+        }
+    }
 }

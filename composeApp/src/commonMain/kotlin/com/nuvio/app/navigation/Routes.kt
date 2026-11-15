@@ -38,6 +38,20 @@ data class DetailRoute(
     val type: String,
     val id: String,
     override val title: String? = null,
+    /** Opens the show page with this season selected, when it exists. */
+    val season: Int? = null,
+    /** Scrolls the show page to this episode and marks it briefly, when it exists. */
+    val focusVideoId: String? = null,
+) : AppRoute
+
+@Serializable
+data class EpisodeDetailRoute(
+    val type: String,
+    val id: String,
+    val videoId: String,
+    val season: Int? = null,
+    val episode: Int? = null,
+    override val title: String? = null,
 ) : AppRoute
 
 @Serializable

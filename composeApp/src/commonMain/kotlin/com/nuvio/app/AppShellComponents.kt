@@ -198,10 +198,12 @@ internal fun rememberGuardedPlayerPopBackStack(
     navController: NuvioNavigator,
     route: AppRoute,
     beforePop: () -> Unit = {},
+    /** Runs right after the route has been popped, and only then. */
+    afterPop: () -> Unit = {},
 ): PlayerBackRequest {
     val guard = remember(route) { PlayerBackReleaseGuard() }
 
-    return remember(navController, route, beforePop, guard) {
+    return remember(navController, route, beforePop, afterPop, guard) {
         { releaseBeforeBack ->
             guard.request(
                 canStart = {
@@ -211,8 +213,10 @@ internal fun rememberGuardedPlayerPopBackStack(
                 releaseBeforeBack = releaseBeforeBack,
                 beforePop = beforePop,
                 pop = {
-                    navController.currentRoute == route &&
+                    val popped = navController.currentRoute == route &&
                         navController.popBackStack(expectedRoute = route)
+                    if (popped) afterPop()
+                    popped
                 },
             )
         }
