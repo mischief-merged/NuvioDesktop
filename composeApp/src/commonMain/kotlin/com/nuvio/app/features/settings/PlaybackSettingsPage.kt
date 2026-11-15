@@ -36,6 +36,8 @@ internal fun LazyListScope.playbackSettingsContent(
                     if (isDesktop) {
                         SettingsGroupDivider(isTablet = isTablet)
                         DownloadSpeedSetting(isTablet)
+                        SettingsGroupDivider(isTablet = isTablet)
+                        DownloadFolderSetting(isTablet)
                     }
                 }
             }

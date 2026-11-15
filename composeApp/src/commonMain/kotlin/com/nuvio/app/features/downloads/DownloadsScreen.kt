@@ -17,6 +17,8 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -127,6 +129,8 @@ internal fun DownloadsScreenContent(
     episodeLinks: DownloadEpisodeLinks? = null,
     /** Where the episodes that are about to be deleted after watching come from. Null where there is no auto-download. */
     autoDownloads: AutoDownloadController? = if (showAutoDownloads) AutoDownloads else null,
+    /** Where downloads live. Where there are no locations the move actions and location notes are not shown. */
+    folders: DownloadFolderController = DownloadFolders.controller,
 ) {
     val uiState by remember {
         DownloadsRepository.ensureLoaded()
@@ -150,7 +154,29 @@ internal fun DownloadsScreenContent(
             value = DownloadsClock.nowEpochMs()
         }
     }
-    val clock = RowClock(nowEpochMs = now, offline = network.isOfflineLike)
+    val folderState by folders.state.collectAsStateWithLifecycle()
+    var selecting by remember { mutableStateOf(false) }
+    var selectedIds by remember { mutableStateOf(emptySet<String>()) }
+    var moveRequest by remember { mutableStateOf<MoveRequest?>(null) }
+    var chooseLocationFor by remember { mutableStateOf<DownloadItem?>(null) }
+    var permanentDeletionId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(folders) { if (folders.supported) folders.refresh() }
+    val extras = if (folders.supported) {
+        RowExtras(
+            folderState = folderState,
+            locationIdOf = folders::locationIdOf,
+            selecting = selecting,
+            selected = selectedIds,
+            onToggleSelected = { ids ->
+                selectedIds = if (ids.all { it in selectedIds }) selectedIds - ids else selectedIds + ids
+            },
+            onMove = { ids -> moveRequest = MoveRequest.MoveItems(ids) },
+            onChooseLocation = { chooseLocationFor = it },
+        )
+    } else {
+        null
+    }
+    val clock = RowClock(nowEpochMs = now, offline = network.isOfflineLike, extras = extras)
 
     // The last run of each season, movie set and movie downloaded in one go, kept until dismissed.
     val batchRunProfileId = ProfileRepository.activeProfileId
@@ -197,6 +223,19 @@ internal fun DownloadsScreenContent(
                     }
                 },
                 actions = {
+                    if (extras != null && uiState.completedItems.isNotEmpty()) {
+                        TextButton(
+                            onClick = {
+                                selecting = !selecting
+                                selectedIds = emptySet()
+                            },
+                        ) {
+                            Text(
+                                text = stringResource(if (selecting) Res.string.downloads_select_done else Res.string.downloads_select),
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+                    }
                     IconButton(
                         onClick = {
                             if (!openDownloadsFolder()) {
@@ -211,6 +250,12 @@ internal fun DownloadsScreenContent(
                     }
                 },
             )
+        }
+
+        if (extras != null && selecting && selectedIds.isNotEmpty()) {
+            item(key = "selection-bar") {
+                SelectionBar(count = selectedIds.size, onMove = { moveRequest = MoveRequest.MoveItems(selectedIds) })
+            }
         }
 
         if (selectedShowId == null) {
@@ -254,6 +299,7 @@ internal fun DownloadsScreenContent(
                 },
                 onDeleteDownload = { downloadPendingDeletionId = it },
                 episodeLinks = episodeLinks,
+                unreachable = folderState.unreachable,
             )
         } else {
             downloadsShowContent(
@@ -271,6 +317,51 @@ internal fun DownloadsScreenContent(
 
     val pendingDeletion = downloadPendingDeletionId?.let { id -> uiState.items.firstOrNull { it.id == id } }
     val deleteNotMovedText = stringResource(Res.string.downloads_delete_not_moved_toast)
+    val deleteNotConnectedText = stringResource(Res.string.downloads_delete_not_connected_toast)
+    val permanentDeletion = permanentDeletionId?.let { id -> uiState.items.firstOrNull { it.id == id } }
+    if (permanentDeletion != null) {
+        NuvioStatusModal(
+            title = stringResource(Res.string.downloads_delete_permanent_title, permanentDeletion.nameForLabels()),
+            message = stringResource(Res.string.downloads_delete_not_moved_toast) + " " + stringResource(Res.string.downloads_delete_permanent_message),
+            isVisible = true,
+            destructive = true,
+            confirmText = stringResource(Res.string.downloads_delete_permanent_confirm),
+            dismissText = stringResource(Res.string.action_cancel),
+            onConfirm = {
+                permanentDeletionId = null
+                deleteScope.launch {
+                    if (DownloadsRepository.deleteDownload(permanentDeletion.id, permanently = true) == DownloadDeleteResult.NotMoved) {
+                        NuvioToastController.show(deleteNotMovedText)
+                    }
+                }
+            },
+            onDismiss = { permanentDeletionId = null },
+        )
+    }
+    moveRequest?.let { active ->
+        DownloadMoveFlow(
+            request = active,
+            controller = folders,
+            items = uiState.items,
+            onFinished = {
+                moveRequest = null
+                selecting = false
+                selectedIds = emptySet()
+            },
+        )
+    }
+    chooseLocationFor?.let { waiting ->
+        DestinationDialog(
+            locations = folderState.locations.filter { it.availability == FolderAvailability.Available },
+            excludeIds = emptySet(),
+            onPickLocation = { location ->
+                chooseLocationFor = null
+                DownloadsRepository.chooseLocationForWaiting(waiting.id, location.id)
+            },
+            onPickOther = null,
+            onDismiss = { chooseLocationFor = null },
+        )
+    }
     if (pendingDeletion != null) {
         val hasFile = pendingDeletion.status == DownloadStatus.Completed
         val usesTrash = DownloadsRepository.usesSystemTrash
@@ -301,8 +392,11 @@ internal fun DownloadsScreenContent(
                 downloadPendingDeletionId = null
                 deleteScope.launch {
                     rememberDeletion(pendingDeletion)
-                    if (DownloadsRepository.deleteDownload(pendingDeletion.id) == DownloadDeleteResult.NotMoved) {
-                        NuvioToastController.show(deleteNotMovedText)
+                    when (DownloadsRepository.deleteDownload(pendingDeletion.id)) {
+                        // Say so, and offer to delete it for good, which needs its own confirmation.
+                        DownloadDeleteResult.NotMoved -> permanentDeletionId = pendingDeletion.id
+                        DownloadDeleteResult.NotReachable -> NuvioToastController.show(deleteNotConnectedText)
+                        DownloadDeleteResult.Removed, DownloadDeleteResult.Gone -> Unit
                     }
                 }
             },
@@ -316,7 +410,69 @@ private const val StatusRefreshMs = 5_000L
 private val NoScheduledRemovals = kotlinx.coroutines.flow.MutableStateFlow(emptyList<AutoDownloadRemoval>())
 
 /** The time and network state that the rows work out their status from. */
-private data class RowClock(val nowEpochMs: Long, val offline: Boolean)
+private data class RowClock(val nowEpochMs: Long, val offline: Boolean, val extras: RowExtras? = null)
+
+/** What the rows need to know about locations, selection and moving. Null where there are no locations. */
+private class RowExtras(
+    val folderState: DownloadFolderState,
+    val locationIdOf: (DownloadItem) -> String,
+    val selecting: Boolean,
+    val selected: Set<String>,
+    val onToggleSelected: (Set<String>) -> Unit,
+    val onMove: (Set<String>) -> Unit,
+    val onChooseLocation: (DownloadItem) -> Unit,
+)
+
+@Composable
+private fun SelectionBar(count: Int, onMove: () -> Unit) {
+    val moveDescription = stringResource(Res.string.downloads_move_selected_description, count)
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = stringResource(Res.string.downloads_select_count, count),
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+            style = MaterialTheme.typography.labelLarge,
+        )
+        TextButton(onClick = onMove, modifier = Modifier.semantics { contentDescription = moveDescription }) {
+            Text(stringResource(Res.string.downloads_move_selected), style = MaterialTheme.typography.labelLarge)
+        }
+    }
+}
+
+/** Tells which locations cannot be reached, and that what is in them is kept. */
+@Composable
+private fun LocationBanner(unreachable: List<DownloadLocationInfo>) {
+    val names = unreachable.joinToString(", ") { it.name }
+    val title = stringResource(Res.string.downloads_location_banner_title)
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.secondaryContainer,
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp).semantics(mergeDescendants = true) {
+                liveRegion = LiveRegionMode.Polite
+            },
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = title,
+                modifier = Modifier.semantics { heading() },
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = stringResource(Res.string.downloads_location_banner_message, names),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+        }
+    }
+}
 
 private fun LazyListScope.downloadsRootContent(
     uiState: DownloadsUiState,
@@ -329,11 +485,15 @@ private fun LazyListScope.downloadsRootContent(
     onOpenShow: (showId: String, title: String) -> Unit,
     onDeleteDownload: (String) -> Unit,
     episodeLinks: DownloadEpisodeLinks?,
+    unreachable: List<DownloadLocationInfo> = emptyList(),
 ) {
     uiState.storeProblem?.let { problem ->
         item(key = "store-problem") {
             StoreProblemBanner(problem = problem, onOpenDownloadsFolder = onOpenDownloadsFolder)
         }
+    }
+    if (unreachable.isNotEmpty()) {
+        item(key = "location-banner") { LocationBanner(unreachable) }
     }
 
     val activeItems = uiState.activeItems
@@ -408,11 +568,24 @@ private fun LazyListScope.downloadsRootContent(
             items = completedShows,
             key = { (item, _) -> item.parentMetaId },
         ) { (item, episodes) ->
+            val extras = clock.extras
+            val episodeIds = episodes.map { it.id }.toSet()
+            val showSelected = extras != null && episodeIds.all { it in extras.selected }
+            val selectShowDescription = stringResource(Res.string.downloads_select_show_description, item.title)
+            val moveShowDescription = stringResource(Res.string.downloads_move_show_description, item.title)
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 6.dp)
-                    .clickable(role = Role.Button) { onOpenShow(item.parentMetaId, item.title) },
+                    .then(
+                        if (extras != null && extras.selecting) {
+                            Modifier
+                                .toggleable(value = showSelected, role = Role.Checkbox) { extras.onToggleSelected(episodeIds) }
+                                .semantics { contentDescription = selectShowDescription }
+                        } else {
+                            Modifier.clickable(role = Role.Button) { onOpenShow(item.parentMetaId, item.title) }
+                        },
+                    ),
                 shape = MaterialTheme.shapes.medium,
                 color = MaterialTheme.colorScheme.surfaceContainer,
             ) {
@@ -440,11 +613,23 @@ private fun LazyListScope.downloadsRootContent(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Icon(
-                        imageVector = Icons.Rounded.PlayArrow,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    if (extras != null && extras.selecting) {
+                        Checkbox(checked = showSelected, onCheckedChange = null)
+                    } else {
+                        if (extras != null) {
+                            TextButton(
+                                onClick = { extras.onMove(episodeIds) },
+                                modifier = Modifier.semantics { contentDescription = moveShowDescription },
+                            ) {
+                                Text(stringResource(Res.string.downloads_move_to), style = MaterialTheme.typography.labelLarge)
+                            }
+                        }
+                        Icon(
+                            imageVector = Icons.Rounded.PlayArrow,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }
@@ -548,7 +733,11 @@ private fun DownloadRow(
     onKeepScheduled: () -> Unit = {},
     episodeLinks: DownloadEpisodeLinks? = null,
 ) {
-    val rowStatus = downloadRowStatus(item, clock.nowEpochMs, clock.offline)
+    val extras = clock.extras
+    val location = extras?.folderState?.location(extras.locationIdOf(item))
+    val availability = location?.availability ?: FolderAvailability.Available
+    val reachable = availability == FolderAvailability.Available
+    val rowStatus = downloadRowStatus(item, clock.nowEpochMs, clock.offline, availability)
     val displayTitle = item.displayTitle()
     val displaySubtitle = downloadDisplaySubtitle(
         item = item,
@@ -569,6 +758,11 @@ private fun DownloadRow(
     val resumeDescription = stringResource(Res.string.downloads_resume_description, name)
     val playDescription = stringResource(Res.string.downloads_play_description, name)
     val deleteDescription = stringResource(Res.string.downloads_delete_description, name)
+    val moveDescription = stringResource(Res.string.downloads_move_description, name)
+    val chooseLocationDescription = stringResource(Res.string.downloads_choose_location_description, name)
+    val selectable = extras != null && extras.selecting && item.status == DownloadStatus.Completed
+    val selectedHere = extras != null && item.id in extras.selected
+    val selectDescription = stringResource(Res.string.downloads_select_description, name)
 
     Surface(
         modifier = Modifier
@@ -577,7 +771,11 @@ private fun DownloadRow(
             .then(
                 // One item for a screen reader: title, subtitle and status read together. Its own
                 // buttons stay apart. A row that can be played is a button; one that cannot is not.
-                if (item.isPlayable) {
+                if (selectable && extras != null) {
+                    Modifier
+                        .toggleable(value = selectedHere, role = Role.Checkbox) { extras.onToggleSelected(setOf(item.id)) }
+                        .semantics { contentDescription = selectDescription }
+                } else if (item.isPlayable && reachable) {
                     Modifier.clickable(role = Role.Button, onClick = onOpen)
                 } else {
                     Modifier.semantics(mergeDescendants = true) {}
@@ -627,6 +825,13 @@ private fun DownloadRow(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (extras != null && extras.folderState.hasSeveralLocations && location != null) {
+                        Text(
+                            text = stringResource(Res.string.downloads_row_location, location.name),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     resultText(rowStatus)?.let { result ->
                         Text(
                             text = result,
@@ -682,12 +887,32 @@ private fun DownloadRow(
                         }
                         DownloadStatus.Failed -> Unit
                         DownloadStatus.Completed -> {
-                            IconButton(onClick = onOpen) {
-                                Icon(
-                                    imageVector = Icons.Rounded.PlayArrow,
-                                    contentDescription = playDescription,
-                                )
+                            if (selectable) {
+                                Checkbox(checked = selectedHere, onCheckedChange = null)
+                            } else {
+                                if (extras != null && reachable) {
+                                    TextButton(
+                                        onClick = { extras.onMove(setOf(item.id)) },
+                                        modifier = Modifier.semantics { contentDescription = moveDescription },
+                                    ) {
+                                        Text(stringResource(Res.string.downloads_move_to), style = MaterialTheme.typography.labelLarge)
+                                    }
+                                }
+                                IconButton(onClick = onOpen, enabled = reachable) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.PlayArrow,
+                                        contentDescription = playDescription,
+                                    )
+                                }
                             }
+                        }
+                    }
+                    if (extras != null && item.status == DownloadStatus.Paused && item.pausedByFolder) {
+                        TextButton(
+                            onClick = { extras.onChooseLocation(item) },
+                            modifier = Modifier.semantics { contentDescription = chooseLocationDescription },
+                        ) {
+                            Text(stringResource(Res.string.downloads_choose_location), style = MaterialTheme.typography.labelLarge)
                         }
                     }
                     IconButton(onClick = onDelete) {
@@ -1039,7 +1264,7 @@ private fun resultText(status: DownloadRowStatus): String? {
     }
 }
 
-private fun formatBytes(bytes: Long): String {
+internal fun formatBytes(bytes: Long): String {
     if (bytes <= 0L) return "0 ${localizedByteUnit("B")}"
     val kib = 1024.0
     val mib = kib * 1024.0
