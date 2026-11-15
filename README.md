@@ -12,6 +12,8 @@
 
 </div>
 
+> **This is a fork of [NuvioMedia/NuvioDesktop](https://github.com/NuvioMedia/NuvioDesktop).** It adds offline downloads, auto-download, download file checks and play-by-preferences to the desktop app. **[FORK.md](FORK.md) lists what is different**, change by change, with what was tested. The official builds are at the links above; this fork does not publish releases.
+
 ## ⚠️ Alpha Software - Slow Development - Testers Only
 
 Nuvio Desktop is currently in alpha and is intended only for testers. It is under development and is not suitable for daily use.
