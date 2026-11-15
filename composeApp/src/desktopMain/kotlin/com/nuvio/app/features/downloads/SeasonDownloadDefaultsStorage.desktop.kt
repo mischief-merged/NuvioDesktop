@@ -19,4 +19,11 @@ internal actual object SeasonDownloadDefaultsStorage {
     actual fun saveSetupAnswer(profileId: Int, answer: String) {
         store.putString(ProfileScopedKey.of("preference_setup_answer", profileId), answer)
     }
+
+    actual fun loadBatchRunsPayload(profileId: Int): String? =
+        store.getString(ProfileScopedKey.of("batch_runs", profileId))
+
+    actual fun saveBatchRunsPayload(profileId: Int, payload: String) {
+        store.putString(ProfileScopedKey.of("batch_runs", profileId), payload)
+    }
 }

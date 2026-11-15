@@ -46,6 +46,17 @@ import nuvio.composeapp.generated.resources.downloads_delete_message_trash
 import nuvio.composeapp.generated.resources.downloads_delete_not_moved_toast
 import nuvio.composeapp.generated.resources.downloads_delete_title
 import nuvio.composeapp.generated.resources.downloads_choose_another_source
+import nuvio.composeapp.generated.resources.downloads_run_dismiss_description
+import nuvio.composeapp.generated.resources.downloads_choose_another_source_description
+import nuvio.composeapp.generated.resources.downloads_run_problem_failed
+import nuvio.composeapp.generated.resources.downloads_run_problem_not_found
+import nuvio.composeapp.generated.resources.downloads_run_problem_row
+import nuvio.composeapp.generated.resources.downloads_run_failed
+import nuvio.composeapp.generated.resources.downloads_run_not_found
+import nuvio.composeapp.generated.resources.downloads_run_existing
+import nuvio.composeapp.generated.resources.downloads_run_added
+import nuvio.composeapp.generated.resources.downloads_run_title_season
+import nuvio.composeapp.generated.resources.downloads_runs_heading
 import nuvio.composeapp.generated.resources.downloads_clear_failed
 import nuvio.composeapp.generated.resources.downloads_error_not_enough_space
 import nuvio.composeapp.generated.resources.downloads_failed_count
@@ -662,6 +673,112 @@ class DownloadsScreenTest {
             ),
             useUnmergedTree = true,
         ).assertIsDisplayed()
+    }
+
+    private val runKey = "tt1|2"
+
+    private fun runRecord(withProblems: Boolean = true) = BatchRunRecord(
+        key = runKey,
+        kind = BatchRunKind.Season,
+        title = "Pantheon",
+        seasonNumber = 2,
+        added = 3,
+        alreadyThere = 1,
+        notFound = if (withProblems) 1 else 0,
+        failed = if (withProblems) 1 else 0,
+        problems = if (withProblems) {
+            listOf(
+                BatchRunProblem(BatchRunProblemKind.NotFound, "series", "tt1", "series", "tt1:2:4", "Pantheon", seasonNumber = 2, episodeNumber = 4, episodeTitle = "Four"),
+                BatchRunProblem(BatchRunProblemKind.Failed, "series", "tt1", "series", "tt1:2:5", "Pantheon", seasonNumber = 2, episodeNumber = 5),
+            )
+        } else {
+            emptyList()
+        },
+    )
+
+    private fun withStoredRun(record: BatchRunRecord = runRecord(), body: () -> Unit) {
+        val profile = com.nuvio.app.features.profiles.ProfileRepository.activeProfileId
+        BatchRunSummaries.record(profile, record)
+        try {
+            body()
+        } finally {
+            BatchRunSummaries.dismiss(profile, record.key)
+        }
+    }
+
+    @Test
+    fun the_last_season_run_stays_on_the_screen_with_its_counts_and_the_episodes_that_need_attention() {
+        withStoredRun {
+            show()
+
+            compose.onNodeWithText(text(Res.string.downloads_runs_heading)).assertIsDisplayed()
+            compose.onNodeWithText(text(Res.string.downloads_run_title_season, "Pantheon", text(Res.string.episodes_season, 2))).assertIsDisplayed()
+            compose.onNodeWithText(
+                listOf(
+                    text(Res.string.downloads_run_added, 3),
+                    text(Res.string.downloads_run_existing, 1),
+                    text(Res.string.downloads_run_not_found, 1),
+                    text(Res.string.downloads_run_failed, 1),
+                ).joinToString(", "),
+            ).assertIsDisplayed()
+            compose.onNodeWithText(
+                text(Res.string.downloads_run_problem_row, "S2 E4 \u2022 Four", text(Res.string.downloads_run_problem_not_found)),
+            ).assertIsDisplayed()
+            compose.onNodeWithText(
+                text(Res.string.downloads_run_problem_row, "S2 E5", text(Res.string.downloads_run_problem_failed)),
+            ).assertIsDisplayed()
+        }
+    }
+
+    @Test
+    fun an_episode_that_needs_attention_offers_to_choose_another_source() {
+        withStoredRun {
+            show()
+
+            compose.onNodeWithContentDescription(text(Res.string.downloads_choose_another_source_description, "S2 E4 \u2022 Four")).performClick()
+
+            assertEquals("tt1:2:4", chooseSourceFor?.videoId)
+            assertEquals("tt1", chooseSourceFor?.parentMetaId)
+            assertEquals(2, chooseSourceFor?.seasonNumber)
+            assertEquals(4, chooseSourceFor?.episodeNumber)
+        }
+    }
+
+    @Test
+    fun without_a_way_to_open_the_sources_a_run_shows_what_failed_but_no_button() {
+        withStoredRun {
+            show(withChooseSource = false)
+
+            compose.onNodeWithText(text(Res.string.downloads_run_problem_row, "S2 E5", text(Res.string.downloads_run_problem_failed))).assertIsDisplayed()
+            compose.onNodeWithText(text(Res.string.downloads_choose_another_source)).assertDoesNotExist()
+        }
+    }
+
+    @Test
+    fun a_run_is_dismissed_by_name_and_stays_dismissed() {
+        withStoredRun {
+            show()
+
+            compose.onNodeWithContentDescription(
+                text(Res.string.downloads_run_dismiss_description, text(Res.string.downloads_run_title_season, "Pantheon", text(Res.string.episodes_season, 2))),
+            ).performClick()
+            compose.waitForIdle()
+
+            compose.onNodeWithText(text(Res.string.downloads_runs_heading)).assertDoesNotExist()
+            assertTrue(BatchRunSummaries.load(com.nuvio.app.features.profiles.ProfileRepository.activeProfileId).none { it.key == runKey })
+        }
+    }
+
+    @Test
+    fun a_run_without_problems_shows_only_its_counts() {
+        withStoredRun(runRecord(withProblems = false)) {
+            show()
+
+            compose.onNodeWithText(
+                listOf(text(Res.string.downloads_run_added, 3), text(Res.string.downloads_run_existing, 1)).joinToString(", "),
+            ).assertIsDisplayed()
+            compose.onNodeWithText(text(Res.string.downloads_choose_another_source)).assertDoesNotExist()
+        }
     }
 
     @Test

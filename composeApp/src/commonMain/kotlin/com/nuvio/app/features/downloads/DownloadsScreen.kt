@@ -51,6 +51,7 @@ import com.nuvio.app.core.ui.NuvioScreen
 import com.nuvio.app.core.ui.NuvioScreenHeader
 import com.nuvio.app.core.ui.NuvioStatusModal
 import com.nuvio.app.core.ui.NuvioToastController
+import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.isDesktop
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.pluralStringResource
@@ -93,6 +94,11 @@ fun DownloadsScreen(
         }
     }
     val clock = RowClock(nowEpochMs = now, offline = network.isOfflineLike)
+
+    // The last run of each season, movie set and movie downloaded in one go, kept until dismissed.
+    val batchRunProfileId = ProfileRepository.activeProfileId
+    val batchRunRevision by BatchRunSummaries.revision.collectAsStateWithLifecycle()
+    val batchRuns = remember(batchRunProfileId, batchRunRevision) { BatchRunSummaries.load(batchRunProfileId) }
 
     var selectedShowId by rememberSaveable(initialShowId) { mutableStateOf(initialShowId) }
     var downloadPendingDeletionId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -146,6 +152,11 @@ fun DownloadsScreen(
             if (showAutoDownloads) {
                 item { AutoDownloadSection() }
             }
+            batchRunSummaries(
+                runs = batchRuns,
+                onChooseAnotherSource = onChooseAnotherSource,
+                onDismiss = { key -> BatchRunSummaries.dismiss(batchRunProfileId, key) },
+            )
             downloadsRootContent(
                 uiState = uiState,
                 clock = clock,

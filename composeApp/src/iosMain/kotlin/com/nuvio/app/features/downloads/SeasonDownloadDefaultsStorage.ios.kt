@@ -6,6 +6,7 @@ import platform.Foundation.NSUserDefaults
 internal actual object SeasonDownloadDefaultsStorage {
     private const val payloadKey = "season_download_defaults_payload"
     private const val setupAnswerKey = "preference_setup_answer"
+    private const val batchRunsKey = "batch_runs_payload"
 
     actual fun loadPayload(profileId: Int): String? =
         NSUserDefaults.standardUserDefaults.stringForKey(ProfileScopedKey.of(payloadKey, profileId))
@@ -19,5 +20,12 @@ internal actual object SeasonDownloadDefaultsStorage {
 
     actual fun saveSetupAnswer(profileId: Int, answer: String) {
         NSUserDefaults.standardUserDefaults.setObject(answer, forKey = ProfileScopedKey.of(setupAnswerKey, profileId))
+    }
+
+    actual fun loadBatchRunsPayload(profileId: Int): String? =
+        NSUserDefaults.standardUserDefaults.stringForKey(ProfileScopedKey.of(batchRunsKey, profileId))
+
+    actual fun saveBatchRunsPayload(profileId: Int, payload: String) {
+        NSUserDefaults.standardUserDefaults.setObject(payload, forKey = ProfileScopedKey.of(batchRunsKey, profileId))
     }
 }
