@@ -1630,6 +1630,14 @@ internal fun MainAppContent(
                         animatedVisibilityScope = LocalNavAnimatedContentScope.current,
                     )
                 }
+                entry<EpisodeDetailRoute> { route ->
+                    EpisodeDestination(
+                        route = route,
+                        navController = navController,
+                        onPlay = onPlay,
+                        onPlayManually = onPlayManually,
+                    )
+                }
                 entry<PersonDetailRoute> { route ->
                     PersonDestination(
                         route = route,

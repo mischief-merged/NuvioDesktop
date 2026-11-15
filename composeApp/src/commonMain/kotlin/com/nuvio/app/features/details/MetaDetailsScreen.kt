@@ -2177,7 +2177,7 @@ private fun selectedSeasonLabel(season: Int): String =
         stringResource(Res.string.episodes_season, season)
     }
 
-private fun isEpisodeWatchedForActions(
+internal fun isEpisodeWatchedForActions(
     meta: MetaDetails,
     episode: MetaVideo,
     watchedKeys: Set<String>,

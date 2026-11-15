@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
+import com.nuvio.app.features.details.EpisodeDetailsScreen
 import com.nuvio.app.features.details.MetaDetailsScreen
 import com.nuvio.app.features.details.PersonDetailScreen
 import com.nuvio.app.features.details.TmdbEntityBrowseScreen
@@ -15,6 +16,7 @@ import com.nuvio.app.features.tmdb.TmdbEntityKind
 import com.nuvio.app.features.tmdb.TmdbService
 import com.nuvio.app.navigation.DetailRoute
 import com.nuvio.app.navigation.EntityBrowseRoute
+import com.nuvio.app.navigation.EpisodeDetailRoute
 import com.nuvio.app.navigation.NuvioNavigator
 import com.nuvio.app.navigation.PersonDetailRoute
 import kotlinx.coroutines.launch
@@ -121,6 +123,78 @@ internal fun DetailsDestination(
         },
         sharedTransitionScope = sharedTransitionScope,
         animatedVisibilityScope = animatedVisibilityScope,
+        modifier = Modifier.fillMaxSize(),
+    )
+}
+
+/**
+ * Opens the show page from an episode page, replacing the pages above it so Back from the show
+ * does not walk through the episodes again. A show page of the same show right below is reused.
+ */
+internal fun NuvioNavigator.openShowFromEpisode(
+    route: EpisodeDetailRoute,
+    showTitle: String?,
+    season: Int? = null,
+) {
+    var pops = 0
+    while (currentRoute is EpisodeDetailRoute && routes.size > 1 && pops < 64) {
+        popBackStack()
+        pops++
+    }
+    val top = currentRoute
+    if (top is DetailRoute && top.type == route.type && top.id == route.id) {
+        if (top.season == season && top.focusVideoId == null) return
+        popBackStack(expectedRoute = top)
+    }
+    navigate(
+        DetailRoute(
+            type = route.type,
+            id = route.id,
+            title = showTitle ?: route.title,
+            season = season,
+        ),
+    )
+}
+
+/** Opens another episode page in place of the current one, so pages do not pile up. */
+internal fun NuvioNavigator.replaceWithEpisode(route: EpisodeDetailRoute) {
+    if (currentRoute == route) return
+    navigate(route) { popUpTo<EpisodeDetailRoute> { inclusive = true } }
+}
+
+@Composable
+internal fun EpisodeDestination(
+    route: EpisodeDetailRoute,
+    navController: NuvioNavigator,
+    onPlay: ContentPlayAction,
+    onPlayManually: ContentPlayAction,
+) {
+    val onBack = rememberGuardedPopBackStack(navController, route)
+    EpisodeDetailsScreen(
+        type = route.type,
+        id = route.id,
+        videoId = route.videoId,
+        season = route.season,
+        episode = route.episode,
+        onBack = onBack,
+        onOpenShow = { navController.openShowFromEpisode(route, route.title) },
+        onOpenSeason = { seasonNumber ->
+            navController.openShowFromEpisode(route, route.title, season = seasonNumber)
+        },
+        onOpenEpisode = { video ->
+            navController.replaceWithEpisode(
+                EpisodeDetailRoute(
+                    type = route.type,
+                    id = route.id,
+                    videoId = video.id,
+                    season = video.season,
+                    episode = video.episode,
+                    title = route.title,
+                ),
+            )
+        },
+        onPlay = onPlay,
+        onPlayManually = onPlayManually,
         modifier = Modifier.fillMaxSize(),
     )
 }

@@ -1,5 +1,7 @@
 package com.nuvio.app.features.details
 
+import com.nuvio.app.core.time.isEpisodeReleaseAired
+
 /** Where an episode sits in a show, used by the episode page for its trail and neighbours. */
 internal data class EpisodeTrail(
     val showName: String,
@@ -54,3 +56,14 @@ internal fun MetaDetails.trailFor(video: MetaVideo): EpisodeTrail =
         episodeNumber = video.episode,
         episodeTitle = video.title,
     )
+
+/** True when the episode can be played now: listed as available and not dated in the future. */
+internal fun MetaVideo.isPlayableNow(nowEpochMs: Long? = null): Boolean {
+    if (!available) return false
+    val aired = if (nowEpochMs == null) {
+        isEpisodeReleaseAired(released)
+    } else {
+        isEpisodeReleaseAired(released, nowEpochMs)
+    }
+    return aired != false
+}

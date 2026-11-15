@@ -2968,4 +2968,26 @@
     <string name="settings_download_speed_limit_description">Caps how fast downloads run, in megabytes per second (MB/s).</string>
     <string name="settings_download_speed_limit_unlimited">Unlimited</string>
     <string name="settings_download_speed_limit_value">%1$d MB/s</string>
+    <string name="episode_page_not_found_title">Episode not found</string>
+    <string name="episode_page_not_found_message">This episode is no longer listed for the show.</string>
+    <string name="episode_page_go_to_show">Go to show</string>
+    <string name="episode_page_trail_show">Go to show %1$s</string>
+    <string name="episode_page_trail_season">Go to %1$s</string>
+    <string name="episode_page_trail_current">Current episode: %1$s</string>
+    <string name="episode_page_episode_label">Episode %1$d</string>
+    <string name="episode_page_episode_unnumbered">Episode</string>
+    <string name="episode_page_rating">Rating %1$s</string>
+    <string name="episode_page_play_not_released">Not released yet</string>
+    <string name="episode_page_play_not_released_date">Not released yet, airs %1$s</string>
+    <string name="episode_page_previous">Previous episode</string>
+    <string name="episode_page_next">Next episode</string>
+    <string name="episode_page_no_previous">No earlier episodes</string>
+    <string name="episode_page_no_next">No later episodes</string>
+    <string name="episode_page_more_from">More from %1$s</string>
+    <string name="episode_page_current_marker">Current episode</string>
+    <string name="episode_page_open_episode">Open %1$s</string>
+    <string name="episode_page_overview_missing">No description available.</string>
+    <string name="nav_episode_details">Episode details</string>
+    <string name="nav_go_to_episode">Go to episode</string>
+    <string name="nav_go_to_season">Go to season</string>
 </resources>
