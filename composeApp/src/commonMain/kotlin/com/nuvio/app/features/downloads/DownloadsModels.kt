@@ -19,6 +19,22 @@ enum class DownloadStatus {
     Failed,
 }
 
+/** Why a download failed, kept so a retry can do the right thing. Not stored for a download that failed before this was recorded. */
+@Serializable
+enum class DownloadFailureKind {
+    /** The source gave a file that did not pass its checks. Fetching it again gives the same file. */
+    BadFile,
+
+    /** The source refused the request, or the link no longer works. */
+    SourceRefused,
+
+    /** The disk had too little room for the file. */
+    NotEnoughSpace,
+
+    /** Anything else: a lost connection, a server error, a file that went missing. Trying again may work. */
+    Other,
+}
+
 @Serializable
 data class DownloadItem(
     val id: String,
@@ -71,9 +87,16 @@ data class DownloadItem(
     val autoDownloadRuleKey: String? = null,
     /** The limit that paused this automatic download. Cleared when it is resumed. */
     val autoDownloadStop: AutoDownloadStop? = null,
+    /** Why this download failed. Null for a download that is not failed, or failed before this was recorded. */
+    val failureKind: DownloadFailureKind? = null,
 ) {
     val isEpisode: Boolean
         get() = seasonNumber != null && episodeNumber != null
+
+    /** A failed download whose source is the problem, so that trying the same source again cannot help. */
+    val needsAnotherSource: Boolean
+        get() = status == DownloadStatus.Failed &&
+            (failureKind == DownloadFailureKind.BadFile || failureKind == DownloadFailureKind.SourceRefused)
 
     val isPlayable: Boolean
         get() = status == DownloadStatus.Completed && !localFileUri.isNullOrBlank()
@@ -97,8 +120,22 @@ data class DownloadItem(
         }
 }
 
+/** What went wrong with the stored list of downloads when it was loaded. */
+enum class DownloadsStoreProblem {
+    /** The list could not be read and was kept aside. An earlier copy of it is shown instead. */
+    EarlierCopyShown,
+
+    /** The list could not be read and was kept aside. Nothing could be read in its place, so the list starts empty. */
+    StartedEmpty,
+
+    /** The list could not be read and could not be kept aside. It is left as it is, and nothing is saved until the app restarts. */
+    NotSaving,
+}
+
 data class DownloadsUiState(
     val items: List<DownloadItem> = emptyList(),
+    /** Set when the stored list could not be read. The screen must not present the list as simply empty then. */
+    val storeProblem: DownloadsStoreProblem? = null,
 ) {
     val activeItems: List<DownloadItem>
         get() = items.filter { it.status != DownloadStatus.Completed }
