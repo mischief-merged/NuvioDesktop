@@ -48,24 +48,14 @@ internal object SeasonBatchDownloads {
         fetchStreams = { episode -> MetaDetailsRepository.findEmbeddedStreams(episode.videoId) },
         fetchFallbackStreams = ::fetchAddonStreams,
         prepareStream = ::prepareStream,
-        enqueue = { request, episode, stream ->
-            DownloadsRepository.enqueueFromStream(
-                contentType = request.contentType,
-                videoId = episode.videoId,
-                parentMetaId = request.parentMetaId,
-                parentMetaType = request.parentMetaType,
-                title = request.title,
-                logo = request.logo,
-                poster = request.poster,
-                background = request.background,
-                seasonNumber = episode.seasonNumber,
-                episodeNumber = episode.episodeNumber,
-                episodeTitle = episode.title,
-                episodeThumbnail = episode.thumbnail,
-                stream = stream,
-            )
+        enqueue = { request, episode, stream -> enqueueEpisode(request, episode, stream) },
+        onFinished = { request, summary ->
+            if (request.autoDownloadRuleKey == null) {
+                NuvioToastController.show(summary.toastMessage())
+            } else {
+                AutoDownloads.onBatchFinished(request, summary)
+            }
         },
-        onFinished = { _, summary -> NuvioToastController.show(summary.toastMessage()) },
         discard = { item -> DownloadsRepository.cancelDownload(item.id) },
         verifyCompleted = { item -> DownloadsRepository.verifyCompletedDownload(item.id) },
         inspect = DownloadsRepository::inspectCompletedDownload,
@@ -73,6 +63,38 @@ internal object SeasonBatchDownloads {
     )
 
     val running: StateFlow<Map<String, SeasonBatchProgress>> get() = downloader.running
+
+    /**
+     * Queues one episode of a batch. A source that an automatic download may not use because of its
+     * address is reported through [onPrivateSourceSkipped], apart from the refusal itself, so the
+     * rule can say why it has nothing.
+     */
+    internal fun enqueueEpisode(
+        request: SeasonBatchRequest,
+        episode: SeasonBatchEpisode,
+        stream: StreamItem,
+        onPrivateSourceSkipped: (SeasonBatchRequest, SeasonBatchEpisode) -> Unit = AutoDownloads::onPrivateSourceSkipped,
+    ): DownloadEnqueueResult {
+        if (request.autoDownloadRuleKey != null && stream.playableDirectUrl?.hasPublicDownloadHost() == false) {
+            onPrivateSourceSkipped(request, episode)
+        }
+        return DownloadsRepository.enqueueFromStream(
+            contentType = request.contentType,
+            videoId = episode.videoId,
+            parentMetaId = request.parentMetaId,
+            parentMetaType = request.parentMetaType,
+            title = request.title,
+            logo = request.logo,
+            poster = request.poster,
+            background = request.background,
+            seasonNumber = episode.seasonNumber,
+            episodeNumber = episode.episodeNumber,
+            episodeTitle = episode.title,
+            episodeThumbnail = episode.thumbnail,
+            stream = stream,
+            autoDownloadRuleKey = request.autoDownloadRuleKey,
+        )
+    }
 
     fun start(request: SeasonBatchRequest): SeasonBatchStart {
         DownloadsRepository.ensureLoaded()

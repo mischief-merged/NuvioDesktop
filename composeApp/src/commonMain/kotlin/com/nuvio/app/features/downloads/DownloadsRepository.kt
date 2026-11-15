@@ -118,6 +118,18 @@ object DownloadsRepository {
         }
     }
 
+    /** The finished download whose file is [localFileUri], in either spelling of a file address. */
+    internal fun findCompletedDownloadByLocalFile(localFileUri: String): DownloadItem? {
+        ensureLoaded()
+        val wanted = localFileUri.localFilePath().takeIf { it.isNotBlank() } ?: return null
+        return _uiState.value.items.firstOrNull { item ->
+            item.status == DownloadStatus.Completed && (
+                item.localFileUri?.localFilePath() == wanted ||
+                    backend.resolveLocalFileUri(item.localFileUri, item.fileName)?.localFilePath() == wanted
+                )
+        }
+    }
+
     fun playableLocalFileUri(item: DownloadItem): String? {
         ensureLoaded()
         if (item.status != DownloadStatus.Completed) return null
@@ -156,6 +168,7 @@ object DownloadsRepository {
         episodeTitle: String?,
         episodeThumbnail: String?,
         stream: StreamItem,
+        autoDownloadRuleKey: String? = null,
     ): DownloadEnqueueResult = synchronized(stateLock) {
         ensureLoaded()
 
@@ -165,6 +178,11 @@ object DownloadsRepository {
             ?: return DownloadEnqueueResult.MissingUrl
 
         if (!sourceUrl.isSupportedDownloadUrl()) {
+            return DownloadEnqueueResult.UnsupportedFormat
+        }
+        // Nobody looks at the address of a download that starts by itself, so it may only go to a
+        // public host.
+        if (autoDownloadRuleKey != null && !sourceUrl.hasPublicDownloadHost()) {
             return DownloadEnqueueResult.UnsupportedFormat
         }
 
@@ -234,6 +252,7 @@ object DownloadsRepository {
             updatedAtEpochMs = now,
             expectedVideoHash = stream.behaviorHints.videoHash.asVideoHash(),
             expectedSizeBytes = stream.behaviorHints.videoSize?.takeIf { it > 0L },
+            autoDownloadRuleKey = autoDownloadRuleKey,
         )
 
         currentItems.add(0, item)
@@ -727,7 +746,7 @@ private object DownloadsCodec {
         val records = mutableMapOf<String, StoredRecord>()
         val unreadable = mutableListOf<JsonElement>()
         stored.forEach { element ->
-            val item = runCatching { json.decodeFromJsonElement<DownloadItem>(element) }.getOrNull()
+            val item = runCatching { json.decodeFromJsonElement<DownloadItem>(element.withCurrentAutoDownloadFields()) }.getOrNull()
             if (item == null || item.id in records) {
                 unreadable += element
             } else {
@@ -736,6 +755,20 @@ private object DownloadsCodec {
             }
         }
         return Decoded(items, root, records, unreadable)
+    }
+
+    /**
+     * A record of an automatic download as an earlier build wrote it: the rule in `ruleKey` beside
+     * `origin` AUTO. It is read as the same download with its rule in the field used now. The
+     * earlier fields stay in the stored record, so that build still reads what this one writes.
+     */
+    private fun JsonElement.withCurrentAutoDownloadFields(): JsonElement {
+        val record = this as? JsonObject ?: return this
+        if ("autoDownloadRuleKey" in record) return this
+        val origin = (record["origin"] as? JsonPrimitive)?.contentOrNull
+        val ruleKey = (record["ruleKey"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+        if (origin != "AUTO" || ruleKey == null) return this
+        return JsonObject(record + ("autoDownloadRuleKey" to JsonPrimitive(ruleKey)))
     }
 
     /**
@@ -852,6 +885,9 @@ private fun String.fileExtensionFromUrl(): String {
         "mp4"
     }
 }
+
+/** A file address without its scheme and leading slashes, so file:/a and file:///a compare equal. */
+private fun String.localFilePath(): String = trim().removePrefix("file:").trimStart('/')
 
 internal fun String.isSupportedDownloadUrl(): Boolean {
     val normalized = trim().lowercase()

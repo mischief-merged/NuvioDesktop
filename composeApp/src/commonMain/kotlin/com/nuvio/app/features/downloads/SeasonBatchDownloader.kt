@@ -63,6 +63,8 @@ internal data class SeasonBatchRequest(
     val maxBitrateMbps: Int? = null,
     /** Sources tagged only with other languages are skipped. Null means any language. */
     val audioLanguage: DebridStreamLanguage? = null,
+    /** Set when an automatic-download rule asked for these episodes, not the user. */
+    val autoDownloadRuleKey: String? = null,
 )
 
 internal enum class SeasonBatchEpisodeResult {

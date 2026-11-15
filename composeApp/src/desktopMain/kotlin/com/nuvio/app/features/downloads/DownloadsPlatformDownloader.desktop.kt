@@ -12,15 +12,18 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.downloads_error_private_address
+import org.jetbrains.compose.resources.getString
 import java.awt.Desktop
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.security.MessageDigest
-import kotlinx.coroutines.runBlocking
-import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.downloads_error_file_checksum
-import org.jetbrains.compose.resources.getString
+import java.net.Inet6Address
+import java.net.InetAddress
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -167,6 +170,11 @@ internal actual object DownloadsPlatformDownloader {
         tempFile: File,
         onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
     ): Transferred {
+        // The address check at queue time reads only the text of the URL. Here the name is resolved.
+        if (request.item.autoDownloadRuleKey != null && !resolvesToPublicAddresses(request.sourceUrl)) {
+            error(runBlocking { getString(Res.string.downloads_error_private_address) })
+        }
+
         var resumeFromBytes = tempFile.partialLength()
         var attemptedRangeRequest = resumeFromBytes > 0L
         var response = sendDownloadRequest(request, if (attemptedRangeRequest) resumeFromBytes else null)
@@ -279,6 +287,25 @@ internal actual object DownloadsPlatformDownloader {
         }
         return desktopDownloadHttpClient.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream())
     }
+}
+
+/** False when the host of [url] cannot be resolved or any of its addresses is not a public one. */
+private fun resolvesToPublicAddresses(url: String): Boolean {
+    val addresses = runCatching { InetAddress.getAllByName(URI(url).host) }.getOrNull()
+    return !addresses.isNullOrEmpty() && addresses.none(::isPrivateNetworkAddress)
+}
+
+/** Loopback, link-local, private-network and carrier-shared addresses, and the unspecified address. */
+internal fun isPrivateNetworkAddress(address: InetAddress): Boolean {
+    val bytes = address.address
+    val first = bytes[0].toInt() and 0xff
+    val second = bytes[1].toInt() and 0xff
+    return address.isLoopbackAddress ||
+        address.isAnyLocalAddress ||
+        address.isLinkLocalAddress ||
+        address.isSiteLocalAddress ||
+        (address is Inet6Address && (first and 0xfe) == 0xfc) ||
+        (bytes.size == 4 && (first == 0 || (first == 100 && second in 64..127)))
 }
 
 private fun openDirectoryWithPlatformCommand(directory: File): Boolean {

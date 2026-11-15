@@ -3,6 +3,7 @@ package com.nuvio.app.features.details.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -11,7 +12,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import com.nuvio.app.core.build.AppFeaturePolicy
@@ -36,11 +37,16 @@ import com.nuvio.app.core.ui.DialogButtonStyle
 import com.nuvio.app.core.ui.DialogButtons
 import com.nuvio.app.core.ui.DialogOption
 import com.nuvio.app.core.ui.DialogSurface
+import com.nuvio.app.core.ui.Menu
+import com.nuvio.app.core.ui.MenuItem
 import com.nuvio.app.core.ui.NuvioToastController
 import com.nuvio.app.core.ui.NuvioTokens
 import com.nuvio.app.core.ui.nuvio
 import com.nuvio.app.features.debrid.DebridStreamLanguage
 import com.nuvio.app.features.details.MetaDetails
+import com.nuvio.app.features.downloads.AutoDownloadController
+import com.nuvio.app.features.downloads.AutoDownloads
+import com.nuvio.app.features.downloads.autoDownloadRuleKey
 import com.nuvio.app.features.downloads.BatchQuality
 import com.nuvio.app.features.downloads.SeasonBatchDownloads
 import com.nuvio.app.features.downloads.SeasonBatchProgress
@@ -60,10 +66,16 @@ import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.stringResource
 
 /**
- * "Download season" action for the season header. Desktop only. Asks once for quality, maximum
- * bitrate and audio language, starting from the last saved choices, then adds every released episode
- * of the season to the normal downloads queue. While the season is being added the button itself
- * shows how far it is and one click on it stops.
+ * "Download" control for the season header. Desktop only. It opens a menu with two actions.
+ *
+ * "Download season" asks once for quality, maximum bitrate and audio language, starting from the
+ * last saved choices, then adds every released episode of the season to the normal downloads queue.
+ * "Auto-download" opens the show's automatic-download rule.
+ *
+ * The control always opens the menu and itself shows what is going on: for a show with an
+ * automatic-download rule its label and its state description say that the rule is on, and while
+ * the season is being added they show how far it is. The menu's first entry is then
+ * "Stop (n/total)", and "Auto-download" stays within reach.
  */
 @Composable
 internal fun SeasonDownloadButton(
@@ -74,6 +86,7 @@ internal fun SeasonDownloadButton(
     startBatch: (SeasonBatchRequest) -> SeasonBatchStart = SeasonBatchDownloads::start,
     running: StateFlow<Map<String, SeasonBatchProgress>> = SeasonBatchDownloads.running,
     cancelBatch: (parentMetaId: String, seasonNumber: Int) -> Unit = SeasonBatchDownloads::cancel,
+    autoDownloads: AutoDownloadController = AutoDownloads,
 ) {
     if (!isDesktop || !AppFeaturePolicy.downloadsEnabled || meta.type != "series") return
 
@@ -89,38 +102,93 @@ internal fun SeasonDownloadButton(
         stringResource(Res.string.episodes_season, seasonNumber)
     }
     val dialogTitle = stringResource(Res.string.downloads_season_dialog_title, seasonLabel)
-    val buttonLabel = if (progress != null) {
-        stringResource(Res.string.downloads_season_stop, progress.finished, progress.total)
-    } else {
-        stringResource(Res.string.downloads_season_button)
-    }
-    val buttonDescription = if (progress != null) buttonLabel else dialogTitle
+    val autoDownloadRules by autoDownloads.rules.collectAsState()
+    val autoDownloadRule = autoDownloadRules.firstOrNull { it.key == autoDownloadRuleKey(meta.type, meta.id) }
+    val autoDownloadLabel = stringResource(
+        if (autoDownloadRule != null) Res.string.downloads_auto_button_on else Res.string.downloads_auto_button,
+    )
+    val autoDownloadState = stringResource(
+        if (autoDownloadRule != null) Res.string.downloads_auto_button_on else Res.string.downloads_auto_button_off,
+    )
+    val idleLabel = stringResource(
+        if (autoDownloadRule != null) Res.string.downloads_button_auto_on else Res.string.downloads_season_start,
+    )
+    // The control always opens the menu, so the rule stays within reach while a season is being
+    // added. Its label and state then show how far the season is, and the menu's first entry stops.
+    val buttonLabel = progress
+        ?.let { stringResource(Res.string.downloads_button_running, idleLabel, it.finished, it.total) }
+        ?: idleLabel
+    val buttonState = progress
+        ?.let { stringResource(Res.string.downloads_button_state_running, autoDownloadState, it.finished, it.total) }
+        ?: autoDownloadState
+    val stopLabel = progress?.let { stringResource(Res.string.downloads_season_stop, it.finished, it.total) }
+    val seasonActionLabel = stopLabel ?: stringResource(Res.string.downloads_season_button)
+    var menuOpen by remember { mutableStateOf(false) }
+    // The profile the automatic-download dialog was opened for, while it is open.
+    var autoDownloadDialogProfileId by remember { mutableStateOf<Int?>(null) }
     val startedText = stringResource(Res.string.downloads_season_started)
     val nothingToDownloadText = stringResource(Res.string.downloads_season_nothing)
     val alreadyRunningText = stringResource(Res.string.downloads_season_already_running)
 
-    TextButton(
-        modifier = modifier.semantics { contentDescription = buttonDescription },
-        onClick = {
-            if (progress != null) {
-                cancelBatch(meta.id, seasonNumber)
-            } else {
-                openChoices = SeasonDownloadChoices(profileId)
-            }
-        },
-        contentPadding = PaddingValues(horizontal = NuvioTokens.Space.s12, vertical = NuvioTokens.Space.s6),
-    ) {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s8),
-            verticalAlignment = Alignment.CenterVertically,
+    Box(modifier = modifier) {
+        TextButton(
+            modifier = Modifier.semantics {
+                contentDescription = buttonLabel
+                stateDescription = buttonState
+            },
+            onClick = { menuOpen = true },
+            contentPadding = PaddingValues(horizontal = NuvioTokens.Space.s12, vertical = NuvioTokens.Space.s6),
         ) {
-            Icon(
-                imageVector = if (progress != null) Icons.Rounded.Close else Icons.Rounded.Download,
-                contentDescription = null,
-                modifier = Modifier.size(tokens.icons.sm),
-            )
-            Text(text = buttonLabel, style = MaterialTheme.typography.labelLarge)
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s8),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Download,
+                    contentDescription = null,
+                    modifier = Modifier.size(tokens.icons.sm),
+                )
+                Text(text = buttonLabel, style = MaterialTheme.typography.labelLarge)
+            }
         }
+        Menu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            MenuItem(
+                text = seasonActionLabel,
+                modifier = Modifier.semantics {
+                    role = Role.Button
+                    contentDescription = stopLabel ?: dialogTitle
+                },
+                onClick = {
+                    menuOpen = false
+                    if (progress != null) {
+                        cancelBatch(meta.id, seasonNumber)
+                    } else {
+                        openChoices = SeasonDownloadChoices(profileId)
+                    }
+                },
+            )
+            MenuItem(
+                text = autoDownloadLabel,
+                modifier = Modifier.semantics {
+                    role = Role.Button
+                    contentDescription = autoDownloadLabel
+                },
+                onClick = {
+                    menuOpen = false
+                    autoDownloadDialogProfileId = profileId
+                },
+            )
+        }
+    }
+
+    autoDownloadDialogProfileId?.let { dialogProfileId ->
+        AutoDownloadDialog(
+            meta = meta,
+            rule = autoDownloadRule,
+            profileId = dialogProfileId,
+            controller = autoDownloads,
+            onDismiss = { autoDownloadDialogProfileId = null },
+        )
     }
 
     val choices = openChoices

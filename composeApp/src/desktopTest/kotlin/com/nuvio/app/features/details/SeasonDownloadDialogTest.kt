@@ -4,6 +4,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -11,12 +14,17 @@ import androidx.compose.ui.test.performClick
 import com.nuvio.app.core.ui.NuvioTheme
 import com.nuvio.app.features.debrid.DebridStreamLanguage
 import com.nuvio.app.features.details.components.SeasonDownloadButton
+import com.nuvio.app.features.downloads.AutoDownloadController
+import com.nuvio.app.features.downloads.AutoDownloadRule
+import com.nuvio.app.features.downloads.AutoDownloadScope
+import com.nuvio.app.features.downloads.AutoDownloadStatus
 import com.nuvio.app.features.downloads.BatchQuality
 import com.nuvio.app.features.downloads.SeasonBatchRequest
 import com.nuvio.app.features.downloads.SeasonBatchStart
 import com.nuvio.app.features.downloads.SeasonDownloadDefaults
 import com.nuvio.app.features.downloads.SeasonDownloadDefaultsRepository
 import com.nuvio.app.features.downloads.SeasonDownloadDefaultsStorage
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.action_cancel
@@ -114,7 +122,7 @@ class SeasonDownloadDialogTest {
 
         compose.onNodeWithText(bitrate(10)).performClick()
         compose.onNodeWithText(bitrate(25)).performClick()
-        compose.onNodeWithText(text(Res.string.downloads_season_start)).performClick()
+        confirmButton().performClick()
 
         assertEquals(saved.copy(maxBitrateMbps = 25), SeasonDownloadDefaultsRepository.load(profile))
         val request = requests.single()
@@ -139,7 +147,7 @@ class SeasonDownloadDialogTest {
         compose.runOnIdle { shownProfile = otherProfile }
         compose.waitForIdle()
         compose.onNodeWithText(text(Res.string.downloads_season_quality_720)).assertIsDisplayed()
-        compose.onNodeWithText(text(Res.string.downloads_season_start)).performClick()
+        confirmButton().performClick()
 
         assertEquals(saved.copy(quality = BatchQuality.P720), SeasonDownloadDefaultsRepository.load(profile))
         assertEquals(otherSaved, SeasonDownloadDefaultsRepository.load(otherProfile))
@@ -158,6 +166,7 @@ class SeasonDownloadDialogTest {
                         requests += request
                         SeasonBatchStart.Started
                     },
+                    autoDownloads = NoAutoDownloads,
                 )
             }
         }
@@ -165,7 +174,23 @@ class SeasonDownloadDialogTest {
 
     private fun openDialog() {
         val season = text(Res.string.episodes_season, 1)
+        compose.onNodeWithText(text(Res.string.downloads_season_start)).performClick()
         compose.onNodeWithContentDescription(text(Res.string.downloads_season_dialog_title, season)).performClick()
+    }
+
+    /** The dialog's Download button. The button that opens the menu has the same label. */
+    private fun confirmButton() =
+        compose.onNode(hasText(text(Res.string.downloads_season_start)) and hasAnyAncestor(isDialog()))
+
+    private object NoAutoDownloads : AutoDownloadController {
+        override val rules = MutableStateFlow(emptyList<AutoDownloadRule>())
+        override val statuses = MutableStateFlow(emptyMap<String, AutoDownloadStatus>())
+
+        override fun save(profileId: Int, meta: MetaDetails, keepCount: Int, scope: AutoDownloadScope) = Unit
+
+        override fun turnOff(profileId: Int, ruleKey: String) = Unit
+
+        override fun checkNow() = Unit
     }
 
     private fun bitrate(megabitsPerSecond: Int): String = text(Res.string.downloads_season_bitrate_value, megabitsPerSecond)
