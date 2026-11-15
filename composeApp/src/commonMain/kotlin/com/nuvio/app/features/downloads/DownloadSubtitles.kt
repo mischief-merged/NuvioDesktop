@@ -30,7 +30,8 @@ internal data class SubtitleSaveResult(
 )
 
 internal object DownloadSubtitles {
-    private val json = Json { ignoreUnknownKeys = true }
+    // Defaults are written too, so that an older reader sees every field it knows.
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     /** Fetches the text of a subtitle. Replaced in tests. */
     internal var fetchText: suspend (url: String, headers: Map<String, String>) -> String =
@@ -42,6 +43,19 @@ internal object DownloadSubtitles {
 
     /** A look that found no subtitle at all is repeated only after this long. */
     const val RECHECK_EMPTY_AGE_MS = 7L * 24 * 60 * 60 * 1000
+
+    /** A track that could not be fetched is tried again after this long, and after longer with each further failure. */
+    const val RETRY_COOLDOWN_MS = 30L * 60 * 1000
+
+    /** How long a track that failed [attempts] times in a row waits: four times longer each time, at most [RECHECK_EMPTY_AGE_MS]. */
+    fun cooldownAfter(attempts: Int): Long {
+        var cooldown = RETRY_COOLDOWN_MS
+        repeat((attempts - 1).coerceAtLeast(0)) {
+            if (cooldown >= RECHECK_EMPTY_AGE_MS) return RECHECK_EMPTY_AGE_MS
+            cooldown *= 4
+        }
+        return cooldown.coerceAtMost(RECHECK_EMPTY_AGE_MS)
+    }
 
     /** Whether the item names anywhere to get subtitles from. */
     fun hasSources(item: DownloadItem): Boolean = item.subtitleRequests.isNotEmpty() || item.sourceSubtitles.isNotEmpty()
@@ -63,12 +77,20 @@ internal object DownloadSubtitles {
         val manifest = readManifest(storage)
         val saved = manifest.tracks.count { storage.localFileUri(it.fileName) != null }
         return when {
-            !manifest.complete -> true
+            // A look that was never finished (the app was closed in the middle of it).
+            !manifest.complete && manifest.failed.isEmpty() -> true
             saved < manifest.tracks.size -> true
+            // Tracks that failed are tried again, each after its own cooldown.
+            manifest.failed.isNotEmpty() -> manifest.failed.any { failureIsDue(it, nowEpochMs) }
             saved > 0 -> false
             manifest.checkedAtEpochMs <= 0L -> true
             else -> nowEpochMs - manifest.checkedAtEpochMs !in 0 until RECHECK_EMPTY_AGE_MS
         }
+    }
+
+    private fun failureIsDue(failure: FailedSubtitle, nowEpochMs: Long): Boolean {
+        val age = nowEpochMs - failure.atEpochMs
+        return age < 0 || age >= cooldownAfter(failure.attempts)
     }
 
     /**
@@ -76,7 +98,12 @@ internal object DownloadSubtitles {
      * [recheck] a manifest that says "complete" is still looked at again, so that what could not be
      * fetched at the start is tried when the video is done.
      */
-    suspend fun prepare(item: DownloadItem, localVideoUri: String, recheck: Boolean = false): SubtitleSaveResult = withContext(Dispatchers.Default) {
+    suspend fun prepare(
+        item: DownloadItem,
+        localVideoUri: String,
+        recheck: Boolean = false,
+        nowEpochMs: Long = DownloadsClock.nowEpochMs(),
+    ): SubtitleSaveResult = withContext(Dispatchers.Default) {
         val storage = DownloadSubtitleStorage(localVideoUri)
         val manifest = readManifest(storage)
         val saved = manifest.tracks.filter { storage.localFileUri(it.fileName) != null }.toMutableList()
@@ -84,6 +111,9 @@ internal object DownloadSubtitles {
             return@withContext SubtitleSaveResult(saved.size, 0, 0)
         }
         val before = saved.size
+        val previousFailed = manifest.failed.associateBy { it.sourceUrl }
+        val newFailures = mutableListOf<FailedSubtitle>()
+        val attempted = mutableSetOf<String>()
         var unreachable = 0
         var nextFileIndex = (saved.maxOfOrNull { it.fileName.substringBefore('.').toIntOrNull() ?: -1 } ?: -1) + 1
         val addonSubtitles = loadAddon(item.subtitleRequests).map {
@@ -93,8 +123,11 @@ internal object DownloadSubtitles {
             .distinctBy { it.url }
             .filter { subtitle ->
                 (subtitle.url.startsWith("https://", true) || subtitle.url.startsWith("http://", true)) &&
-                    saved.none { it.sourceUrl == subtitle.url }
+                    saved.none { it.sourceUrl == subtitle.url } &&
+                    // A track that failed waits out its cooldown.
+                    previousFailed[subtitle.url]?.let { failureIsDue(it, nowEpochMs) } != false
             }
+        attempted += pending.map { it.url }
         for (batch in pending.chunked(4)) {
             val fetched = coroutineScope {
                 batch.map { subtitle ->
@@ -119,7 +152,10 @@ internal object DownloadSubtitles {
             for ((subtitle, body, failed) in fetched) {
                 currentCoroutineContext().ensureActive()
                 if (body == null) {
-                    if (failed) unreachable++
+                    if (failed) {
+                        unreachable++
+                        newFailures += FailedSubtitle(subtitle.url, nowEpochMs, (previousFailed[subtitle.url]?.attempts ?: 0) + 1)
+                    }
                     continue
                 }
                 val extension = PlayerSubtitleCueParser.fileExtension(body, subtitle.url)
@@ -127,7 +163,7 @@ internal object DownloadSubtitles {
                 try {
                     storage.write(fileName, body)
                     saved += DownloadedSubtitle(subtitle.url, fileName, subtitle.language, subtitle.name)
-                    storage.write("manifest.json", json.encodeToString(SubtitleManifest(tracks = saved.toList())))
+                    storage.write("manifest.json", json.encodeToString(SubtitleManifest(tracks = saved.toList(), failed = manifest.failed)))
                 } catch (error: Exception) {
                     if (error is CancellationException) throw error
                 }
@@ -135,9 +171,14 @@ internal object DownloadSubtitles {
         }
         currentCoroutineContext().ensureActive()
         runCatching {
-            // A look that met an unreachable server is not stamped, so that it is made again soon.
-            val checkedAt = if (unreachable == 0) DownloadsClock.nowEpochMs() else 0L
-            storage.write("manifest.json", json.encodeToString(SubtitleManifest(complete = true, tracks = saved, checkedAtEpochMs = checkedAt)))
+            // What failed is recorded with its time, so that only those tracks are tried again, later. Nothing saved is touched.
+            val savedUrls = saved.map { it.sourceUrl }.toSet()
+            val failed = manifest.failed.filter { it.sourceUrl !in attempted && it.sourceUrl !in savedUrls } + newFailures
+            val checkedAt = if (failed.isEmpty()) nowEpochMs else 0L
+            storage.write(
+                "manifest.json",
+                json.encodeToString(SubtitleManifest(complete = failed.isEmpty(), tracks = saved, checkedAtEpochMs = checkedAt, failed = failed)),
+            )
         }
         SubtitleSaveResult(saved = saved.size, newlySaved = saved.size - before, unreachable = unreachable)
     }
@@ -163,6 +204,16 @@ private data class SubtitleManifest(
     val tracks: List<DownloadedSubtitle> = emptyList(),
     /** When a complete look was made, in milliseconds since 1970. Zero when unknown. */
     val checkedAtEpochMs: Long = 0L,
+    /** Tracks that could not be fetched, and when. Older code ignores this key. */
+    val failed: List<FailedSubtitle> = emptyList(),
+)
+
+@Serializable
+private data class FailedSubtitle(
+    val sourceUrl: String,
+    val atEpochMs: Long,
+    /** Failures in a row; the cooldown grows with it. */
+    val attempts: Int = 1,
 )
 
 @Serializable

@@ -100,7 +100,7 @@ class DesktopSubtitlesSaveTest {
 
         broken.clear()
         bodies["https://s/en.srt"] = srt
-        val second = DownloadSubtitles.prepare(item, uri, recheck = true)
+        val second = DownloadSubtitles.prepare(item, uri, recheck = true, nowEpochMs = DownloadsClock.nowEpochMs() + DownloadSubtitles.RETRY_COOLDOWN_MS + 5_000)
         assertEquals(2, second.saved)
         assertEquals(1, second.newlySaved)
     }
@@ -213,5 +213,101 @@ class DesktopSubtitlesSaveTest {
 
         assertTrue(File(folder, "a.mkv.subtitles/manifest.json").isFile)
         assertEquals(setOf("a.mkv", "a.mkv.subtitles"), folder.list().orEmpty().toSet())
+    }
+
+    // ---- one saved subtitle must not hide the failed ones ----
+
+    @Test
+    fun a_failed_track_is_recorded_even_when_another_saved_and_is_retried_after_the_cooldown() = runBlocking {
+        val uri = video()
+        val item = item("https://s/en.srt", "https://s/fr.srt")
+        bodies["https://s/en.srt"] = srt
+        broken += "https://s/fr.srt"
+        val start = DownloadsClock.nowEpochMs()
+
+        val first = DownloadSubtitles.prepare(item, uri)
+        assertEquals(1, first.saved)
+        assertEquals(1, first.unreachable)
+        // The manifest says what failed and when; "complete" is not claimed.
+        val manifest = File(folder, "a.mkv.subtitles/manifest.json").readText()
+        assertTrue("https://s/fr.srt" in manifest && "\"failed\"" in manifest)
+        assertTrue("\"complete\":false" in manifest.replace(" ", ""))
+
+        // Not due during the cooldown, due after it.
+        assertFalse(DownloadSubtitles.isDue(item, uri, start + DownloadSubtitles.RETRY_COOLDOWN_MS - 5_000))
+        assertTrue(DownloadSubtitles.isDue(item, uri, start + DownloadSubtitles.RETRY_COOLDOWN_MS + 5_000))
+
+        // The retry asks for the failed track only and keeps what was saved.
+        fetched.clear()
+        broken.clear()
+        bodies["https://s/fr.srt"] = srt
+        val retry = DownloadSubtitles.prepare(item, uri, recheck = true, nowEpochMs = start + DownloadSubtitles.RETRY_COOLDOWN_MS + 5_000)
+        assertEquals(listOf("https://s/fr.srt"), fetched)
+        assertEquals(2, retry.saved)
+        assertEquals(1, retry.newlySaved)
+        assertFalse(DownloadSubtitles.isDue(item, uri, start + 10 * DownloadSubtitles.RETRY_COOLDOWN_MS))
+        assertTrue("\"complete\":true" in File(folder, "a.mkv.subtitles/manifest.json").readText().replace(" ", ""))
+    }
+
+    @Test
+    fun a_track_still_in_its_cooldown_is_not_asked_for_again() = runBlocking {
+        val uri = video()
+        val item = item("https://s/en.srt", "https://s/fr.srt")
+        bodies["https://s/en.srt"] = srt
+        broken += "https://s/fr.srt"
+        val start = DownloadsClock.nowEpochMs()
+        DownloadSubtitles.prepare(item, uri)
+
+        fetched.clear()
+        DownloadSubtitles.prepare(item, uri, recheck = true, nowEpochMs = start + 1_000)
+
+        assertEquals(emptyList(), fetched)
+    }
+
+    @Test
+    fun the_cooldown_grows_with_each_failure_and_is_capped() = runBlocking {
+        val uri = video()
+        val item = item("https://s/fr.srt")
+        broken += "https://s/fr.srt"
+        var at = DownloadsClock.nowEpochMs()
+        var last = 0L
+        repeat(6) {
+            DownloadSubtitles.prepare(item, uri, recheck = true, nowEpochMs = at)
+            val cooldown = DownloadSubtitles.cooldownAfter(attempts = it + 1)
+            assertTrue(cooldown >= last)
+            assertTrue(cooldown <= DownloadSubtitles.RECHECK_EMPTY_AGE_MS)
+            last = cooldown
+            at += cooldown + 1
+        }
+        assertEquals(DownloadSubtitles.RECHECK_EMPTY_AGE_MS, DownloadSubtitles.cooldownAfter(attempts = 50))
+    }
+
+    @Test
+    fun a_failed_retry_never_removes_a_saved_track_and_the_manifest_stays_readable_by_older_code() = runBlocking {
+        val uri = video()
+        val item = item("https://s/en.srt", "https://s/fr.srt")
+        bodies["https://s/en.srt"] = srt
+        broken += "https://s/fr.srt"
+        DownloadSubtitles.prepare(item, uri)
+        DownloadSubtitles.prepare(item, uri, recheck = true, nowEpochMs = DownloadsClock.nowEpochMs() + DownloadSubtitles.RETRY_COOLDOWN_MS * 2)
+
+        assertEquals(1, DownloadSubtitles.savedCount(uri))
+        // The fields older code reads are all there; the new one is an extra key it ignores.
+        val older = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+            .parseToJsonElement(File(folder, "a.mkv.subtitles/manifest.json").readText()) as kotlinx.serialization.json.JsonObject
+        assertTrue(older.containsKey("tracks") && older.containsKey("complete"))
+    }
+
+    @Test
+    fun a_subtitle_the_server_answered_for_with_junk_is_not_retried_as_a_failure() = runBlocking {
+        val uri = video()
+        val item = item("https://s/en.srt", "https://s/bad.srt")
+        bodies["https://s/en.srt"] = srt
+        bodies["https://s/bad.srt"] = "<html>no</html>"
+
+        DownloadSubtitles.prepare(item, uri)
+
+        assertFalse("\"failed\":[{" in File(folder, "a.mkv.subtitles/manifest.json").readText().replace(" ", ""))
+        assertFalse(DownloadSubtitles.isDue(item, uri, DownloadsClock.nowEpochMs() + DownloadSubtitles.RETRY_COOLDOWN_MS * 10))
     }
 }
