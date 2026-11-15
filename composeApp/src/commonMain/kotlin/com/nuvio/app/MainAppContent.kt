@@ -154,6 +154,8 @@ import com.nuvio.app.features.settings.AddonsSettingsScreen
 import com.nuvio.app.features.settings.ContinueWatchingSettingsScreen
 import com.nuvio.app.features.settings.HomescreenSettingsScreen
 import com.nuvio.app.features.settings.LicensesAttributionsSettingsScreen
+import com.nuvio.app.features.settings.LocalOpenSettingsPage
+import com.nuvio.app.features.settings.SettingsPage
 import com.nuvio.app.features.settings.PreferenceSetupHost
 import com.nuvio.app.features.settings.MetaScreenSettingsScreen
 import com.nuvio.app.features.settings.PluginsSettingsScreen
@@ -1088,6 +1090,16 @@ internal fun MainAppContent(
             )
         }
 
+        // Opens a settings page for a link on another screen: the screens above the tabs are closed
+        // first, then the Settings tab shows the page.
+        fun openSettingsPage(page: SettingsPage) {
+            repeat(navController.routes.size) {
+                if (navController.currentRoute !is TabsRoute) navController.popBackStack()
+            }
+            requestedSettingsPageName = page.name
+            activateTab(AppScreenTab.Settings)
+        }
+
         fun openPartyMedia(media: PartyMedia) {
             if (navController.currentRoute is PlayerRoute) navController.popBackStack()
             val resumePositionMs = PartyRepository.playback.value
@@ -1402,6 +1414,7 @@ internal fun MainAppContent(
                 CompositionLocalProvider(
                     LocalPosterClickAnchor provides if (posterNavigationEnabled) posterNavigation::prepare else null,
                     LocalUseNativeNavigation provides useNativeNavigation,
+                    LocalOpenSettingsPage provides ::openSettingsPage,
                     LocalNativeNavigationBarHidden provides (currentRoute?.hidesNavigationBar == true),
                     LocalVerticalBarPadding provides if (drawsUnderVerticalBar) verticalBarPadding else PaddingValues(),
                 ) {

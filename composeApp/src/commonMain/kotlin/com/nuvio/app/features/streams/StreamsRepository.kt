@@ -108,6 +108,11 @@ object StreamsRepository {
         } else {
             null
         }
+        val autoPlayContext = if (autoPlayMode == StreamAutoPlayMode.PREFERRED) {
+            autoPlayContextFor(autoPlayPreferences, autoPlayRuntimeMinutes)
+        } else {
+            null
+        }
         val isAutoPlayEnabled = !manualSelection && autoPlayMode != StreamAutoPlayMode.MANUAL &&
             !(autoPlayMode == StreamAutoPlayMode.REGEX_MATCH &&
                 !StreamAutoPlayPolicy.isRegexSelectionConfigured(playerSettings.streamAutoPlayRegex))
@@ -291,11 +296,14 @@ object StreamsRepository {
                             autoPlayCandidates = emptyList(),
                             isDirectAutoPlayFlow = false,
                             showDirectAutoPlayOverlay = false,
+                            autoPlayContext = autoPlayContext,
+                            autoPlayFoundNoMatch = autoPlayContext != null,
                         )
                     } else {
                         current.copy(
                             autoPlayStream = evaluation.stream,
                             autoPlayCandidates = evaluation.readyStreams,
+                            autoPlayContext = autoPlayContext,
                         )
                     }
                 }

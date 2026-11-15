@@ -1897,6 +1897,16 @@
     <string name="streams_episode_fallback_title">Episode</string>
     <string name="streams_episode_title_with_name">S%1$d E%2$d - %3$s</string>
     <string name="streams_fetching">Fetching…</string>
+    <plurals name="streams_auto_no_match">
+        <item quantity="one">The source found does not match your saved preferences: %2$s.</item>
+        <item quantity="other">None of the %1$d sources match your saved preferences: %2$s.</item>
+    </plurals>
+    <string name="streams_auto_no_match_plain">No source could be picked automatically. Choose one below.</string>
+    <string name="streams_auto_bitrate_skipped">The bitrate limit was not used, because the running time of this title is unknown.</string>
+    <string name="streams_auto_change_preferences">Change preferences</string>
+    <string name="streams_auto_preference_bitrate">up to %1$d megabits per second</string>
+    <string name="streams_auto_chosen">Chosen automatically: %1$s</string>
+    <string name="streams_auto_chosen_within_bitrate">within %1$d megabits per second</string>
     <string name="streams_finding_source">Finding stream source</string>
     <string name="playback_show_loading_status">Show loading status</string>
     <string name="playback_show_loading_status_sub">Display step-by-step progress while the player is initializing.</string>
