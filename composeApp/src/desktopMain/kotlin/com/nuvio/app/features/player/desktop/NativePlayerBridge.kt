@@ -61,6 +61,22 @@ internal object NativePlayerBridge {
         eventSink: NativePlayerEventSink,
     ): Long
 
+    /**
+     * macOS only. Takes 32 by 32 grey pictures of the local video [path] at [fractions] of its duration
+     * (of [durationSeconds] when above 0) with a player handle of its own. Null when the file could not
+     * be looked at. Otherwise element 0 is "duration seconds, newline, container title" in UTF-8 and the
+     * others are the pictures, null where none decoded. A position with no picture is tried again
+     * [retryEarlierSeconds] before it.
+     */
+    external fun sampleFrames(
+        path: String,
+        fractions: DoubleArray,
+        durationSeconds: Double,
+        retryEarlierSeconds: Double,
+        positionTimeoutMs: Long,
+        budgetMs: Long,
+    ): Array<ByteArray?>?
+
     external fun dispose(handle: Long)
     external fun updateControls(handle: Long, controlsJson: String)
 

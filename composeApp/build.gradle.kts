@@ -948,6 +948,13 @@ val prepareMacosPlayerRuntime = tasks.register<Sync>("prepareMacosPlayerRuntime"
     into(macosPlayerRuntimeOutput)
 }
 
+// Desktop tests that look at real video files use the bridge, so it is built beside them.
+if (isMacHost && missingMacosPlayerBridgeInputs.isEmpty()) {
+    tasks.matching { it.name == "desktopTest" }.configureEach {
+        dependsOn(buildMacosPlayerBridge, prepareMacosPlayerRuntime)
+    }
+}
+
 val prepareMacosPlayerAppResources = tasks.register<Sync>("prepareMacosPlayerAppResources") {
     enabled = isMacHost
     dependsOn(buildMacosPlayerBridge, prepareMacosPlayerRuntime)

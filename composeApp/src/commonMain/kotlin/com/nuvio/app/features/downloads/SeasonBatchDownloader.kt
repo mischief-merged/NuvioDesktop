@@ -46,6 +46,21 @@ internal data class SeasonBatchEpisode(
     val title: String?,
     val thumbnail: String?,
     val runtimeMinutes: Int? = null,
+    /**
+     * Set when the item is a movie of its own and not an episode of the request's show. A batch of
+     * movies is queued like a season; the season and episode numbers of such an item only order it.
+     */
+    val movie: SeasonBatchMovie? = null,
+)
+
+/** What a movie in a batch is downloaded as. */
+internal data class SeasonBatchMovie(
+    val metaId: String,
+    val metaType: String,
+    val title: String,
+    val logo: String? = null,
+    val poster: String? = null,
+    val background: String? = null,
 )
 
 internal data class SeasonBatchRequest(
@@ -267,7 +282,9 @@ internal fun seasonBatchKey(parentMetaId: String, seasonNumber: Int): String =
     "${parentMetaId.trim()}|$seasonNumber"
 
 /**
- * Queues a season through the normal downloads pipeline, a few episodes at a time.
+ * Queues a season through the normal downloads pipeline, a few episodes at a time. The items of a
+ * request can also be movies ([SeasonBatchEpisode.movie]), one or several, which are queued by the
+ * same rules.
  *
  * Each episode holds one of [maxConcurrent] slots (shared by every batch of this downloader) from
  * source lookup until its download finishes or is paused,
@@ -585,12 +602,18 @@ internal class SeasonBatchDownloader(
         }
     }
 
-    private fun DownloadsUiState.itemFor(request: SeasonBatchRequest, episode: SeasonBatchEpisode): DownloadItem? =
-        items.firstOrNull { item ->
-            item.parentMetaId.trim() == request.parentMetaId.trim() &&
-                item.seasonNumber == episode.seasonNumber &&
-                item.episodeNumber == episode.episodeNumber
+    private fun DownloadsUiState.itemFor(request: SeasonBatchRequest, episode: SeasonBatchEpisode): DownloadItem? {
+        val movie = episode.movie
+        return items.firstOrNull { item ->
+            if (movie != null) {
+                item.parentMetaId.trim() == movie.metaId.trim() && !item.isEpisode
+            } else {
+                item.parentMetaId.trim() == request.parentMetaId.trim() &&
+                    item.seasonNumber == episode.seasonNumber &&
+                    item.episodeNumber == episode.episodeNumber
+            }
         }
+    }
 
     /** Whether the file of a finished download, looked at now, is too small or far too short to be the episode. */
     private fun isPlaceholderOnDisk(item: DownloadItem, episode: SeasonBatchEpisode, minBytes: Long): Boolean {

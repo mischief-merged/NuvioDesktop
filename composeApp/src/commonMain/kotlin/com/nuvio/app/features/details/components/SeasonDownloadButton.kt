@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -191,111 +192,137 @@ internal fun SeasonDownloadButton(
         )
     }
 
-    val choices = openChoices
-    if (choices != null) {
-        var picker by remember(choices) { mutableStateOf<SeasonDownloadPicker?>(null) }
-        DialogSurface(
-            onDismissRequest = { openChoices = null },
+    openChoices?.let { choices ->
+        DownloadChoicesDialog(
+            choices = choices,
             title = dialogTitle,
             message = stringResource(Res.string.downloads_season_dialog_message),
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(tokens.spacing.controlGap)) {
-                SeasonDownloadChoiceRow(
-                    title = stringResource(Res.string.downloads_season_quality_heading),
-                    value = batchQualityLabel(choices.quality),
-                    onClick = { picker = SeasonDownloadPicker.Quality },
+            onDismiss = { openChoices = null },
+            onConfirm = { confirmed ->
+                openChoices = null
+                val result = startBatch(
+                    SeasonBatchRequest(
+                        contentType = meta.type,
+                        parentMetaId = meta.id,
+                        parentMetaType = meta.type,
+                        title = meta.name,
+                        logo = meta.logo,
+                        poster = meta.poster,
+                        background = meta.background,
+                        seasonNumber = seasonNumber,
+                        episodes = meta.seasonBatchEpisodes(seasonNumber, CurrentDateProvider.todayIsoDate()),
+                        quality = confirmed.quality,
+                        maxBitrateMbps = confirmed.maxBitrateMbps,
+                        audioLanguage = confirmed.audioLanguage,
+                    ),
                 )
-                SeasonDownloadChoiceRow(
-                    title = stringResource(Res.string.downloads_season_max_bitrate),
-                    description = stringResource(Res.string.downloads_season_max_bitrate_description),
-                    value = maxBitrateLabel(choices.maxBitrateMbps),
-                    onClick = { picker = SeasonDownloadPicker.MaxBitrate },
-                )
-                SeasonDownloadChoiceRow(
-                    title = stringResource(Res.string.downloads_season_audio_language),
-                    value = audioLanguageLabel(choices.audioLanguage),
-                    onClick = { picker = SeasonDownloadPicker.AudioLanguage },
-                )
-            }
-            DialogButtons {
-                DialogButton(
-                    text = stringResource(Res.string.action_cancel),
-                    onClick = { openChoices = null },
-                )
-                DialogButton(
-                    text = stringResource(Res.string.downloads_season_start),
-                    style = DialogButtonStyle.Primary,
-                    onClick = {
-                        openChoices = null
-                        val confirmed = choices.confirm()
-                        val result = startBatch(
-                            SeasonBatchRequest(
-                                contentType = meta.type,
-                                parentMetaId = meta.id,
-                                parentMetaType = meta.type,
-                                title = meta.name,
-                                logo = meta.logo,
-                                poster = meta.poster,
-                                background = meta.background,
-                                seasonNumber = seasonNumber,
-                                episodes = meta.seasonBatchEpisodes(seasonNumber, CurrentDateProvider.todayIsoDate()),
-                                quality = confirmed.quality,
-                                maxBitrateMbps = confirmed.maxBitrateMbps,
-                                audioLanguage = confirmed.audioLanguage,
-                            ),
-                        )
-                        NuvioToastController.show(
-                            when (result) {
-                                SeasonBatchStart.Started -> startedText
-                                SeasonBatchStart.NothingToDownload -> nothingToDownloadText
-                                SeasonBatchStart.AlreadyRunning -> alreadyRunningText
-                            },
-                        )
+                NuvioToastController.show(
+                    when (result) {
+                        SeasonBatchStart.Started -> startedText
+                        SeasonBatchStart.NothingToDownload -> nothingToDownloadText
+                        SeasonBatchStart.AlreadyRunning -> alreadyRunningText
                     },
                 )
-            }
-        }
+            },
+        )
+    }
+}
 
-        when (picker) {
-            SeasonDownloadPicker.Quality -> DownloadChoiceDialog(
+/**
+ * Asks for quality, maximum bitrate and audio language, starting from [choices]. The choices are
+ * saved, and handed to [onConfirm], only when the dialog is confirmed. [content] is shown between
+ * the choices and the buttons.
+ */
+@Composable
+internal fun DownloadChoicesDialog(
+    choices: SeasonDownloadChoices,
+    title: String,
+    message: String,
+    onConfirm: (SeasonDownloadDefaults) -> Unit,
+    onDismiss: () -> Unit,
+    confirmLabel: String = stringResource(Res.string.downloads_season_start),
+    confirmEnabled: Boolean = true,
+    content: @Composable ColumnScope.() -> Unit = {},
+) {
+    val tokens = MaterialTheme.nuvio
+    var picker by remember(choices) { mutableStateOf<SeasonDownloadPicker?>(null) }
+    DialogSurface(
+        onDismissRequest = onDismiss,
+        title = title,
+        message = message,
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(tokens.spacing.controlGap)) {
+            SeasonDownloadChoiceRow(
                 title = stringResource(Res.string.downloads_season_quality_heading),
-                options = BatchQuality.entries,
-                selected = choices.quality,
-                label = { batchQualityLabel(it) },
-                onSelect = {
-                    choices.quality = it
-                    picker = null
-                },
-                onDismiss = { picker = null },
+                value = batchQualityLabel(choices.quality),
+                onClick = { picker = SeasonDownloadPicker.Quality },
             )
-            SeasonDownloadPicker.MaxBitrate -> DownloadChoiceDialog(
+            SeasonDownloadChoiceRow(
                 title = stringResource(Res.string.downloads_season_max_bitrate),
-                options = SeasonDownloadDefaults.maxBitrateOptions,
-                selected = choices.maxBitrateMbps,
-                label = { maxBitrateLabel(it) },
-                onSelect = {
-                    choices.maxBitrateMbps = it
+                description = stringResource(Res.string.downloads_season_max_bitrate_description),
+                value = maxBitrateLabel(choices.maxBitrateMbps),
+                onClick = { picker = SeasonDownloadPicker.MaxBitrate },
+            )
+            SeasonDownloadChoiceRow(
+                title = stringResource(Res.string.downloads_season_audio_language),
+                value = audioLanguageLabel(choices.audioLanguage),
+                onClick = { picker = SeasonDownloadPicker.AudioLanguage },
+            )
+        }
+        content()
+        DialogButtons {
+            DialogButton(
+                text = stringResource(Res.string.action_cancel),
+                onClick = onDismiss,
+            )
+            DialogButton(
+                text = confirmLabel,
+                style = DialogButtonStyle.Primary,
+                enabled = confirmEnabled,
+                onClick = { onConfirm(choices.confirm()) },
+            )
+        }
+    }
+
+    when (picker) {
+        SeasonDownloadPicker.Quality -> DownloadChoiceDialog(
+            title = stringResource(Res.string.downloads_season_quality_heading),
+            options = BatchQuality.entries,
+            selected = choices.quality,
+            label = { batchQualityLabel(it) },
+            onSelect = {
+                choices.quality = it
+                picker = null
+            },
+            onDismiss = { picker = null },
+        )
+        SeasonDownloadPicker.MaxBitrate -> DownloadChoiceDialog(
+            title = stringResource(Res.string.downloads_season_max_bitrate),
+            options = SeasonDownloadDefaults.maxBitrateOptions,
+            selected = choices.maxBitrateMbps,
+            label = { maxBitrateLabel(it) },
+            onSelect = {
+                choices.maxBitrateMbps = it
+                picker = null
+            },
+            onDismiss = { picker = null },
+        )
+        SeasonDownloadPicker.AudioLanguage -> {
+            val options = SeasonDownloadDefaults.audioLanguageOptions.map { language ->
+                LanguageSelectionOption(value = language?.code, label = audioLanguageLabel(language))
+            }
+            LanguageSelectionDialog(
+                title = stringResource(Res.string.downloads_season_audio_language),
+                options = options,
+                selectedValue = choices.audioLanguage?.code,
+                onSelect = { code ->
+                    choices.audioLanguage = SeasonDownloadDefaults.audioLanguageOptions.firstOrNull { it?.code == code }
                     picker = null
                 },
                 onDismiss = { picker = null },
             )
-            SeasonDownloadPicker.AudioLanguage -> {
-                val options = SeasonDownloadDefaults.audioLanguageOptions.map { language ->
-                    LanguageSelectionOption(value = language?.code, label = audioLanguageLabel(language))
-                }
-                LanguageSelectionDialog(
-                    title = stringResource(Res.string.downloads_season_audio_language),
-                    options = options,
-                    selectedValue = choices.audioLanguage?.code,
-                    onSelect = { code ->
-                        choices.audioLanguage = SeasonDownloadDefaults.audioLanguageOptions.firstOrNull { it?.code == code }
-                        picker = null
-                    },
-                    onDismiss = { picker = null },
-                )
-            }
-            null -> Unit
         }
+        null -> Unit
     }
 }
 

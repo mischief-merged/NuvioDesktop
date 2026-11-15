@@ -513,7 +513,11 @@ private fun statusText(item: DownloadItem): String {
         DownloadStatus.Downloading -> stringResource(Res.string.downloads_status_downloading, size)
         DownloadStatus.Paused -> stringResource(Res.string.downloads_status_paused, size)
         DownloadStatus.Completed -> stringResource(
-            Res.string.downloads_status_completed,
+            if (item.framesCheck == DownloadFramesCheck.Suspect) {
+                Res.string.downloads_status_completed_suspect
+            } else {
+                Res.string.downloads_status_completed
+            },
             formatBytes(item.totalBytes ?: item.downloadedBytes),
         )
         DownloadStatus.Failed -> item.errorMessage ?: stringResource(Res.string.downloads_status_failed)
