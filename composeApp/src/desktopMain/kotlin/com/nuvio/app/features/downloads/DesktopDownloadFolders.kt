@@ -223,7 +223,11 @@ internal class DesktopDownloadFolders(
                     onProgress = { _progress.value = it },
                     onMoved = { entry, target -> hooks.relocate(entry.itemId, destination.id, target?.toFile()?.toURI()?.toString()) },
                 )
-                return report.copy(unreachable = planned.unreachable)
+                // Locations that hold nothing are forgotten only after a move that ended normally. After
+                // anything else the destination stays known, so that files already there are still found.
+                val finished = report.copy(unreachable = planned.unreachable)
+                locations.forgetExcept(hooks.items().map { locationIdOf(it) }.toSet())
+                return finished
             } finally {
                 movingIds.clear()
                 paused.forEach(hooks::resume)
@@ -232,7 +236,6 @@ internal class DesktopDownloadFolders(
         } finally {
             _progress.value = null
             moveRunning.set(false)
-            locations.forgetExcept(hooks.items().map { locationIdOf(it) }.toSet())
             refresh()
         }
     }
