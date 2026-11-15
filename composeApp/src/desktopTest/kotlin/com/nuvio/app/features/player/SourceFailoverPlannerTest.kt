@@ -257,16 +257,6 @@ class SourceFailoverPlannerTest {
     }
 
     @Test
-    fun theCheckRunsOncePerSourceAtTheStartAndNotOffline() {
-        assertTrue(placeholderCheckDue(false, 0L, NetworkCondition.Online))
-        assertTrue(placeholderCheckDue(false, PLACEHOLDER_CHECK_WINDOW_MS, NetworkCondition.Unknown))
-        assertFalse(placeholderCheckDue(true, 0L, NetworkCondition.Online))
-        assertFalse(placeholderCheckDue(false, PLACEHOLDER_CHECK_WINDOW_MS + 1, NetworkCondition.Online))
-        assertFalse(placeholderCheckDue(false, 0L, NetworkCondition.NoInternet))
-        assertFalse(placeholderCheckDue(false, 0L, NetworkCondition.ServersUnreachable))
-    }
-
-    @Test
     fun aPlaceholderMovesOnInEveryModeIncludingASourcePickedByHand() {
         assertEquals(
             SourceFailoverDecision.TryNext("b"),
@@ -301,5 +291,144 @@ class SourceFailoverPlannerTest {
             stop(SourceFailoverStop.UserCancelled),
             decide(failure = SourceFailure.PlaceholderClip, userCancelled = true),
         )
+    }
+
+    /** Feeds snapshots (timeMs, positionMs, durationMs, loading) to the check from a first frame at time 0, position 0. */
+    private fun run(
+        vararg snapshots: List<Any>,
+        network: NetworkCondition = NetworkCondition.Online,
+        startPositionMs: Long = 0L,
+    ): PlaceholderCheckStep {
+        var state = PlaceholderCheckState(firstFrameAtMs = 0L, firstFramePositionMs = startPositionMs)
+        var step: PlaceholderCheckStep = PlaceholderCheckStep.Continue(state)
+        for (snapshot in snapshots) {
+            step = stepPlaceholderCheck(
+                state = state,
+                nowMs = snapshot[0] as Long,
+                positionMs = snapshot[1] as Long,
+                durationMs = snapshot[2] as Long,
+                isLoading = snapshot[3] as Boolean,
+                network = network,
+            )
+            when (step) {
+                is PlaceholderCheckStep.Continue -> state = step.state
+                else -> return step
+            }
+        }
+        return step
+    }
+
+    private fun snap(timeMs: Long, positionMs: Long, durationMs: Long, loading: Boolean = false) =
+        listOf<Any>(timeMs, positionMs, durationMs, loading)
+
+    @Test
+    fun aStableShortDurationIsJudged() {
+        val step = run(
+            snap(0, 0, 30_000), snap(1_500, 1_500, 30_000), snap(3_000, 3_000, 30_000),
+        )
+        assertEquals(PlaceholderCheckStep.Stable(30_000L), step)
+    }
+
+    @Test
+    fun aStableFullDurationIsJudgedToo() {
+        val step = run(snap(0, 0, 2_700_000), snap(1_500, 1_500, 2_700_000), snap(3_000, 3_000, 2_700_000))
+        assertEquals(PlaceholderCheckStep.Stable(2_700_000L), step)
+    }
+
+    @Test
+    fun threeSnapshotsAreNotEnoughWithoutEnoughTime() {
+        val step = run(snap(0, 0, 30_000), snap(500, 500, 30_000), snap(1_000, 1_000, 30_000))
+        assertTrue(step is PlaceholderCheckStep.Continue)
+    }
+
+    @Test
+    fun enoughTimeIsNotEnoughWithTooFewSnapshots() {
+        val step = run(snap(0, 0, 30_000), snap(4_000, 4_000, 30_000))
+        assertTrue(step is PlaceholderCheckStep.Continue)
+    }
+
+    @Test
+    fun aGrowingDurationIsNeverFinalAndClaimsNothingWhenTheWindowEnds() {
+        // Grows by 5 seconds at each snapshot while buffering a long stream.
+        val growing = (0..5).map { i -> snap(i * 1_000L, i * 1_000L, 20_000L + i * 5_000L) }
+        assertTrue(run(*growing.toTypedArray()) is PlaceholderCheckStep.Continue)
+        val late = growing + listOf(snap(PLACEHOLDER_CHECK_WINDOW_MS + 1, 9_000, 60_000))
+        assertEquals(PlaceholderCheckStep.Finished, run(*late.toTypedArray()))
+    }
+
+    @Test
+    fun aSlowDriftBeyondTheToleranceStartsTheRunAgain() {
+        // Each report is within tolerance of the previous one, but not of the first of the run.
+        val step = run(
+            snap(0, 0, 30_000), snap(1_500, 1_500, 30_800), snap(3_000, 3_000, 31_600), snap(3_500, 3_500, 31_600),
+        )
+        assertTrue(step is PlaceholderCheckStep.Continue)
+    }
+
+    @Test
+    fun aFlappingDurationResetsTheRun() {
+        val step = run(
+            snap(0, 0, 30_000), snap(1_500, 1_500, 0), snap(3_000, 3_000, 30_000), snap(4_500, 4_500, 30_000),
+        )
+        assertTrue(step is PlaceholderCheckStep.Continue)
+        val stable = run(
+            snap(0, 0, 30_000), snap(1_500, 1_500, 0), snap(3_000, 3_000, 30_000), snap(4_500, 4_500, 30_000), snap(6_000, 6_000, 30_000),
+        )
+        assertEquals(PlaceholderCheckStep.Stable(30_000L), stable)
+    }
+
+    @Test
+    fun bufferingNeverCountsAndResetsTheRun() {
+        val step = run(
+            snap(0, 0, 30_000), snap(1_500, 1_500, 30_000), snap(3_000, 3_000, 30_000, loading = true), snap(4_500, 3_000, 30_000),
+        )
+        assertTrue(step is PlaceholderCheckStep.Continue)
+    }
+
+    @Test
+    fun pausingDoesNotExtendTheWindow() {
+        // Paused at 1 second with an unknown duration; the length shows up a minute later.
+        val step = run(snap(0, 0, 0), snap(1_000, 1_000, 0), snap(60_000, 1_000, 30_000))
+        assertEquals(PlaceholderCheckStep.Finished, step)
+    }
+
+    @Test
+    fun aLateDurationAfterTheWindowClaimsNothing() {
+        val step = run(snap(0, 0, 0), snap(PLACEHOLDER_CHECK_WINDOW_MS + 1, 20_000, 30_000))
+        assertEquals(PlaceholderCheckStep.Finished, step)
+    }
+
+    @Test
+    fun seekingBackEndsTheCheck() {
+        val step = run(snap(0, 10_000, 0), snap(2_000, 5_000, 0), startPositionMs = 10_000L)
+        assertEquals(PlaceholderCheckStep.Finished, step)
+    }
+
+    @Test
+    fun seekingAheadEndsTheCheck() {
+        assertEquals(PlaceholderCheckStep.Finished, run(snap(0, 0, 0), snap(1_000, 600_000, 0)))
+    }
+
+    @Test
+    fun watchingPastTheLimitEndsTheCheck() {
+        val step = run(snap(0, 0, 0), snap(PLACEHOLDER_WATCHED_LIMIT_MS + 1, PLACEHOLDER_WATCHED_LIMIT_MS + 1, 0))
+        assertEquals(PlaceholderCheckStep.Finished, step)
+    }
+
+    @Test
+    fun resumingFarIntoTheVideoDoesNotCountAsWatching() {
+        val step = run(
+            snap(0, 3_600_000, 6_000_000), snap(1_500, 3_601_500, 6_000_000), snap(3_000, 3_603_000, 6_000_000),
+            startPositionMs = 3_600_000L,
+        )
+        assertEquals(PlaceholderCheckStep.Stable(6_000_000L), step)
+    }
+
+    @Test
+    fun offlineSnapshotsAreNotCountedButTimeStillRuns() {
+        val offline = run(snap(0, 0, 30_000), snap(1_500, 1_500, 30_000), snap(3_000, 3_000, 30_000), network = NetworkCondition.NoInternet)
+        assertTrue(offline is PlaceholderCheckStep.Continue)
+        val expired = run(snap(PLACEHOLDER_CHECK_WINDOW_MS + 1, 1_000, 30_000), network = NetworkCondition.NoInternet)
+        assertEquals(PlaceholderCheckStep.Finished, expired)
     }
 }

@@ -33,6 +33,9 @@ private const val SOURCE_FAILOVER_NOTICE_DURATION_MS = 4_000L
 
 private val log = Logger.withTag("PlayerSourceFallback")
 
+/** Monotonic clock for the placeholder check; its origin does not matter, only differences do. */
+private val placeholderClock = kotlin.time.TimeSource.Monotonic.markNow()
+
 /**
  * Plays [stream] at [url] in place of the current source. Playback resumes at [resumePositionMs]
  * when it is given. Otherwise, before playback has started the pending resume position is kept,
@@ -149,25 +152,40 @@ internal fun PlayerScreenRuntime.sourceFailoverLoadingMessage(): String? =
  * is told once; otherwise it is treated as a failed source and the next one is tried from the start.
  */
 internal fun PlayerScreenRuntime.checkForPlaceholderSource(snapshot: PlayerPlaybackSnapshot) {
-    if (!isDesktop || sourceFailoverCancelled || snapshot.isLoading) return
+    if (!isDesktop || sourceFailoverCancelled) return
     val url = activeSourceUrl
     val videoId = activeVideoId
     if (url.isBlank() || videoId == null || placeholderCheckedUrl == url) return
-    if (placeholderFirstFrameUrl != url) {
-        placeholderFirstFrameUrl = url
-        placeholderFirstFramePositionMs = snapshot.positionMs
+    val nowMs = placeholderClock.elapsedNow().inWholeMilliseconds
+    // The window starts at the first frame; before it there is nothing to look at.
+    val state = placeholderCheckState?.takeIf { placeholderCheckStateUrl == url }
+        ?: if (snapshot.isLoading) return else PlaceholderCheckState(nowMs, snapshot.positionMs)
+    placeholderCheckStateUrl = url
+    val step = stepPlaceholderCheck(
+        state = state,
+        nowMs = nowMs,
+        positionMs = snapshot.positionMs,
+        durationMs = snapshot.durationMs,
+        isLoading = snapshot.isLoading,
+        network = NetworkStatusRepository.uiState.value.condition,
+    )
+    val durationMs = when (step) {
+        is PlaceholderCheckStep.Continue -> {
+            placeholderCheckState = step.state
+            return
+        }
+        PlaceholderCheckStep.Finished -> {
+            placeholderCheckedUrl = url
+            placeholderCheckState = null
+            return
+        }
+        is PlaceholderCheckStep.Stable -> step.durationMs
     }
-    val playedMs = snapshot.positionMs - placeholderFirstFramePositionMs
-    if (!placeholderCheckDue(false, playedMs, NetworkStatusRepository.uiState.value.condition)) {
-        if (playedMs > PLACEHOLDER_CHECK_WINDOW_MS) placeholderCheckedUrl = url
-        return
-    }
-    // The length may arrive a moment after the first frame.
-    if (snapshot.durationMs <= 0L) return
     placeholderCheckedUrl = url
+    placeholderCheckState = null
     val expectedMinutes = MetaDetailsRepository.runtimeMinutesFor(parentMetaId, videoId, activeSeasonNumber, activeEpisodeNumber)
-    if (!looksLikePlaceholder(snapshot.durationMs, expectedMinutes)) return
-    log.i { "Source looks like a placeholder: ${snapshot.durationMs} ms against $expectedMinutes minutes expected" }
+    if (!looksLikePlaceholder(durationMs, expectedMinutes)) return
+    log.i { "Source looks like a placeholder: $durationMs ms against $expectedMinutes minutes expected" }
     if (tryFallbackToNextSourceAfterError(message = null, failureOverride = SourceFailure.PlaceholderClip)) return
     // Not moved on: the setting is off (or the device is offline). Say so once, only when the user chose to stay.
     if (!playerSettingsUiState.streamAutoPlayFallbackActive && placeholderWarnedUrl != url) {

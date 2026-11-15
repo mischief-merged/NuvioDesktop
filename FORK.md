@@ -27,6 +27,7 @@ NuvioRoid is a fork of [NuvioMedia/NuvioDesktop](https://github.com/NuvioMedia/N
 |---|---|---|
 | Play by preferences | A new auto-play mode, "Best match for my preferences", picks the source using the same saved quality, bitrate and language as downloads. If nothing fits, the source list opens and says so; when a source is picked, the loading screen names it. Manual stays the default. | `pr/i-auto-play-preferred` |
 | Preferences in Settings | Settings, Playback, "Quality and language preferences" edits the saved values and the "When I press Play" choice. A one-time prompt offers the same choices to a new profile. | `pr/j-preferences-settings` |
+| Source failover | When a source fails to start or dies during playback, the player moves to the next source in the same ranked order and resumes where it was. A short placeholder clip played in place of the real file counts as a failure. Bounded, never retries a failed source, waits when offline, and can be turned off. | `pr/l-playback-failover` |
 
 ## Navigation
 
@@ -54,7 +55,7 @@ User-facing English text uses one set of terms ("source", "Auto-download") and p
 
 ## Testing
 
-The desktop test suite on `downloads-suite` runs 2,905 tests. Three fail, and the same three fail on upstream `Dev` at `c8ee7621` without any of these changes:
+The desktop test suite on `downloads-suite` runs 2,962 tests. Three fail, and the same three fail on upstream `Dev` at `c8ee7621` without any of these changes:
 
 - `DesktopWindowInsetsTest` (title bar clearance)
 - `SettingsNavigationTest` (buffer options by platform and playback engine)

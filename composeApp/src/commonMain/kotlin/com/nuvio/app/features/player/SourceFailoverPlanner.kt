@@ -127,11 +127,23 @@ internal const val PLACEHOLDER_MAX_DURATION_MS = 5L * 60_000L
 /** A file shorter than this part of the expected running time can be a placeholder. */
 internal const val PLACEHOLDER_MAX_FRACTION_OF_RUNTIME = 0.30
 
-/**
- * How far playback may have advanced from the first frame for the placeholder check to still run.
- * The check is for the start of a source, not for one the user has watched for a while.
- */
+/** The placeholder check stops this long after the first frame of a source, whatever the position does. */
 internal const val PLACEHOLDER_CHECK_WINDOW_MS = 30_000L
+
+/** The check stops once the user has watched this much of the source: they have seen the content. */
+internal const val PLACEHOLDER_WATCHED_LIMIT_MS = 20_000L
+
+/** A position this far before the first frame, or this far ahead of the time that passed, is a seek by the user. */
+internal const val PLACEHOLDER_SEEK_TOLERANCE_MS = 2_000L
+
+/** Two reports of the length this close count as the same value. */
+internal const val PLACEHOLDER_DURATION_TOLERANCE_MS = 1_000L
+
+/** The length must be unchanged over at least this many snapshots... */
+internal const val PLACEHOLDER_MIN_STABLE_SNAPSHOTS = 3
+
+/** ...spanning at least this much time, before it is taken as final. */
+internal const val PLACEHOLDER_MIN_STABLE_MS = 3_000L
 
 /**
  * Whether the playing file is a placeholder rather than the video. Both the length of the file
@@ -147,11 +159,65 @@ internal fun looksLikePlaceholder(durationMs: Long, expectedRuntimeMinutes: Int?
 }
 
 /**
- * Whether the placeholder check should look now: it has not run for this source yet, playback has
- * advanced no more than [PLACEHOLDER_CHECK_WINDOW_MS] since the first frame, and the device is not offline.
+ * What the placeholder check knows about one source. Times are on a monotonic clock, in milliseconds.
+ * [stableDurationMs] is the length of the current run of reports that agree with each other.
  */
-internal fun placeholderCheckDue(alreadyChecked: Boolean, playedSinceFirstFrameMs: Long, network: NetworkCondition): Boolean =
-    !alreadyChecked &&
-        playedSinceFirstFrameMs <= PLACEHOLDER_CHECK_WINDOW_MS &&
-        network != NetworkCondition.NoInternet &&
-        network != NetworkCondition.ServersUnreachable
+internal data class PlaceholderCheckState(
+    val firstFrameAtMs: Long,
+    val firstFramePositionMs: Long,
+    val stableDurationMs: Long = 0L,
+    val stableSinceMs: Long = 0L,
+    val stableSnapshots: Int = 0,
+)
+
+internal sealed interface PlaceholderCheckStep {
+    /** Keep looking, with this state. */
+    data class Continue(val state: PlaceholderCheckState) : PlaceholderCheckStep
+
+    /** The check is over and claims nothing: it ran out of time, or the user seeked or watched on. */
+    data object Finished : PlaceholderCheckStep
+
+    /** The length has settled at [durationMs]; the check is over and this is the value to judge. */
+    data class Stable(val durationMs: Long) : PlaceholderCheckStep
+}
+
+/**
+ * One step of the placeholder check, for one snapshot of the player. The length is judged only once
+ * it has settled: the same value (within [PLACEHOLDER_DURATION_TOLERANCE_MS] of the first of the run)
+ * over [PLACEHOLDER_MIN_STABLE_SNAPSHOTS] snapshots spanning [PLACEHOLDER_MIN_STABLE_MS], never while the
+ * player is loading or buffering. A length that changes, grows or is unknown starts the run again. The
+ * check ends [PLACEHOLDER_CHECK_WINDOW_MS] after the first frame whatever the position does (a pause
+ * does not extend it), and as soon as the position goes back, jumps ahead of the time that passed, or
+ * has moved on by [PLACEHOLDER_WATCHED_LIMIT_MS]. While offline no snapshot is counted, but time still runs.
+ */
+internal fun stepPlaceholderCheck(
+    state: PlaceholderCheckState,
+    nowMs: Long,
+    positionMs: Long,
+    durationMs: Long,
+    isLoading: Boolean,
+    network: NetworkCondition,
+): PlaceholderCheckStep {
+    val elapsedMs = nowMs - state.firstFrameAtMs
+    val movedMs = positionMs - state.firstFramePositionMs
+    val seekedBack = movedMs < -PLACEHOLDER_SEEK_TOLERANCE_MS
+    val seekedAhead = movedMs > elapsedMs + PLACEHOLDER_SEEK_TOLERANCE_MS
+    if (elapsedMs > PLACEHOLDER_CHECK_WINDOW_MS || seekedBack || seekedAhead || movedMs > PLACEHOLDER_WATCHED_LIMIT_MS) {
+        return PlaceholderCheckStep.Finished
+    }
+    val offline = network == NetworkCondition.NoInternet || network == NetworkCondition.ServersUnreachable
+    if (offline) return PlaceholderCheckStep.Continue(state)
+    if (isLoading || durationMs <= 0L) return PlaceholderCheckStep.Continue(state.copy(stableSnapshots = 0))
+    val sameRun = state.stableSnapshots > 0 &&
+        kotlin.math.abs(durationMs - state.stableDurationMs) <= PLACEHOLDER_DURATION_TOLERANCE_MS
+    val next = if (sameRun) {
+        state.copy(stableSnapshots = state.stableSnapshots + 1)
+    } else {
+        state.copy(stableDurationMs = durationMs, stableSinceMs = nowMs, stableSnapshots = 1)
+    }
+    return if (next.stableSnapshots >= PLACEHOLDER_MIN_STABLE_SNAPSHOTS && nowMs - next.stableSinceMs >= PLACEHOLDER_MIN_STABLE_MS) {
+        PlaceholderCheckStep.Stable(next.stableDurationMs)
+    } else {
+        PlaceholderCheckStep.Continue(next)
+    }
+}
