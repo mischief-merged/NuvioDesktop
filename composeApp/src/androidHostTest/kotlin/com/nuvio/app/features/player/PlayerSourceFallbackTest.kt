@@ -116,16 +116,17 @@ class PlayerSourceFallbackTest {
     }
 
     @Test
-    fun failureAfterPlaybackStartedNeverFallsBack() {
+    fun failureAfterPlaybackStartedDoesNotFallBackWhenTheSettingIsOff() {
         val runtime = runtime()
         runtime.initialLoadCompleted = true
+        runtime.playerSettingsUiState = runtime.playerSettingsUiState.copy(streamAutoPlayFallbackOnFailure = false)
 
         assertFalse(runtime.tryFallbackToNextSourceAfterError("failed"))
     }
 
     @Test
-    fun manualSourceSelectionModeNeverFallsBack() {
-        val runtime = runtime()
+    fun manualModeDoesNotReplaceASourcePickedByHandThatNeverStarted() {
+        val runtime = runtime(autoSelected = false)
         runtime.playerSettingsUiState = runtime.playerSettingsUiState.copy(streamAutoPlayMode = StreamAutoPlayMode.MANUAL)
 
         assertFalse(runtime.tryFallbackToNextSourceAfterError("failed"))

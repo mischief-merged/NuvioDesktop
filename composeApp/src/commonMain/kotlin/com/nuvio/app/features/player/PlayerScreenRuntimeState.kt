@@ -283,6 +283,19 @@ internal class PlayerScreenRuntime(
     var sourceFallbackAttempts = 0
     val sourceFallbackTriedKeys = mutableSetOf<String>()
     var sourceFallbackJob: Job? = null
+    /** Set when the user presses Back, so a source that is still being looked up is not started after leaving. */
+    var sourceFailoverCancelled = false
+    /** The source being tried in place of one that failed, named on the loading screen until it plays. */
+    var sourceFailoverTryingName by mutableStateOf<String?>(null)
+    /** Set when a failed source was replaced; the message that it plays now is shown on its first frame. */
+    var sourceFailoverPlayingName: String? = null
+    /** The failure being moved on from was a placeholder clip, which changes what the screens say. */
+    var sourceFailoverForPlaceholder by mutableStateOf(false)
+    /** The source whose first seconds were checked for being a placeholder, so each is checked once. */
+    var placeholderCheckedUrl: String? = null
+    var placeholderCheckStateUrl: String? = null
+    var placeholderCheckState: PlaceholderCheckState? = null
+    var placeholderWarnedUrl: String? = null
 
     var showAudioModal by mutableStateOf(false)
     var showSubtitleModal by mutableStateOf(false)

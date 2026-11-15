@@ -532,7 +532,8 @@ fun NuvioToastHost(
         ) {
             Surface(
                 // A message with a button is read out when it appears, as the button is time-limited.
-                modifier = if (currentToast.onAction != null) {
+                // So is one that reports something that happened on its own.
+                modifier = if (currentToast.onAction != null || currentToast.announce) {
                     Modifier.semantics { liveRegion = LiveRegionMode.Polite }
                 } else {
                     Modifier
@@ -585,6 +586,8 @@ data class NuvioToastMessage(
     /** A button shown next to the message, with what pressing it does. Both are set or both are null. */
     val actionLabel: String? = null,
     val onAction: (() -> Unit)? = null,
+    /** Read out when it appears, for a message about something that happened without the user asking. */
+    val announce: Boolean = false,
 )
 
 object NuvioToastController {
@@ -597,6 +600,7 @@ object NuvioToastController {
         durationMillis: Long = 2500L,
         actionLabel: String? = null,
         onAction: (() -> Unit)? = null,
+        announce: Boolean = false,
     ) {
         nextToastId += 1L
         _currentToast.value = NuvioToastMessage(
@@ -605,6 +609,7 @@ object NuvioToastController {
             durationMillis = durationMillis,
             actionLabel = actionLabel.takeIf { onAction != null },
             onAction = onAction.takeIf { actionLabel != null },
+            announce = announce,
         )
     }
 

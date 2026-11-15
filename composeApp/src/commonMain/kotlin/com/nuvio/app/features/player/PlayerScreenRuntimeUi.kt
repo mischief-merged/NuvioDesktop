@@ -204,9 +204,11 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi(
         releaseInFlight = playerReleaseSurfaceRetention.inFlight,
         desktop = isDesktop,
     )
+    // The loading screen also covers the time a replacement for a failed source is looked up.
     val openingOverlayWanted = playerSettingsUiState.showLoadingOverlay &&
-        !initialLoadCompleted &&
+        (!initialLoadCompleted || sourceFailoverTryingName != null) &&
         errorMessage == null
+    val sourceFailoverMessage = sourceFailoverLoadingMessage()
     val episodeText = if (seasonNumber != null && episodeNumber != null && !episodeTitle.isNullOrBlank()) {
         stringResource(
             Res.string.compose_player_episode_title_format,
@@ -505,7 +507,7 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi(
         openingLogo = logo,
         openingTitle = title,
         openingMessage = if (playerSettingsUiState.showPlayerLoadingStatus) {
-            p2pInitialLoadingMessage ?: playerLoadingStatusMessage(
+            sourceFailoverMessage ?: p2pInitialLoadingMessage ?: playerLoadingStatusMessage(
                 showStatus = true,
                 controllerReady = playerController != null,
                 buffering = playbackSnapshot.isLoading,
@@ -655,7 +657,11 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi(
                 onSnapshot = { snapshot ->
                     if (!updatePlaybackSnapshot(snapshot)) return@PlatformPlayerSurface
                     refreshAudioTracksIfChanged()
-                    if (!snapshot.isLoading) initialLoadCompleted = true
+                    if (!snapshot.isLoading) {
+                        initialLoadCompleted = true
+                        announceSourceFailoverIfPending()
+                    }
+                    checkForPlaceholderSource(snapshot)
                     if (snapshot.isEnded) {
                         shouldPlay = false
                         controlsVisible = !playerControlsLocked
@@ -967,6 +973,7 @@ internal fun releaseRetainedPlayerBeforeNavigation(
 }
 
 private fun PlayerScreenRuntime.requestBack(exitTarget: PlayerExitTarget? = null) {
+    cancelSourceFailoverOnExit()
     flushWatchProgress()
     val exitingController = playerLifecycleController
     args.onBack { afterRelease, releaseFailed ->
@@ -1901,7 +1908,7 @@ private fun BoxScope.RenderPlaybackOverlays(
             horizontalSafePadding = horizontalSafePadding,
             onUnlock = { unlockPlayerControls() },
             showOpeningOverlay = playerSettingsUiState.showLoadingOverlay &&
-                !initialLoadCompleted &&
+                (!initialLoadCompleted || sourceFailoverTryingName != null) &&
                 errorMessage == null &&
                 !suppressOpeningOverlay,
             backdropArtwork = background ?: poster,
@@ -1909,13 +1916,14 @@ private fun BoxScope.RenderPlaybackOverlays(
             title = title,
             onBackWithProgress = { requestBack() },
             openingLoadingMessage = if (playerSettingsUiState.showPlayerLoadingStatus) {
-                p2pInitialLoadingMessage ?: playerLoadingStatusMessage(
+                sourceFailoverLoadingMessage() ?: p2pInitialLoadingMessage ?: playerLoadingStatusMessage(
                     showStatus = true,
                     controllerReady = playerController != null,
                     buffering = playbackSnapshot.isLoading,
                 )
             } else null,
             p2pInitialLoadingProgress = p2pInitialLoadingProgress,
+            announceOpeningMessage = sourceFailoverTryingName != null,
             showP2pRebufferStats = showP2pRebufferStats,
             p2pRebufferMessage = p2pRebufferMessage,
             p2pRebufferProgress = p2pRebufferProgress,
