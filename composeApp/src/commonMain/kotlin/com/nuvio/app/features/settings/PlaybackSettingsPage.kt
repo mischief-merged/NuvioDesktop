@@ -41,6 +41,11 @@ internal fun LazyListScope.playbackSettingsContent(
             }
             SettingsPage.PlaybackPlayer -> PlaybackPlayerSettings(isTablet, settings)
             SettingsPage.PlaybackStreamSelection -> PlaybackStreamSettings(isTablet, settings)
+            SettingsPage.PlaybackPreferences -> PlaybackPreferencesSettings(
+                isTablet = isTablet,
+                settings = settings,
+                onOpenStreamAutoPlay = { onPageChange(SettingsPage.PlaybackStreamSelection) },
+            )
             SettingsPage.PlaybackUpNext -> PlaybackUpNextSettings(isTablet, settings)
             SettingsPage.PlaybackSkipSegments -> PlaybackSkipSettings(isTablet, settings)
             SettingsPage.PlaybackInterface -> PlaybackInterfaceSettings(isTablet, settings)

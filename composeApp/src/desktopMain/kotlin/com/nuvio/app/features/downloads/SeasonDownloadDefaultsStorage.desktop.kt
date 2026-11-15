@@ -12,4 +12,11 @@ internal actual object SeasonDownloadDefaultsStorage {
     actual fun savePayload(profileId: Int, payload: String) {
         store.putString(ProfileScopedKey.of("season_download_defaults", profileId), payload)
     }
+
+    actual fun loadSetupAnswer(profileId: Int): String? =
+        store.getString(ProfileScopedKey.of("preference_setup_answer", profileId))
+
+    actual fun saveSetupAnswer(profileId: Int, answer: String) {
+        store.putString(ProfileScopedKey.of("preference_setup_answer", profileId), answer)
+    }
 }

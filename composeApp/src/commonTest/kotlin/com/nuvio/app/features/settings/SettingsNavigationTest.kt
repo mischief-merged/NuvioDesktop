@@ -32,6 +32,17 @@ class SettingsNavigationTest {
     }
 
     @Test
+    fun theQualityAndLanguagePreferencesAreAPlaybackPageOnEveryPlatform() {
+        assertEquals(SettingsPage.Playback, SettingsPage.PlaybackPreferences.previousPage())
+        assertEquals(SettingsCategory.Watch, SettingsPage.PlaybackPreferences.category)
+        AndroidPlaybackEngine.entries.forEach { engine ->
+            listOf(true, false).forEach { ios ->
+                assertTrue(PlaybackSection.Preferences in visiblePlaybackSections(ios, engine, p2pVisible = false))
+            }
+        }
+    }
+
+    @Test
     fun bufferOptionsFollowThePlatformAndPlaybackEngine() {
         AndroidPlaybackEngine.entries.forEach { engine ->
             val android = visiblePlaybackSections(ios = false, engine = engine, p2pVisible = false)
