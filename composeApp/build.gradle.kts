@@ -1287,7 +1287,7 @@ compose.desktop {
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb, TargetFormat.Rpm, TargetFormat.AppImage)
-            packageName = "Nuvio"
+            packageName = "NuvioRoid"
             packageVersion = desktopReleasePackageVersion
             vendor = "Nuvio Media"
             if (isMacHost) {
@@ -1302,19 +1302,18 @@ compose.desktop {
                 "jdk.unsupported",
             )
             macOS {
-                bundleID = "com.nuvio.media.desktop"
-                iconFile.set(project.file("src/desktopMain/resources/icons/nuvio-app-icon-transparent.icns"))
+                bundleID = "io.github.mischiefmerged.nuvioroid"
+                iconFile.set(project.file("src/desktopMain/resources/icons/nuvioroid.icns"))
                 infoPlist {
                     extraKeysRawXml = """
                         <key>CFBundleURLTypes</key>
                         <array>
                             <dict>
                                 <key>CFBundleURLName</key>
-                                <string>com.nuvio.media.desktop</string>
+                                <string>io.github.mischiefmerged.nuvioroid</string>
                                 <key>CFBundleURLSchemes</key>
                                 <array>
-                                    <string>nuvio</string>
-                                    <string>stremio</string>
+                                    <string>nuvioroid</string>
                                 </array>
                             </dict>
                         </array>
