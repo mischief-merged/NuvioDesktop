@@ -20,12 +20,46 @@ internal data class DesktopDownloadLocation(val id: String, val path: Path)
 internal interface DownloadVolumes {
     /** The mount point of the drive that holds [path], or null for the system volume, which is always there. */
     fun anchorOf(path: Path): Path?
+
+    /** The drives that are mounted now, for finding a drive that came back under another name. */
+    fun mountPoints(): List<Path> = emptyList()
+}
+
+/** Runs a file-system call that may hang on its own thread and gives up after a time. */
+internal object FsGuard {
+    private val pool = java.util.concurrent.Executors.newCachedThreadPool { runnable ->
+        Thread(runnable, "download-fs").apply { isDaemon = true }
+    }
+
+    fun <T> call(timeoutMs: Long, onTimeout: T, block: () -> T): T {
+        val future = pool.submit(java.util.concurrent.Callable { block() })
+        return try {
+            future.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (_: java.util.concurrent.TimeoutException) {
+            future.cancel(true)
+            onTimeout
+        } catch (error: java.util.concurrent.ExecutionException) {
+            throw error.cause ?: error
+        }
+    }
 }
 
 internal class OsDownloadVolumes(
     private val osName: String = System.getProperty("os.name").orEmpty().lowercase(Locale.ROOT),
     private val systemDrive: String? = System.getenv("SystemDrive"),
 ) : DownloadVolumes {
+    override fun mountPoints(): List<Path> = runCatching {
+        when {
+            osName.contains("mac") -> Files.list(Paths.get("/Volumes")).use { it.toList() }
+            osName.contains("win") -> java.io.File.listRoots().map { it.toPath() }
+            else -> listOf("/media", "/run/media", "/mnt").map(Paths::get).filter(Files::isDirectory).flatMap { base ->
+                Files.list(base).use { it.toList() }.flatMap { child ->
+                    if (base.toString() == "/mnt") listOf(child) else Files.list(child).use { it.toList() }
+                }
+            }
+        }
+    }.getOrDefault(emptyList())
+
     override fun anchorOf(path: Path): Path? {
         val absolute = path.toAbsolutePath().normalize()
         val root = absolute.root ?: return null
@@ -81,6 +115,8 @@ internal class DownloadLocations(
     private val config: DownloadLocationConfig,
     private val appFolder: () -> Path,
     val volumes: DownloadVolumes = OsDownloadVolumes(),
+    /** The longest a look at a volume may take before it counts as not answering. */
+    private val timeoutMs: Long = 3_000L,
 ) {
     private val lock = Any()
 
@@ -138,53 +174,101 @@ internal class DownloadLocations(
         }
     }
 
+    /**
+     * Whether the location can be used. Every file-system call here may hang on a drive that is
+     * failing or a network volume that stopped answering, so it runs on a helper thread and is given
+     * [timeoutMs]; a location that does not answer counts as not connected, and nothing is touched.
+     */
     fun availability(location: DesktopDownloadLocation): FolderAvailability {
         if (location.id == AppId) return FolderAvailability.Available
-        val anchor = volumes.anchorOf(location.path)
-        if (anchor != null && !Files.exists(anchor)) return FolderAvailability.NotConnected
-        if (!Files.isDirectory(location.path)) return FolderAvailability.NotFound
-        val marker = runCatching { Files.readString(location.path.resolve(MarkerName)).trim() }.getOrNull()
-        return if (marker == location.id) FolderAvailability.Available else FolderAvailability.NotFound
+        return FsGuard.call(timeoutMs, FolderAvailability.NotConnected) {
+            val anchor = volumes.anchorOf(location.path)
+            when {
+                anchor != null && !Files.exists(anchor) -> FolderAvailability.NotConnected
+                !Files.isDirectory(location.path) -> FolderAvailability.NotFound
+                markerIdOf(location.path) == location.id -> FolderAvailability.Available
+                else -> FolderAvailability.NotSetUp
+            }
+        }
     }
 
-    /** The location that holds [path], judged by the names alone. */
+    private fun markerIdOf(folder: Path): String? =
+        runCatching { Files.readString(folder.resolve(MarkerName)).trim() }.getOrNull()
+
+    /**
+     * Looks for a location whose drive came back under another name, on any other mounted drive, by
+     * the id its marker holds and never by a file name. The saved path is updated when it is found.
+     */
+    fun rediscover(location: DesktopDownloadLocation): DesktopDownloadLocation? {
+        if (location.id == AppId) return null
+        return FsGuard.call(timeoutMs * 2, null) {
+            val anchor = volumes.anchorOf(location.path) ?: return@call null
+            val relative = anchor.relativize(location.path.toAbsolutePath().normalize())
+            volumes.mountPoints()
+                .filter { it != anchor && Files.isDirectory(it) }
+                .map { it.resolve(relative.toString()) }
+                .firstOrNull { candidate -> Files.isDirectory(candidate) && markerIdOf(candidate) == location.id }
+                ?.let { moved -> moveLocation(location.id, moved) }
+        }
+    }
+
+    private fun moveLocation(id: String, path: Path): DesktopDownloadLocation = synchronized(lock) {
+        val normalized = path.toAbsolutePath().normalize()
+        config.saveLocations(config.locations().map { if (it.id == id) it.copy(path = normalized.toString()) else it })
+        cachedAll = null
+        DesktopDownloadLocation(id, normalized)
+    }
+
+    /** The location of [path], judged by the names alone. */
     fun locationContaining(path: Path): DesktopDownloadLocation? {
         val absolute = path.toAbsolutePath().normalize()
         return all().filter { absolute.startsWith(it.path) }.maxByOrNull { it.path.nameCount }
     }
 
-    fun locationOfRecord(locationId: String?, localFileUri: String?): DesktopDownloadLocation {
-        locationId?.let { id -> location(id)?.let { return it } }
+    /** The location a record names, or the one its address is in; null when it names one that is not known. */
+    fun ownerOf(locationId: String?, localFileUri: String?): DesktopDownloadLocation? {
+        if (locationId != null) return location(locationId)
         localFileUri?.let(::fileOfUri)?.let { file -> locationContaining(file.toPath())?.let { return it } }
         return appLocation()
     }
 
+    /** [ownerOf], and the app folder for a record whose location is not known (for counting and labels only). */
+    fun locationOfRecord(locationId: String?, localFileUri: String?): DesktopDownloadLocation =
+        ownerOf(locationId, localFileUri) ?: localFileUri?.let(::fileOfUri)?.let { locationContaining(it.toPath()) } ?: appLocation()
+
     /**
-     * Looks for the file of a record: in its own location, at its recorded address, then in every
-     * other location that can be reached. A file that is not found is only [FileLookup.Missing]
-     * when no location that could hold it is away.
+     * Looks for the file of a record in the place the record names, and nowhere else. When that place
+     * cannot be used the answer is that it is away, and no other place is looked in: a file of the same
+     * name somewhere else is another file. A record is pointed somewhere else only by a journalled move.
      */
     fun locate(locationId: String?, localFileUri: String?, fileName: String): FileLookup {
-        val owner = locationOfRecord(locationId, localFileUri)
+        val owner = ownerOf(locationId, localFileUri) ?: return FileLookup.Unreachable(locationId, FolderAvailability.NotFound)
+        val state = availability(owner)
+        if (state != FolderAvailability.Available) return FileLookup.Unreachable(owner.id, state)
         val name = fileName.trim()
         val recorded = localFileUri?.let(::fileOfUri)
-        val candidates = buildList {
-            if (name.isNotEmpty() && availability(owner) == FolderAvailability.Available) add(owner to owner.path.resolve(name).toFile())
-            if (recorded != null) add((locationContaining(recorded.toPath()) ?: owner) to recorded)
-            if (name.isNotEmpty()) {
-                all().filter { it.id != owner.id && availability(it) == FolderAvailability.Available }
-                    .forEach { add(it to it.path.resolve(name).toFile()) }
+        return FsGuard.call(timeoutMs, FileLookup.Unreachable(owner.id, FolderAvailability.NotConnected)) {
+            // The address on the record counts only inside a location that can be used, marker and all.
+            val recordedOwner = recorded?.let { locationContaining(it.toPath()) }
+            if (recorded != null && recordedOwner != null && recordedOwner.id != owner.id) {
+                val other = availability(recordedOwner)
+                if (other != FolderAvailability.Available) return@call FileLookup.Unreachable(recordedOwner.id, other)
+            }
+            val candidates = listOfNotNull(
+                recorded?.takeIf { recordedOwner != null || locationId == null }?.let { (recordedOwner ?: owner) to it },
+                name.takeIf { it.isNotEmpty() }?.let { owner to owner.path.resolve(it).toFile() },
+            )
+            candidates.firstOrNull { (_, file) -> file.isFile }?.let { (location, file) ->
+                FileLookup.Found(file.toURI().toString(), location.id)
+            } ?: run {
+                val anchor = recorded?.let { volumes.anchorOf(it.toPath()) }
+                if (anchor != null && !Files.exists(anchor)) {
+                    FileLookup.Unreachable(owner.id, FolderAvailability.NotConnected)
+                } else {
+                    FileLookup.Missing
+                }
             }
         }
-        candidates.firstOrNull { (_, file) -> file.isFile }?.let { (location, file) ->
-            return FileLookup.Found(file.toURI().toString(), location.id)
-        }
-        val ownerState = availability(owner)
-        if (ownerState != FolderAvailability.Available) return FileLookup.Unreachable(owner.id, ownerState)
-        // A path on a drive that is not one of ours, and not there.
-        val anchor = recorded?.let { volumes.anchorOf(it.toPath()) }
-        if (anchor != null && !Files.exists(anchor)) return FileLookup.Unreachable(owner.id, FolderAvailability.NotConnected)
-        return FileLookup.Missing
     }
 
     private fun writeMarker(location: DesktopDownloadLocation) {

@@ -204,7 +204,7 @@ object DownloadsRepository {
             replacedExisting = true
             activeTransfers.remove(existing.id)?.cancel()
             backend.removeFile(playableLocalFileUri(existing) ?: existing.localFileUri)
-            backend.removePartialFile(existing.fileName)
+            backend.removePartialOf(existing)
             currentItems.removeAll { it.id == existing.id }
         }
 
@@ -297,6 +297,29 @@ object DownloadsRepository {
             .forEach(::pauseDownload)
     }
 
+    /**
+     * Pauses a running download and waits until its transfer has stopped writing, so that its file can
+     * be looked at or moved. False when it did not stop in time. Never holds the state lock while waiting.
+     */
+    internal fun pauseAndWait(downloadId: String, timeoutMs: Long = 30_000L): Boolean {
+        val transfer = synchronized(stateLock) {
+            ensureLoaded()
+            val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return true
+            if (item.status != DownloadStatus.Downloading) return true
+            activeTransfers.remove(downloadId).also {
+                mutateItem(downloadId) { current ->
+                    current.copy(
+                        status = DownloadStatus.Paused,
+                        pausedByFolder = false,
+                        updatedAtEpochMs = DownloadsClock.nowEpochMs(),
+                        errorMessage = null,
+                    )
+                }
+            }
+        }
+        return transfer?.cancelAndWait(timeoutMs) ?: true
+    }
+
     fun resumeDownload(downloadId: String): Unit = synchronized(stateLock) {
         ensureLoaded()
         val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return
@@ -338,11 +361,14 @@ object DownloadsRepository {
     /** Removes every failed download from the list. A failed download has no file; only a partial one is cleaned up. Returns how many. */
     fun clearFailed(): Int = synchronized(stateLock) {
         ensureLoaded()
-        val failed = _uiState.value.items.filter { it.status == DownloadStatus.Failed }
+        // A failed download on a location that is away is left alone: its partial file cannot be cleaned up now.
+        val failed = _uiState.value.items.filter {
+            it.status == DownloadStatus.Failed && backend.isConnected(it) && !ItemLocks.isHeld(it.id)
+        }
         if (failed.isEmpty()) return 0
         failed.forEach { item ->
             activeTransfers.remove(item.id)?.cancel()
-            backend.removePartialFile(item.fileName)
+            backend.removePartialOf(item)
         }
         val ids = failed.mapTo(mutableSetOf()) { it.id }
         publish(_uiState.value.items.filterNot { it.id in ids })
@@ -363,10 +389,12 @@ object DownloadsRepository {
     fun cancelDownload(downloadId: String): Unit = synchronized(stateLock) {
         ensureLoaded()
         val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return
+        // On a location that is away, or while a move has the item, nothing is cancelled or removed.
+        if (!backend.isConnected(item) || ItemLocks.isHeld(downloadId)) return
 
         activeTransfers.remove(downloadId)?.cancel()
         backend.removeFile(playableLocalFileUri(item) ?: item.localFileUri)
-        backend.removePartialFile(item.fileName)
+        backend.removePartialOf(item)
 
         publish(_uiState.value.items.filterNot { it.id == downloadId })
         persist()
@@ -382,7 +410,19 @@ object DownloadsRepository {
         ensureLoaded()
         val items = _uiState.value.items
         val item = items.firstOrNull { it.id == downloadId } ?: return DownloadDeleteResult.Gone
+        // Whatever the status, an item whose location is away is not touched: not its partial file, not its record.
+        if (!backend.isConnected(item)) return DownloadDeleteResult.NotReachable
+        // One thing changes an item at a time: a move has it, or something else is deleting it.
+        if (!ItemLocks.tryAcquire(downloadId)) return DownloadDeleteResult.Moving
+        try {
+            return deleteLocked(item, items, permanently)
+        } finally {
+            ItemLocks.release(downloadId)
+        }
+    }
 
+    private fun deleteLocked(item: DownloadItem, items: List<DownloadItem>, permanently: Boolean): DownloadDeleteResult {
+        val downloadId = item.id
         val lookup = if (item.status == DownloadStatus.Completed) backend.locate(item) else FileLookup.Missing
         // A file whose location is away is not gone. Nothing is touched, and the entry stays.
         if (lookup is FileLookup.Unreachable) return DownloadDeleteResult.NotReachable
@@ -399,11 +439,11 @@ object DownloadsRepository {
             }
         }
         activeTransfers.remove(downloadId)?.cancel()
-        backend.removePartialFile(item.fileName)
+        backend.removePartialOf(item)
 
         publish(items.filterNot { it.id == downloadId })
         persist()
-        DownloadDeleteResult.Removed
+        return DownloadDeleteResult.Removed
     }
 
     /** Whether the files of deleted downloads go to the trash of the system, or are held for days in the downloads folder. */
@@ -634,6 +674,8 @@ object DownloadsRepository {
         ensureLoaded()
         val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return false
         if (item.status != DownloadStatus.Completed) return false
+        // A move has the item: its file is in the middle of changing places, which is not a file that is lost.
+        if (ItemLocks.isHeld(downloadId)) return true
         val checked = item.withoutLostFile()
         if (checked.status == DownloadStatus.Completed) return true
         mutateItem(downloadId) { checked }
@@ -764,6 +806,19 @@ object DownloadsRepository {
                 return AutoDownloadRemovalResult.Changed
             }
             if (!stillWanted()) return AutoDownloadRemovalResult.Changed
+            if (!backend.isConnected(item)) return AutoDownloadRemovalResult.NotReachable
+            // A move has the item: it stays scheduled and is looked at again later.
+            if (!ItemLocks.tryAcquire(downloadId)) return AutoDownloadRemovalResult.Busy
+            try {
+                return removeWatchedLocked(item, items)
+            } finally {
+                ItemLocks.release(downloadId)
+            }
+        }
+
+    private fun removeWatchedLocked(item: DownloadItem, items: List<DownloadItem>): AutoDownloadRemovalResult {
+        val downloadId = item.id
+        run {
             val lookup = backend.locate(item)
             // A file whose location is away is not gone: it is left, and the entry stays.
             if (lookup is FileLookup.Unreachable) return AutoDownloadRemovalResult.NotReachable
@@ -778,8 +833,9 @@ object DownloadsRepository {
             }
             publish(items.filterNot { it.id == downloadId })
             persist()
-            AutoDownloadRemovalResult.Removed
+            return AutoDownloadRemovalResult.Removed
         }
+    }
 
     /** Runs [block] under the state lock, and only while [transfer] still owns the download. */
     private inline fun ifCurrent(downloadId: String, transfer: ActiveTransfer, block: () -> Unit) {
@@ -851,7 +907,7 @@ object DownloadsRepository {
         ensureLoaded()
         val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return
         if (item.status != DownloadStatus.Paused || !item.pausedByFolder) return
-        backend.removePartialFile(item.fileName)
+        backend.removePartialOf(item)
         mutateItem(downloadId) { it.copy(locationId = locationId) }
         resumeDownload(downloadId)
     }
@@ -921,6 +977,12 @@ private class ActiveTransfer {
         cancelled = true
         handle?.cancel()
     }
+
+    /** Cancels and waits for the transfer to have stopped writing. True when there was nothing to wait for. */
+    fun cancelAndWait(timeoutMs: Long): Boolean {
+        cancelled = true
+        return handle?.cancelAndWait(timeoutMs) ?: true
+    }
 }
 
 internal interface DownloadsBackend {
@@ -976,6 +1038,9 @@ internal interface DownloadsBackend {
     /** Whether the location can be used now. */
     fun locationConnected(locationId: String?): Boolean = true
 
+    /** Removes the partial file of the item, from its own location only. */
+    fun removePartialOf(item: DownloadItem): Boolean = removePartialFile(item.fileName)
+
     /** The location a new download goes to. Null where there are no locations. */
     fun placementFor(items: List<DownloadItem>, parentMetaId: String, isEpisode: Boolean): String? = null
 }
@@ -991,6 +1056,9 @@ internal enum class DownloadDeleteResult {
 
     /** The file is on a location that is not connected. Nothing was removed. */
     NotReachable,
+
+    /** A move has the item. Nothing was removed. */
+    Moving,
 }
 
 internal enum class AutoDownloadRemovalResult {
@@ -1004,6 +1072,9 @@ internal enum class AutoDownloadRemovalResult {
 
     /** The file is on a location that is not connected. Nothing was touched. */
     NotReachable,
+
+    /** A move has the item. Nothing was touched. */
+    Busy,
 }
 
 private object PlatformDownloadsBackend : DownloadsBackend {
@@ -1058,6 +1129,9 @@ private object PlatformDownloadsBackend : DownloadsBackend {
     override fun isConnected(item: DownloadItem): Boolean = DownloadFolders.controller.isConnected(item)
 
     override fun locationConnected(locationId: String?): Boolean = DownloadFolders.controller.locationConnected(locationId)
+
+    override fun removePartialOf(item: DownloadItem): Boolean =
+        DownloadFolders.controller.removePartialOf(item) ?: removePartialFile(item.fileName)
 
     override fun placementFor(items: List<DownloadItem>, parentMetaId: String, isEpisode: Boolean): String? =
         DownloadFolders.controller.placementFor(items, parentMetaId, isEpisode)

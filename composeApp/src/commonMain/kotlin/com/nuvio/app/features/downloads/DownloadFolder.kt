@@ -10,8 +10,11 @@ internal enum class FolderAvailability {
     /** The drive the location is on is not there. */
     NotConnected,
 
-    /** The drive is there but the folder is not, or is not the one that was chosen. */
+    /** The drive is there but the folder is not. */
     NotFound,
+
+    /** The folder is there but does not carry the marker that makes it a download location. Nothing is lost: choose it again. */
+    NotSetUp,
 }
 
 /** What a look for the file of a download found. */
@@ -67,6 +70,8 @@ internal data class DownloadFolderState(
     val isMac: Boolean = false,
     /** True while a move is running. */
     val moving: Boolean = false,
+    /** The downloads a move has in hand. They cannot be deleted, played or started until it is done. */
+    val movingIds: Set<String> = emptySet(),
 ) {
     val defaultLocation: DownloadLocationInfo? get() = locations.firstOrNull { it.isDefault }
 
@@ -89,9 +94,27 @@ internal enum class MoveFailureReason {
     CouldNotRead,
     CouldNotWrite,
     Other,
+
+    /** The download is a link. Links are never moved. */
+    Symlink,
+
+    /** The list changed while the move ran: the item was deleted or points somewhere else. */
+    RecordChanged,
+
+    /** The item is playing. */
+    Playing,
+
+    /** Something else is changing the item. */
+    Busy,
+
+    /** Its download did not stop in time, so its size could not be trusted. */
+    StillWriting,
+
+    /** Moved, but the original could not be removed. It stays, and removal is tried again at the next start. */
+    OriginalNotRemoved,
 }
 
-internal data class MoveFailure(val name: String, val reason: MoveFailureReason)
+internal data class MoveFailure(val name: String, val reason: MoveFailureReason, val detail: String? = null)
 
 internal data class MoveProgress(
     val destinationName: String,
@@ -120,8 +143,10 @@ internal data class MoveReport(
     val cancelled: Boolean = false,
     /** Items that were asked for but are on a location that is away. */
     val unreachable: Int = 0,
-    /** Items not moved because the move was cancelled. */
+    /** Items not moved because the move was cancelled or stopped. */
     val notReached: Int = 0,
+    /** Items that were moved whose original could not be removed. They count as moved. */
+    val originalsKept: List<MoveFailure> = emptyList(),
     /** What went wrong before anything moved, if the move did not start. */
     val problem: FolderProblem? = null,
 )
@@ -175,6 +200,35 @@ internal interface DownloadFolderController {
 
     /** Called when a location came back after it was away. */
     fun onLocationReturned() = Unit
+
+    /** Removes the partial file of [item] from its own location only. Null where locations are not handled. */
+    fun removePartialOf(item: DownloadItem): Boolean? = null
+}
+
+/**
+ * Says which downloads are in the hands of a move or of a delete, so that only one thing changes an
+ * item at a time. Taking it never waits: whoever cannot have it says the item is busy.
+ */
+internal object ItemLocks {
+    private val lock = kotlinx.atomicfu.locks.SynchronizedObject()
+    private val held = mutableSetOf<String>()
+
+    fun tryAcquire(id: String): Boolean = kotlinx.atomicfu.locks.synchronized(lock) { held.add(id) }
+
+    fun release(id: String) {
+        kotlinx.atomicfu.locks.synchronized(lock) { held.remove(id) }
+    }
+
+    fun isHeld(id: String): Boolean = kotlinx.atomicfu.locks.synchronized(lock) { id in held }
+
+    inline fun <T> withLock(id: String, busy: () -> T, block: () -> T): T {
+        if (!tryAcquire(id)) return busy()
+        try {
+            return block()
+        } finally {
+            release(id)
+        }
+    }
 }
 
 internal object NoDownloadFolders : DownloadFolderController {

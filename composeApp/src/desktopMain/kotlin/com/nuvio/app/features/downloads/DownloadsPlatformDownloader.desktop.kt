@@ -13,6 +13,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.withTimeoutOrNull
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.downloads_error_not_enough_space
 import nuvio.composeapp.generated.resources.downloads_error_private_address
@@ -60,6 +63,9 @@ internal actual object DownloadsPlatformDownloader {
     private fun freeBytesFor(item: DownloadItem): Long? =
         if (freeBytesProvider !== UsePerLocationFreeSpace) freeBytesProvider() else DesktopDownloads.folders.freeBytesOf(item)
 
+    /** How often the repository is told how far a transfer has come. The stored list is written each time. */
+    internal var progressIntervalMs: Long = ProgressIntervalMs
+
     internal var waitBeforeRetry: suspend (delayMs: Long) -> Unit = { delay(it) }
 
     /** A transfer that receives nothing for this long is cut off and tried again. */
@@ -92,6 +98,7 @@ internal actual object DownloadsPlatformDownloader {
     ): DownloadsTaskHandle {
         val job = SupervisorJob()
         val scope = CoroutineScope(job + Dispatchers.IO)
+        val handle = DesktopDownloadsTaskHandle(job)
 
         scope.launch {
             // A download goes to the location of its record. When that is away, or a move is
@@ -157,7 +164,7 @@ internal actual object DownloadsPlatformDownloader {
             }
         }
 
-        return DesktopDownloadsTaskHandle(job)
+        return handle
     }
 
     actual fun removeFile(localFileUri: String?): Boolean {
@@ -263,6 +270,7 @@ internal actual object DownloadsPlatformDownloader {
             contentLength = response.headers().firstValue("Content-Length").orElse(null)?.toLongOrNull(),
         )
         var downloadedBytes = startingBytes
+        val reporter = ThrottledProgress(progressIntervalMs, System::nanoTime) { bytes -> onProgress(bytes, totalBytes) }
         // Checked before anything of the body is written, for every download: a file announced as
         // larger than the room on the disk fails with a plain message instead of a system error.
         if (totalBytes != null) {
@@ -293,6 +301,15 @@ internal actual object DownloadsPlatformDownloader {
                 // ends it, and the transfer is then tried again like any other dropped connection.
                 val lastReadAtNanos = AtomicLong(System.nanoTime())
                 val stalled = AtomicBoolean(false)
+                // Cancelling the transfer closes the body, which ends a read that is blocked on a
+                // silent connection, so a pause or a move does not wait for data that never comes.
+                val closer = launch {
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        runCatching { input.close() }
+                    }
+                }
                 val stallWatch = launch {
                     val timeoutMs = stallTimeoutMs
                     while (true) {
@@ -306,17 +323,17 @@ internal actual object DownloadsPlatformDownloader {
                 }
                 try {
                     FileOutputStream(tempFile, appendToTemp).use { output ->
-                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                        val buffer = ByteArray(ReadBufferBytes)
                         var nextLimitCheckAtBytes = downloadedBytes + LimitCheckIntervalBytes
                         while (true) {
                             currentCoroutineContext().ensureActive()
-                            val read = input.read(buffer)
+                            val read = input.read(buffer, 0, readChunkSize(limiter.bytesPerSecond))
                             if (read <= 0) break
                             lastReadAtNanos.set(System.nanoTime())
                             output.write(buffer, 0, read)
                             digest?.update(buffer, 0, read)
                             downloadedBytes += read.toLong()
-                            onProgress(downloadedBytes, totalBytes)
+                            reporter.offer(downloadedBytes)
                             limiter.throttle(read)
                             // Waiting for the speed limit is not a connection that went silent.
                             lastReadAtNanos.set(System.nanoTime())
@@ -333,9 +350,14 @@ internal actual object DownloadsPlatformDownloader {
                         output.flush()
                     }
                 } catch (error: IOException) {
+                    // A read that ended because the transfer was cancelled is a cancellation, not a dropped connection.
+                    currentCoroutineContext().ensureActive()
                     throw if (stalled.get()) IOException("Connection stalled") else error
                 } finally {
                     stallWatch.cancel()
+                    closer.cancel()
+                    // The last value is always reported, whether the transfer ended, failed or was stopped.
+                    reporter.flush(downloadedBytes)
                 }
                 if (stalled.get()) throw IOException("Connection stalled")
             }
@@ -351,7 +373,7 @@ internal actual object DownloadsPlatformDownloader {
         )
     }
 
-    private fun sendDownloadRequest(
+    private suspend fun sendDownloadRequest(
         request: DownloadPlatformRequest,
         rangeStart: Long?,
     ): HttpResponse<java.io.InputStream> {
@@ -367,7 +389,10 @@ internal actual object DownloadsPlatformDownloader {
         if (rangeStart != null && rangeStart > 0L) {
             builder.header("Range", "bytes=$rangeStart-")
         }
-        return desktopDownloadHttpClient.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream())
+        // Interrupted when the transfer is cancelled, so that waiting for a server does not hold it.
+        return runInterruptible(Dispatchers.IO) {
+            desktopDownloadHttpClient.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream())
+        }
     }
 }
 
@@ -406,7 +431,55 @@ private class DesktopDownloadsTaskHandle(
     override fun cancel() {
         job.cancel()
     }
+
+    override fun cancelAndWait(timeoutMs: Long): Boolean {
+        job.cancel()
+        return runBlocking { withTimeoutOrNull(timeoutMs) { job.children.toList().forEach { it.join() } } } != null
+    }
 }
+
+/** The bytes read from the connection at a time. */
+internal const val ReadBufferBytes = 256 * 1024
+
+/** The least time between two reports of progress. */
+internal const val ProgressIntervalMs = 250L
+
+/**
+ * Passes progress on at most once every [intervalMs], and the last value always, through [flush].
+ * Without it every read would reach the stored list.
+ */
+internal class ThrottledProgress(
+    private val intervalMs: Long,
+    private val nanoTime: () -> Long,
+    private val report: (Long) -> Unit,
+) {
+    private var lastReportedNanos = Long.MIN_VALUE
+    private var lastReportedBytes = -1L
+
+    fun offer(bytes: Long) {
+        val now = nanoTime()
+        if (lastReportedNanos == Long.MIN_VALUE || now - lastReportedNanos >= intervalMs * 1_000_000L) {
+            lastReportedNanos = now
+            lastReportedBytes = bytes
+            report(bytes)
+        }
+    }
+
+    fun flush(bytes: Long) {
+        if (bytes != lastReportedBytes) {
+            lastReportedBytes = bytes
+            report(bytes)
+        }
+    }
+}
+
+/**
+ * How much to read at a time. A low limit gets small reads, so that the wait for the limit is spread
+ * over the transfer and not paid in one long pause after a large chunk.
+ */
+internal fun readChunkSize(limitBytesPerSecond: Long?): Int =
+    if (limitBytesPerSecond == null) ReadBufferBytes
+    else (limitBytesPerSecond / 10).coerceIn(4 * 1024L, ReadBufferBytes.toLong()).toInt()
 
 private val UsePerLocationFreeSpace: () -> Long? = { null }
 

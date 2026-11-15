@@ -16,6 +16,9 @@ internal enum class AutoDownloadRemovalOutcome {
     /** The file is on a location that is not connected. The removal stays scheduled and nothing is touched. */
     NotReachable,
 
+    /** A move has the item. The removal stays scheduled. */
+    Moving,
+
     /** The removal no longer applies and was dropped. */
     Cancelled,
 }
@@ -128,6 +131,7 @@ internal class DeleteAfterWatching(
             AutoDownloadRemovalResult.Changed -> cancel(profileId, removal)
             AutoDownloadRemovalResult.NotMoved -> AutoDownloadRemovalOutcome.NotMoved
             AutoDownloadRemovalResult.NotReachable -> AutoDownloadRemovalOutcome.NotReachable
+            AutoDownloadRemovalResult.Busy -> AutoDownloadRemovalOutcome.Moving
         }
     }
 

@@ -14,6 +14,15 @@ internal data class DownloadPlatformRequest(
 
 internal interface DownloadsTaskHandle {
     fun cancel()
+
+    /**
+     * Cancels and waits until the transfer has stopped writing and closed its file. False when it
+     * did not stop within [timeoutMs]. A platform that cannot wait says it stopped.
+     */
+    fun cancelAndWait(timeoutMs: Long): Boolean {
+        cancel()
+        return true
+    }
 }
 
 internal expect object DownloadsPlatformDownloader {
