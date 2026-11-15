@@ -108,3 +108,6 @@ internal fun SavedDetailsNotice(modifier: Modifier = Modifier) {
         }
     }
 }
+
+/** A trailer is streamed, so the trailers section is offered only with trailers to show and a connection. */
+internal fun trailersOffered(trailerCount: Int, offline: Boolean): Boolean = trailerCount > 0 && !offline

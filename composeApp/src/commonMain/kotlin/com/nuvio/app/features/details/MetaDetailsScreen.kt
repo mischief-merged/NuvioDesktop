@@ -777,8 +777,10 @@ fun MetaDetailsScreen(
                 val hasMoreLikeThisSection = remember(meta) {
                     meta.moreLikeThis.isNotEmpty()
                 }
-                val hasTrailersSection = remember(meta) {
-                    meta.trailers.isNotEmpty()
+                // A trailer is streamed, so none is offered while the app is offline.
+                val trailersAvailableOffline = !networkStatusUiState.isOfflineLike
+                val hasTrailersSection = remember(meta, trailersAvailableOffline) {
+                    trailersOffered(meta.trailers.size, offline = !trailersAvailableOffline)
                 }
                 val uriHandler = LocalUriHandler.current
                 val trailerPlaybackMode = AppFeaturePolicy.trailerPlaybackMode
@@ -795,6 +797,7 @@ fun MetaDetailsScreen(
                 }
                 val heroTrailerPlaybackEnabled = AppFeaturePolicy.heroTrailerPlaybackSupported &&
                     inAppTrailerPlaybackEnabled &&
+                    trailersAvailableOffline &&
                     metaScreenSettingsUiState.heroTrailerPlayback
                 var heroTrailerPlaybackSource by remember(meta.id, heroTrailerCandidate?.id) { mutableStateOf<TrailerPlaybackSource?>(null) }
                 var heroTrailerReady by remember(meta.id, heroTrailerCandidate?.id) { mutableStateOf(false) }

@@ -73,4 +73,11 @@ class SavedDetailsTest {
         assertTrue(meta.videos.isEmpty())
         assertTrue(meta.trailers.isEmpty())
     }
+
+    @Test
+    fun trailers_are_not_offered_offline_or_without_trailers() {
+        assertTrue(trailersOffered(2, offline = false))
+        assertEquals(false, trailersOffered(2, offline = true))
+        assertEquals(false, trailersOffered(0, offline = false))
+    }
 }
