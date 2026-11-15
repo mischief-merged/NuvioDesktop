@@ -13,7 +13,11 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -109,26 +113,44 @@ internal object DownloadSubtitles {
          */
         guardedWrite: (action: () -> Unit) -> Boolean = { it(); true },
     ): SubtitleSaveResult = withContext(Dispatchers.Default) {
+        // One run per video at a time: a second request waits, then finds little or nothing left to do.
+        runMutex(localVideoUri).withLock { prepareOnce(item, localVideoUri, recheck, nowEpochMs, guardedWrite) }
+    }
+
+    private val runsGuard = SynchronizedObject()
+    private val runs = mutableMapOf<String, Mutex>()
+
+    private fun runMutex(localVideoUri: String): Mutex = synchronized(runsGuard) {
+        runs.getOrPut(localVideoUri.trim().removePrefix("file:").trimStart('/')) { Mutex() }
+    }
+
+    private suspend fun prepareOnce(
+        item: DownloadItem,
+        localVideoUri: String,
+        recheck: Boolean,
+        nowEpochMs: Long,
+        guardedWrite: (action: () -> Unit) -> Boolean,
+    ): SubtitleSaveResult {
         val storage = DownloadSubtitleStorage(localVideoUri)
         val manifest = readManifest(storage)
-        val saved = manifest.tracks.filter { storage.localFileUri(it.fileName) != null }.toMutableList()
-        if (!recheck && manifest.complete && saved.size == manifest.tracks.size) {
-            return@withContext SubtitleSaveResult(saved.size, 0, 0)
+        val startSaved = manifest.tracks.count { storage.localFileUri(it.fileName) != null }
+        if (!recheck && manifest.complete && startSaved == manifest.tracks.size) {
+            return SubtitleSaveResult(startSaved, 0, 0)
         }
-        val before = saved.size
+        var newlySaved = 0
         val previousFailed = manifest.failed.associateBy { it.sourceUrl }
         val newFailures = mutableListOf<FailedSubtitle>()
         val attempted = mutableSetOf<String>()
         var unreachable = 0
-        var nextFileIndex = (saved.maxOfOrNull { it.fileName.substringBefore('.').toIntOrNull() ?: -1 } ?: -1) + 1
         val addonSubtitles = loadAddon(item.subtitleRequests).map {
             StreamSubtitle(url = it.url, language = it.language, name = it.display)
         }
+        val savedUrls = manifest.tracks.filter { storage.localFileUri(it.fileName) != null }.map { it.sourceUrl }.toSet()
         val pending = (item.sourceSubtitles + addonSubtitles)
             .distinctBy { it.url }
             .filter { subtitle ->
                 (subtitle.url.startsWith("https://", true) || subtitle.url.startsWith("http://", true)) &&
-                    saved.none { it.sourceUrl == subtitle.url } &&
+                    subtitle.url !in savedUrls &&
                     // A track that failed waits out its cooldown.
                     previousFailed[subtitle.url]?.let { failureIsDue(it, nowEpochMs) } != false
             }
@@ -164,19 +186,29 @@ internal object DownloadSubtitles {
                     continue
                 }
                 val extension = PlayerSubtitleCueParser.fileExtension(body, subtitle.url)
-                val fileName = "${nextFileIndex++}.$extension"
                 try {
                     var stored = false
-                    if (!guardedWrite {
-                            storage.write(fileName, body)
-                            saved += DownloadedSubtitle(subtitle.url, fileName, subtitle.language, subtitle.name)
-                            storage.write("manifest.json", json.encodeToString(SubtitleManifest(tracks = saved.toList(), failed = manifest.failed)))
-                            stored = true
-                        }
-                    ) {
-                        return@withContext SubtitleSaveResult(saved = saved.size, newlySaved = saved.size - before, unreachable = unreachable)
+                    val ran = guardedWrite {
+                        // Read the manifest again here, under the write lock: another run may have saved
+                        // tracks since this one started. Merge into it; never replace it with a snapshot.
+                        val current = readManifest(storage)
+                        if (current.tracks.any { it.sourceUrl == subtitle.url && storage.localFileUri(it.fileName) != null }) return@guardedWrite
+                        val fileName = freshFileName(current, storage, extension)
+                        storage.write(fileName, body)
+                        val track = DownloadedSubtitle(subtitle.url, fileName, subtitle.language, subtitle.name)
+                        storage.write(
+                            "manifest.json",
+                            json.encodeToString(
+                                current.copy(
+                                    tracks = current.tracks + track,
+                                    failed = current.failed.filterNot { it.sourceUrl == subtitle.url },
+                                ),
+                            ),
+                        )
+                        stored = true
                     }
-                    if (!stored) continue
+                    if (!ran) return SubtitleSaveResult(saved = savedCount(localVideoUri), newlySaved = newlySaved, unreachable = unreachable)
+                    if (stored) newlySaved++
                 } catch (error: Exception) {
                     if (error is CancellationException) throw error
                 }
@@ -185,18 +217,39 @@ internal object DownloadSubtitles {
         currentCoroutineContext().ensureActive()
         guardedWrite {
             runCatching {
-            // What failed is recorded with its time, so that only those tracks are tried again, later. Nothing saved is touched.
-            val savedUrls = saved.map { it.sourceUrl }.toSet()
-            val failed = manifest.failed.filter { it.sourceUrl !in attempted && it.sourceUrl !in savedUrls } + newFailures
-            val checkedAt = if (failed.isEmpty()) nowEpochMs else 0L
-            storage.write(
-                "manifest.json",
-                json.encodeToString(SubtitleManifest(complete = failed.isEmpty(), tracks = saved, checkedAtEpochMs = checkedAt, failed = failed)),
-            )
+                // Under the lock, from the manifest as it is now. The tracks are exactly the ones found there, so
+                // this run never writes fewer than it finds. What failed is merged the same way: records of
+                // other runs stay, those of tracks that are saved now go, and ours are added.
+                val current = readManifest(storage)
+                val savedNow = current.tracks.map { it.sourceUrl }.toSet()
+                val merged = LinkedHashMap<String, FailedSubtitle>()
+                current.failed.filter { it.sourceUrl !in attempted && it.sourceUrl !in savedNow }.forEach { merged[it.sourceUrl] = it }
+                newFailures.filter { it.sourceUrl !in savedNow }.forEach { mine ->
+                    val other = merged[mine.sourceUrl]
+                    merged[mine.sourceUrl] = if (other == null || mine.attempts >= other.attempts) mine else other
+                }
+                val failed = merged.values.toList()
+                val checkedAt = if (failed.isEmpty()) nowEpochMs else 0L
+                storage.write(
+                    "manifest.json",
+                    json.encodeToString(current.copy(complete = failed.isEmpty(), checkedAtEpochMs = checkedAt, failed = failed)),
+                )
             }
         }
-        SubtitleSaveResult(saved = saved.size, newlySaved = saved.size - before, unreachable = unreachable)
+        return SubtitleSaveResult(saved = savedCount(localVideoUri), newlySaved = newlySaved, unreachable = unreachable)
     }
+
+    /** A file name no track of [current] uses and no file in the folder has, whatever its extension. */
+    private fun freshFileName(current: SubtitleManifest, storage: DownloadSubtitleStorage, extension: String): String {
+        val used = current.tracks.mapNotNull { it.fileName.substringBefore('.').toIntOrNull() }.toSet()
+        var index = (used.maxOrNull() ?: -1) + 1
+        while (index in used || SUBTITLE_EXTENSIONS.any { storage.localFileUri("$index.$it") != null } ||
+            storage.localFileUri("$index.$extension") != null
+        ) index++
+        return "$index.$extension"
+    }
+
+    private val SUBTITLE_EXTENSIONS = listOf("srt", "vtt", "ass", "ssa", "sub", "ttml", "dfxp", "txt")
 
     fun localSubtitles(localVideoUri: String): List<StreamSubtitle> {
         if (!localVideoUri.startsWith("file:")) return emptyList()
@@ -214,7 +267,7 @@ internal object DownloadSubtitles {
 }
 
 @Serializable
-private data class SubtitleManifest(
+internal data class SubtitleManifest(
     val complete: Boolean = false,
     val tracks: List<DownloadedSubtitle> = emptyList(),
     /** When a complete look was made, in milliseconds since 1970. Zero when unknown. */
@@ -224,7 +277,7 @@ private data class SubtitleManifest(
 )
 
 @Serializable
-private data class FailedSubtitle(
+internal data class FailedSubtitle(
     val sourceUrl: String,
     val atEpochMs: Long,
     /** Failures in a row; the cooldown grows with it. */
@@ -232,7 +285,7 @@ private data class FailedSubtitle(
 )
 
 @Serializable
-private data class DownloadedSubtitle(
+internal data class DownloadedSubtitle(
     val sourceUrl: String,
     val fileName: String,
     val language: String,

@@ -157,4 +157,22 @@ class SavedArtworkTest {
         assertEquals(setOf("a.mkv", "a.mkv.subtitles"), folder.list().orEmpty().toSet())
         assertTrue(dir.list().orEmpty().none { it.endsWith(".tmp") })
     }
+
+    @Test
+    fun an_image_another_run_saved_while_this_one_fetched_is_not_replaced_or_duplicated() = runBlocking {
+        val uri = uriOf()
+        val companion = ArtworkCompanion(
+            fetchImage = {
+                // Another run saves the poster, as a different type, while this fetch is in flight.
+                DownloadSubtitleStorage(uri).writeBytes("poster.png", png)
+                jpeg
+            },
+            nowEpochMs = { now },
+        )
+
+        companion.run(episode(uri).copy(episodeNumber = null, seasonNumber = null), uri)
+
+        assertEquals(setOf("poster.png"), dir.list().orEmpty().toSet())
+        assertContentEquals(png, File(dir, "poster.png").readBytes())
+    }
 }

@@ -115,6 +115,9 @@ internal class ArtworkCompanion(
             val outcome = SidecarLocks.withLock(localVideoUri) {
                 if (!DownloadCompanionGuard.stillWanted(localVideoUri)) return@withLock null
                 val storage = DownloadSubtitleStorage(localVideoUri)
+                // Read again under the lock: another run may have saved this role since the look before the fetch.
+                // A saved image is never replaced.
+                if (SavedArtwork.fileUri(localVideoUri, role) != null) return@withLock true
                 runCatching {
                     if (extension != null) {
                         storage.writeBytes("${role.fileStem}.$extension", bytes)
