@@ -44,21 +44,29 @@ class OfflineSkipTimesTest {
         }
     }
 
-    private fun skipTimes() = OfflineSkipTimes(
-        fetcher = fetcher,
+    private fun skipTimes() = OfflineSkipTimes(fetcher = fetcher, isOnline = { online }, nowEpochMs = { now })
+
+    private fun companions(skipTimes: OfflineSkipTimes = skipTimes()) = DownloadCompanions(
+        companions = listOf(skipTimes),
         isOnline = { online },
         nowEpochMs = { now },
         scope = CoroutineScope(Dispatchers.Unconfined),
         pause = {},
+        io = Dispatchers.Default,
     )
+
+    private val realGuard = DownloadCompanionGuard.stillWanted
+    private var stillWanted = true
 
     @BeforeTest
     fun create_a_temporary_folder() {
         folder = Files.createTempDirectory("nuvio-offline-skip").toFile()
+        DownloadCompanionGuard.stillWanted = { stillWanted }
     }
 
     @AfterTest
     fun remove_the_temporary_folder() {
+        DownloadCompanionGuard.stillWanted = realGuard
         folder.deleteRecursively()
     }
 
@@ -86,7 +94,7 @@ class OfflineSkipTimesTest {
         val uri = video()
         answer = { SkipFetchResult.Found(listOf(intro, outro)) }
 
-        skipTimes().saveAfterDownload(completed("d1", uri), uri).join()
+        companions().saveAfterDownload(completed("d1", uri), uri).join()
 
         assertEquals(listOf(intro, outro), (read(uri) as SavedSkipTimesRead.Saved).times.intervals)
         assertEquals(now, (read(uri) as SavedSkipTimesRead.Saved).times.fetchedAtEpochMs)
@@ -97,7 +105,7 @@ class OfflineSkipTimesTest {
         val uri = video()
         online = false
 
-        skipTimes().saveAfterDownload(completed("d1", uri), uri).join()
+        companions().saveAfterDownload(completed("d1", uri), uri).join()
 
         assertEquals(0, calls.get())
         assertEquals(SavedSkipTimesRead.Missing, read(uri))
@@ -108,7 +116,7 @@ class OfflineSkipTimesTest {
         val uri = video()
         answer = { SkipFetchResult.Failed }
 
-        skipTimes().saveAfterDownload(completed("d1", uri), uri).join()
+        companions().saveAfterDownload(completed("d1", uri), uri).join()
 
         assertEquals(SavedSkipTimesRead.Missing, read(uri))
     }
@@ -207,7 +215,7 @@ class OfflineSkipTimesTest {
         SkipTimesSidecar.write(uri, SavedSkipTimes(now - 2 * day, listOf(intro)))
         val slow = OfflineSkipTimes(
             fetcher = { delay(60_000); SkipFetchResult.Found(listOf(outro)) },
-            isOnline = { true }, nowEpochMs = { now }, scope = CoroutineScope(Dispatchers.Unconfined), pause = {},
+            isOnline = { true }, nowEpochMs = { now },
         )
         val job = CoroutineScope(Dispatchers.Default).launch { slow.refresh(request(), uri) }
         delay(50)
@@ -271,7 +279,7 @@ class OfflineSkipTimesTest {
         val items = listOf(completed("d1", bare), completed("d2", withTimes), completed("d3", freshNone), completed("d4", staleNone))
         answer = { SkipFetchResult.Found(listOf(outro)) }
 
-        val summary = skipTimes().backfill(items) { it.localFileUri }
+        val summary = companions().backfill(items) { it.localFileUri }
 
         assertEquals(2, summary.looked)
         assertEquals(2, summary.saved)
@@ -287,7 +295,7 @@ class OfflineSkipTimesTest {
         val items = listOf(completed("d1", here), completed("d2", null), completed("d3", "file:/Volumes/Gone/c.mkv"))
         answer = { SkipFetchResult.Found(listOf(intro)) }
 
-        val summary = skipTimes().backfill(items) { item -> item.localFileUri?.takeIf { it == here } }
+        val summary = companions().backfill(items) { item -> item.localFileUri?.takeIf { it == here } }
 
         assertEquals(1, summary.looked)
         assertEquals(2, summary.unavailable)
@@ -298,7 +306,7 @@ class OfflineSkipTimesTest {
     fun backfill_ignores_downloads_that_are_not_finished() = runBlocking {
         val uri = video("a.mkv")
 
-        val summary = skipTimes().backfill(listOf(completed("d1", uri).copy(status = DownloadStatus.Downloading))) { it.localFileUri }
+        val summary = companions().backfill(listOf(completed("d1", uri).copy(status = DownloadStatus.Downloading))) { it.localFileUri }
 
         assertEquals(0, summary.looked)
         assertEquals(0, calls.get())
@@ -306,31 +314,31 @@ class OfflineSkipTimesTest {
 
     @Test
     fun backfill_makes_a_bounded_number_of_lookups_per_pass_and_only_a_few_at_a_time() = runBlocking {
-        val items = (1..(OfflineSkipTimes.BackfillMaxPerPass + 12)).map { completed("d$it", video("e$it.mkv")) }
+        val items = (1..(DownloadCompanions.BackfillMaxPerPass + 12)).map { completed("d$it", video("e$it.mkv")) }
         answer = { SkipFetchResult.Found(listOf(intro)) }
 
-        val summary = skipTimes().backfill(items) { it.localFileUri }
+        val summary = companions().backfill(items) { it.localFileUri }
 
-        assertEquals(OfflineSkipTimes.BackfillMaxPerPass, summary.looked)
-        assertEquals(OfflineSkipTimes.BackfillMaxPerPass, calls.get())
+        assertEquals(DownloadCompanions.BackfillMaxPerPass, summary.looked)
+        assertEquals(DownloadCompanions.BackfillMaxPerPass, calls.get())
         assertTrue(summary.stoppedEarly)
-        assertTrue(mostInFlight.get() in 1..OfflineSkipTimes.BackfillConcurrency, "most at once: ${mostInFlight.get()}")
+        assertTrue(mostInFlight.get() in 1..DownloadCompanions.BackfillConcurrency, "most at once: ${mostInFlight.get()}")
 
         // The next pass carries on with the rest.
-        val next = skipTimes().backfill(items) { it.localFileUri }
+        val next = companions().backfill(items) { it.localFileUri }
         assertEquals(12, next.looked)
     }
 
     @Test
     fun backfill_waits_between_groups_of_lookups() = runBlocking {
         val waits = mutableListOf<Long>()
-        val skipTimes = OfflineSkipTimes(fetcher, { online }, { now }, CoroutineScope(Dispatchers.Unconfined)) { waits += it }
+        val skipTimes = DownloadCompanions(listOf(skipTimes()), { online }, { now }, CoroutineScope(Dispatchers.Unconfined), { waits += it }, Dispatchers.Default)
         val items = (1..5).map { completed("d$it", video("w$it.mkv")) }
         answer = { SkipFetchResult.Found(listOf(intro)) }
 
         skipTimes.backfill(items) { it.localFileUri }
 
-        assertEquals(List(2) { OfflineSkipTimes.BackfillPauseMs }, waits)
+        assertEquals(List(2) { DownloadCompanions.BackfillPauseMs }, waits)
     }
 
     @Test
@@ -338,9 +346,9 @@ class OfflineSkipTimesTest {
         val items = (1..10).map { completed("d$it", video("o$it.mkv")) }
         answer = { online = false; SkipFetchResult.Found(listOf(intro)) }
 
-        val summary = skipTimes().backfill(items) { it.localFileUri }
+        val summary = companions().backfill(items) { it.localFileUri }
 
-        assertEquals(OfflineSkipTimes.BackfillConcurrency, summary.looked)
+        assertEquals(DownloadCompanions.BackfillConcurrency, summary.looked)
         assertTrue(summary.stoppedEarly)
     }
 
@@ -348,20 +356,20 @@ class OfflineSkipTimesTest {
     fun backfill_stops_after_failures_in_a_row_and_does_not_retry_those_downloads_soon() = runBlocking {
         val items = (1..10).map { completed("d$it", video("f$it.mkv")) }
         answer = { SkipFetchResult.Failed }
-        val skipTimes = skipTimes()
+        val skipTimes = companions()
 
         val first = skipTimes.backfill(items) { it.localFileUri }
         assertTrue(first.stoppedEarly)
-        assertTrue(first.failed >= OfflineSkipTimes.BackfillStopAfterFailures)
+        assertTrue(first.failed >= DownloadCompanions.BackfillStopAfterFailures)
         assertTrue(items.all { read(it.localFileUri!!) == SavedSkipTimesRead.Missing })
 
         val callsAfterFirst = calls.get()
         answer = { SkipFetchResult.Found(listOf(intro)) }
         skipTimes.backfill(items) { it.localFileUri }
         // Those that failed wait; the rest are looked up.
-        assertEquals(callsAfterFirst + (10 - first.failed).coerceAtMost(OfflineSkipTimes.BackfillMaxPerPass), calls.get())
+        assertEquals(callsAfterFirst + (10 - first.failed).coerceAtMost(DownloadCompanions.BackfillMaxPerPass), calls.get())
 
-        now += OfflineSkipTimes.BackfillRetryAfterMs
+        now += DownloadCompanions.BackfillRetryAfterMs
         val retry = skipTimes.backfill(items) { it.localFileUri }
         assertTrue(retry.looked >= first.failed)
     }
@@ -369,7 +377,7 @@ class OfflineSkipTimesTest {
     @Test
     fun backfill_does_nothing_offline() = runBlocking {
         online = false
-        val summary = skipTimes().backfill(listOf(completed("d1", video("a.mkv")))) { it.localFileUri }
+        val summary = companions().backfill(listOf(completed("d1", video("a.mkv")))) { it.localFileUri }
 
         assertEquals(0, calls.get())
         assertTrue(summary.stoppedEarly)
@@ -379,7 +387,7 @@ class OfflineSkipTimesTest {
     fun only_one_backfill_pass_runs_at_a_time() = runBlocking {
         val items = (1..4).map { completed("d$it", video("p$it.mkv")) }
         answer = { SkipFetchResult.Found(listOf(intro)) }
-        val skipTimes = skipTimes()
+        val skipTimes = companions()
 
         val results = listOf(
             async(Dispatchers.Default) { skipTimes.backfill(items) { it.localFileUri } },
@@ -392,9 +400,9 @@ class OfflineSkipTimesTest {
 
     @Test
     fun the_limits_are_small() {
-        assertTrue(OfflineSkipTimes.BackfillConcurrency <= 3)
-        assertTrue(OfflineSkipTimes.BackfillMaxPerPass <= 50)
-        assertTrue(OfflineSkipTimes.BackfillStartDelayMs >= 10_000)
+        assertTrue(DownloadCompanions.BackfillConcurrency <= 3)
+        assertTrue(DownloadCompanions.BackfillMaxPerPass <= 50)
+        assertTrue(DownloadCompanions.BackfillStartDelayMs >= 10_000)
         assertFalse(OfflineSkipTimes.NoneFoundRecheckAgeMs < 7 * day)
     }
 }

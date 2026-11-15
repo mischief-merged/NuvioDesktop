@@ -6,6 +6,7 @@ import com.nuvio.app.features.player.skip.SkipIntervalLookup
 import com.nuvio.app.features.player.skip.SkipIntroRepository
 import com.nuvio.app.features.player.skip.SkipLookupReport
 import com.nuvio.app.features.player.skip.resolveSkipIntervalLookup
+import com.nuvio.app.features.player.skip.segmentCategory
 import com.nuvio.app.features.simkl.SimklConfig
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
@@ -43,8 +44,11 @@ internal fun DownloadItem.toSkipTimesRequest() = SkipTimesRequest(
 )
 
 internal sealed interface SkipFetchResult {
-    /** The services returned these. */
-    data class Found(val intervals: List<SkipInterval>) : SkipFetchResult
+    /**
+     * The services returned these. When [complete] is false a service did not answer, so more may
+     * exist: the result may add what is not saved yet but must not replace or remove what is.
+     */
+    data class Found(val intervals: List<SkipInterval>, val complete: Boolean = true) : SkipFetchResult
 
     /** The services answered and have nothing for this title. */
     data object NoneFound : SkipFetchResult
@@ -78,7 +82,10 @@ internal object ServiceSkipTimesFetcher : SkipTimesFetcher {
             null
         } ?: return SkipFetchResult.Failed
         return when {
-            intervals.isNotEmpty() -> SkipFetchResult.Found(intervals)
+            intervals.isNotEmpty() -> SkipFetchResult.Found(
+                intervals,
+                complete = !report.hadUnansweredRequest && !NetworkStatusRepository.uiState.value.isOfflineLike,
+            )
             report.hadUnansweredRequest || NetworkStatusRepository.uiState.value.isOfflineLike -> SkipFetchResult.Failed
             else -> SkipFetchResult.NoneFound
         }
@@ -127,17 +134,6 @@ internal object ServiceSkipTimesFetcher : SkipTimesFetcher {
 /** What a finished download's sidecar says, in words for a row. */
 internal enum class SkipTimesNote { Saved, NoneFound }
 
-/** What one background pass over the finished downloads did. */
-internal data class SkipTimesBackfillSummary(
-    val looked: Int = 0,
-    val saved: Int = 0,
-    val noneFound: Int = 0,
-    val failed: Int = 0,
-    val unavailable: Int = 0,
-    /** The pass ended early: the connection was lost, or the services kept failing. */
-    val stoppedEarly: Boolean = false,
-)
-
 /**
  * Saves, uses and refreshes the skip times of downloaded titles.
  *
@@ -154,13 +150,18 @@ internal class OfflineSkipTimes(
     private val fetcher: SkipTimesFetcher = ServiceSkipTimesFetcher,
     private val isOnline: () -> Boolean = { NetworkStatusRepository.uiState.value.isOnline },
     private val nowEpochMs: () -> Long = { DownloadsClock.nowEpochMs() },
-    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-    private val pause: suspend (Long) -> Unit = { delay(it) },
-) {
+) : DownloadCompanion {
     private val lock = SynchronizedObject()
     private val running = mutableSetOf<String>()
-    private val backfillFailedAt = mutableMapOf<String, Long>()
-    private var backfillRunning = false
+    private val failedAt = mutableMapOf<String, Long>()
+
+    override val name: String get() = "skip times"
+
+    /** Backfill and the end of a download fill gaps. A download that has intervals is left to be refreshed when played. */
+    override fun isDue(item: DownloadItem, localVideoUri: String): Boolean = needsBackfill(SkipTimesSidecar.read(localVideoUri))
+
+    override suspend fun run(item: DownloadItem, localVideoUri: String): CompanionOutcome =
+        lookup(item.toSkipTimesRequest(), localVideoUri) { needsBackfill(it) }.outcome
 
     /** The saved intervals of a file, at once and without the network. Empty when none are saved. */
     fun saved(localVideoUri: String): List<SkipInterval> =
@@ -172,123 +173,56 @@ internal class OfflineSkipTimes(
             if (it.noneFound) SkipTimesNote.NoneFound else SkipTimesNote.Saved
         }
 
-    /** Starts saving the skip times of a download that just finished. Returns at once. */
-    fun saveAfterDownload(item: DownloadItem, localVideoUri: String): Job =
-        scope.launch { refresh(item.toSkipTimesRequest(), localVideoUri) }
-
     /**
      * Asks the services if the saved answer is due for it (always when there is none), and saves
      * what they say. Returns the intervals when they now differ from what was saved, else null.
-     * Does nothing without a connection, and never touches a saved answer on failure.
+     * Does nothing without a connection, and never removes or shrinks a saved answer on failure,
+     * on an empty answer or on an incomplete one.
      */
-    suspend fun refresh(request: SkipTimesRequest, localVideoUri: String): List<SkipInterval>? {
-        if (!isOnline()) return null
-        val existing = SkipTimesSidecar.read(localVideoUri)
-        if (!isDue(existing)) return null
-        if (!claim(localVideoUri)) return null
+    suspend fun refresh(request: SkipTimesRequest, localVideoUri: String): List<SkipInterval>? =
+        lookup(request, localVideoUri) { isDue(it) }.changed
+
+    private class Attempt(val outcome: CompanionOutcome, val changed: List<SkipInterval>? = null)
+
+    private suspend fun lookup(request: SkipTimesRequest, uri: String, eligible: (SavedSkipTimesRead) -> Boolean): Attempt {
+        if (!isOnline()) return Attempt(CompanionOutcome.Failed)
+        if (!eligible(SkipTimesSidecar.read(uri))) return Attempt(CompanionOutcome.Busy)
+        if (inCooldown(uri)) return Attempt(CompanionOutcome.Busy)
+        if (!claim(uri)) return Attempt(CompanionOutcome.Busy)
         try {
             val result = fetcher.fetch(request)
-            val now = nowEpochMs()
-            val before = (existing as? SavedSkipTimesRead.Saved)?.times
-            return when (result) {
-                SkipFetchResult.Failed -> null
-                SkipFetchResult.NoneFound -> {
-                    // Keeps what is saved; only notes that the services were asked.
-                    SkipTimesSidecar.write(localVideoUri, SavedSkipTimes(now, before?.intervals.orEmpty()))
-                    null
-                }
-                is SkipFetchResult.Found -> {
-                    SkipTimesSidecar.write(localVideoUri, SavedSkipTimes(now, result.intervals))
-                    result.intervals.takeIf { it != before?.intervals }
-                }
-            }
-        } finally {
-            release(localVideoUri)
-        }
-    }
-
-    /**
-     * One quiet pass over finished downloads that have no sidecar (or only a stale "none found"),
-     * a few at a time. Skips downloads whose file is not there, such as one on a drive that is not
-     * connected. Stops when the connection is lost, after [BackfillMaxPerPass] lookups, or when
-     * [BackfillStopAfterFailures] in a row fail. A download that failed is not tried again for
-     * [BackfillRetryAfterMs]. Only one pass runs at a time.
-     */
-    suspend fun backfill(items: List<DownloadItem>, resolveLocalFileUri: (DownloadItem) -> String?): SkipTimesBackfillSummary {
-        val started = synchronized(lock) { if (backfillRunning) false else { backfillRunning = true; true } }
-        if (!started) return SkipTimesBackfillSummary()
-        try {
-            return runBackfill(items, resolveLocalFileUri)
-        } finally {
-            synchronized(lock) { backfillRunning = false }
-        }
-    }
-
-    private suspend fun runBackfill(items: List<DownloadItem>, resolveLocalFileUri: (DownloadItem) -> String?): SkipTimesBackfillSummary {
-        var summary = SkipTimesBackfillSummary()
-        var consecutiveFailures = 0
-        val pending = ArrayDeque<Pair<DownloadItem, String>>()
-        for (item in items) {
-            if (item.status != DownloadStatus.Completed) continue
-            val uri = runCatching { resolveLocalFileUri(item) }.getOrNull()
-            if (uri == null) {
-                summary = summary.copy(unavailable = summary.unavailable + 1)
-                continue
-            }
-            val read = SkipTimesSidecar.read(uri)
-            if (!needsBackfill(read)) continue
-            val failedAt = synchronized(lock) { backfillFailedAt[item.id] }
-            if (failedAt != null && nowEpochMs() - failedAt < BackfillRetryAfterMs) continue
-            pending += item to uri
-        }
-        while (pending.isNotEmpty()) {
-            if (!isOnline() || summary.looked >= BackfillMaxPerPass || consecutiveFailures >= BackfillStopAfterFailures) {
-                return summary.copy(stoppedEarly = true)
-            }
-            val room = BackfillMaxPerPass - summary.looked
-            val batch = List(minOf(BackfillConcurrency, room, pending.size)) { pending.removeFirst() }
-            val outcomes = coroutineScope {
-                batch.map { (item, uri) -> async { Triple(item, uri, lookupForBackfill(item, uri)) } }.awaitAll()
-            }
-            for ((item, _, outcome) in outcomes) {
-                if (outcome != BackfillOutcome.Busy) summary = summary.copy(looked = summary.looked + 1)
-                when (outcome) {
-                    // Another lookup for the same file is already running; it will save the answer.
-                    BackfillOutcome.Busy -> Unit
-                    BackfillOutcome.Saved -> { summary = summary.copy(saved = summary.saved + 1); consecutiveFailures = 0 }
-                    BackfillOutcome.NoneFound -> { summary = summary.copy(noneFound = summary.noneFound + 1); consecutiveFailures = 0 }
-                    BackfillOutcome.Failed -> {
-                        summary = summary.copy(failed = summary.failed + 1)
-                        consecutiveFailures++
-                        synchronized(lock) { backfillFailedAt[item.id] = nowEpochMs() }
-                    }
-                }
-            }
-            if (pending.isNotEmpty()) pause(BackfillPauseMs)
-        }
-        return summary
-    }
-
-    private enum class BackfillOutcome { Saved, NoneFound, Failed, Busy }
-
-    private suspend fun lookupForBackfill(item: DownloadItem, uri: String): BackfillOutcome {
-        if (!claim(uri)) return BackfillOutcome.Busy
-        try {
-            return when (val result = fetcher.fetch(item.toSkipTimesRequest())) {
-                SkipFetchResult.Failed -> BackfillOutcome.Failed
-                SkipFetchResult.NoneFound -> {
-                    SkipTimesSidecar.write(uri, SavedSkipTimes(nowEpochMs(), emptyList()))
-                    BackfillOutcome.NoneFound
-                }
-                is SkipFetchResult.Found -> {
-                    SkipTimesSidecar.write(uri, SavedSkipTimes(nowEpochMs(), result.intervals))
-                    BackfillOutcome.Saved
-                }
+            // Read again under the lock: playback or a background pass may have saved something while the services were asked.
+            return SidecarLocks.withLock(uri) {
+                val existing = SkipTimesSidecar.read(uri)
+                if (!DownloadCompanionGuard.stillWanted(uri) || !eligible(existing)) return@withLock Attempt(CompanionOutcome.Busy)
+                val before = (existing as? SavedSkipTimesRead.Saved)?.times
+                val merged = mergeSkipLookup(before, result, nowEpochMs())
+                val incomplete = result is SkipFetchResult.Found && !result.complete
+                if (result == SkipFetchResult.Failed || incomplete) markFailed(uri)
+                if (merged == null) return@withLock Attempt(if (result == SkipFetchResult.Failed) CompanionOutcome.Failed else CompanionOutcome.NothingFound)
+                if (!SkipTimesSidecar.write(uri, merged)) return@withLock Attempt(CompanionOutcome.Failed)
+                val changed = merged.intervals.takeIf { it.isNotEmpty() && it != before?.intervals }
+                Attempt(
+                    when {
+                        merged.noneFound -> CompanionOutcome.NothingFound
+                        changed != null -> CompanionOutcome.Saved
+                        else -> CompanionOutcome.NothingFound
+                    },
+                    changed,
+                )
             }
         } finally {
             release(uri)
         }
     }
+
+    private fun inCooldown(uri: String): Boolean = synchronized(lock) {
+        val at = failedAt[uri] ?: return false
+        val age = nowEpochMs() - at
+        (age in 0 until FailureCooldownMs).also { if (!it) failedAt.remove(uri) }
+    }
+
+    private fun markFailed(uri: String) = synchronized(lock) { failedAt[uri] = nowEpochMs() }
 
     private fun claim(uri: String): Boolean = synchronized(lock) { running.add(uri) }
 
@@ -301,7 +235,11 @@ internal class OfflineSkipTimes(
         is SavedSkipTimesRead.Saved -> {
             val age = nowEpochMs() - read.times.fetchedAtEpochMs
             // A time in the future (a clock that was set back) must not stop rechecks for good.
-            age < 0 || age >= if (read.times.noneFound) NoneFoundRecheckAgeMs else FoundRefreshAgeMs
+            age < 0 || age >= when {
+                read.times.noneFound -> NoneFoundRecheckAgeMs
+                !read.times.complete -> IncompleteRecheckAgeMs
+                else -> FoundRefreshAgeMs
+            }
         }
     }
 
@@ -309,7 +247,7 @@ internal class OfflineSkipTimes(
     private fun needsBackfill(read: SavedSkipTimesRead): Boolean = when (read) {
         SavedSkipTimesRead.Missing, SavedSkipTimesRead.Unusable -> true
         SavedSkipTimesRead.NewerVersion -> false
-        is SavedSkipTimesRead.Saved -> read.times.noneFound && isDue(read)
+        is SavedSkipTimesRead.Saved -> (read.times.noneFound || !read.times.complete) && isDue(read)
     }
 
     companion object {
@@ -319,31 +257,32 @@ internal class OfflineSkipTimes(
         /** A title with saved skip times is looked up again when played, if the answer is older than this. */
         const val FoundRefreshAgeMs = 24L * 60 * 60 * 1000
 
-        /** Most lookups one background pass makes. */
-        const val BackfillMaxPerPass = 30
+        /** Saved intervals that only some of the services answered for are looked up again after this long. */
+        const val IncompleteRecheckAgeMs = 60L * 60 * 1000
 
-        /** Lookups made at the same time. */
-        const val BackfillConcurrency = 2
-
-        /** Wait between one group of lookups and the next. */
-        const val BackfillPauseMs = 2_000L
-
-        /** Wait after the app is online before the first pass, so that startup and playback come first. */
-        const val BackfillStartDelayMs = 20_000L
-
-        /** A pass ends after this many failed lookups in a row. */
-        const val BackfillStopAfterFailures = 3
-
-        /** A download whose lookup failed is not tried again by a pass for this long. */
-        const val BackfillRetryAfterMs = 30L * 60 * 1000
+        /** After a lookup for a file failed or was incomplete, it is not tried again for this long, whatever asks. */
+        const val FailureCooldownMs = 15L * 60 * 1000
 
         /** The one the app uses. */
         val app: OfflineSkipTimes by lazy { OfflineSkipTimes() }
     }
 }
 
-/** Waits [OfflineSkipTimes.BackfillStartDelayMs], then fills in the finished downloads that have no skip times. */
-internal suspend fun OfflineSkipTimes.backfillWhenIdle(): SkipTimesBackfillSummary {
-    delay(OfflineSkipTimes.BackfillStartDelayMs)
-    return backfill(DownloadsRepository.uiState.value.items, DownloadsRepository::playableLocalFileUri)
+/**
+ * What to save after a lookup, or null for nothing. Only a complete answer may replace what is
+ * saved. An empty answer never overwrites intervals, because it cannot be told from a service that
+ * is down. An incomplete answer may add the kinds of segment that are not saved yet.
+ */
+internal fun mergeSkipLookup(saved: SavedSkipTimes?, result: SkipFetchResult, nowEpochMs: Long): SavedSkipTimes? = when (result) {
+    SkipFetchResult.Failed -> null
+    SkipFetchResult.NoneFound ->
+        if (saved == null || saved.noneFound) SavedSkipTimes(nowEpochMs, emptyList()) else saved.copy(fetchedAtEpochMs = nowEpochMs)
+    is SkipFetchResult.Found ->
+        if (result.complete) {
+            SavedSkipTimes(nowEpochMs, result.intervals)
+        } else {
+            val have = saved?.intervals.orEmpty().mapNotNull { segmentCategory(it.type) }.toSet()
+            val added = result.intervals.filter { segmentCategory(it.type)?.let { c -> c !in have } == true }
+            if (added.isEmpty()) null else SavedSkipTimes(saved?.fetchedAtEpochMs ?: nowEpochMs, saved?.intervals.orEmpty() + added, complete = false)
+        }
 }

@@ -1,5 +1,6 @@
 package com.nuvio.app.features.player
 
+import com.nuvio.app.features.downloads.DownloadCompanions
 import com.nuvio.app.features.downloads.DownloadsRepository
 import com.nuvio.app.features.downloads.OfflineSkipTimes
 import com.nuvio.app.features.downloads.SkipTimesRequest
@@ -41,4 +42,15 @@ internal suspend fun PlayerScreenRuntime.applyDownloadedSkipIntervals(): Boolean
     apiSkipIntervals = changed
     recomputeMergedSkipIntervals()
     return true
+}
+
+/**
+ * When a finished download is played online, saves what it still lacks beside it (subtitles and
+ * skip times for downloads made before they were saved). Quiet, and never touches what is saved.
+ * What is saved now is used the next time the file is played.
+ */
+internal suspend fun PlayerScreenRuntime.saveCompanionsOfPlayingDownload() {
+    val localUri = activeSourceUrl.takeIf { it.startsWith("file:") } ?: return
+    val item = DownloadsRepository.findCompletedDownloadByLocalFile(localUri) ?: return
+    DownloadCompanions.app.ensure(item, localUri)
 }

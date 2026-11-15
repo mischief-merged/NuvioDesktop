@@ -551,12 +551,12 @@ private fun DownloadRow(
     episodeLinks: DownloadEpisodeLinks? = null,
 ) {
     val rowStatus = downloadRowStatus(item, clock.nowEpochMs, clock.offline)
-    val skipTimesNote by produceState<SkipTimesNote?>(null, item.localFileUri, item.status) {
+    val skipTimesNote by produceState<DownloadCompanionsNote?>(null, item.localFileUri, item.status) {
         val uri = item.localFileUri?.takeIf { item.status == DownloadStatus.Completed }
-        // The skip times are saved a moment after a download finishes, so a missing note is looked for a few more times.
+        // Subtitles and skip times are saved a moment after a download finishes, so a missing note is looked for a few more times.
         var looks = 0
         while (uri != null) {
-            value = withContext(Dispatchers.Default) { OfflineSkipTimes.app.note(uri) }
+            value = withContext(Dispatchers.Default) { DownloadCompanions.noteFor(uri) }.takeIf { it.skipTimes != null || it.subtitleCount > 0 }
             if (value != null || ++looks >= SkipTimesNoteLooks) break
             delay(SkipTimesNoteLookIntervalMs)
         }
@@ -1044,11 +1044,14 @@ private const val SkipTimesNoteLookIntervalMs = 5_000L
 
 /** What was checked about a finished file, or null for any other row. */
 @Composable
-private fun resultText(status: DownloadRowStatus, skipTimes: SkipTimesNote? = null): String? {
+private fun resultText(status: DownloadRowStatus, saved: DownloadCompanionsNote? = null): String? {
     val result = status.result ?: return null
     var message = stringResource(result.message)
     if (status.pictureChecked) message += " • " + stringResource(Res.string.downloads_result_picture_ok)
-    when (skipTimes) {
+    if (saved != null && saved.subtitleCount > 0) {
+        message += " • " + stringResource(Res.string.downloads_result_subtitles_saved, saved.subtitleCount)
+    }
+    when (saved?.skipTimes) {
         SkipTimesNote.Saved -> message += " • " + stringResource(Res.string.downloads_result_skip_times_saved)
         SkipTimesNote.NoneFound -> message += " • " + stringResource(Res.string.downloads_result_skip_times_none)
         null -> Unit

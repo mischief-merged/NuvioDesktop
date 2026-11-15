@@ -684,6 +684,7 @@
     <string name="downloads_result_not_checked">Not checked</string>
     <string name="downloads_result_suspect">Suspect: the file's title names another episode</string>
     <string name="downloads_result_picture_ok">Picture looked fine</string>
+    <string name="downloads_result_subtitles_saved">Subtitles saved (%1$d)</string>
     <string name="downloads_result_skip_times_saved">Skip times saved</string>
     <string name="downloads_result_skip_times_none">No skip times found</string>
     <string name="downloads_status_failed_reason">Failed: %1$s</string>

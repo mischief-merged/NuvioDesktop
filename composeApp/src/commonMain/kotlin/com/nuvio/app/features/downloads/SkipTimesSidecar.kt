@@ -40,7 +40,11 @@ internal object SkipTimesSidecar {
         return decode(text)
     }
 
-    /** Writes [times]. False when nothing was written: the file could not be written, or a newer build owns it. */
+    /**
+     * Writes [times], replacing the file in one step (a temporary file beside it, then a rename), so
+     * that a crash leaves the old file or the new one, never half of either. False when nothing was
+     * written: the file could not be written, or a newer build owns it.
+     */
     fun write(localVideoUri: String, times: SavedSkipTimes): Boolean {
         if (!localVideoUri.startsWith("file:")) return false
         if (read(localVideoUri) is SavedSkipTimesRead.NewerVersion) return false
@@ -75,6 +79,8 @@ internal data class SkipTimesFile(
     val sources: List<String> = emptyList(),
     /** What was found. Empty means the services were asked and had nothing. */
     val intervals: List<SavedSkipInterval> = emptyList(),
+    /** False when a service did not answer while this was fetched, so that more may be missing. Absent in older files, meaning true. */
+    val complete: Boolean = true,
 )
 
 @Serializable
@@ -89,12 +95,15 @@ internal data class SavedSkipInterval(
 internal data class SavedSkipTimes(
     val fetchedAtEpochMs: Long,
     val intervals: List<SkipInterval>,
+    /** False when only some of the services answered. Such a result is looked up again soon. */
+    val complete: Boolean = true,
 ) {
     /** The services were asked and had nothing. */
     val noneFound: Boolean get() = intervals.isEmpty()
 
     fun toFile() = SkipTimesFile(
         fetchedAtEpochMs = fetchedAtEpochMs,
+        complete = complete,
         sources = intervals.map { it.provider }.distinct(),
         intervals = intervals.map { SavedSkipInterval(it.startTime, it.endTime, it.type, it.provider) },
     )
@@ -115,6 +124,7 @@ internal sealed interface SavedSkipTimesRead {
 
 private fun SkipTimesFile.toTimes() = SavedSkipTimes(
     fetchedAtEpochMs = fetchedAtEpochMs,
+    complete = complete,
     // An interval that makes no sense is dropped; the end of an ending may be unbounded, so only the order is checked.
     intervals = intervals.filter { it.startTime.isFinite() && it.startTime >= 0.0 && it.endTime > it.startTime && !it.endTime.isNaN() }
         .map { SkipInterval(it.startTime, it.endTime, it.type, it.provider) },

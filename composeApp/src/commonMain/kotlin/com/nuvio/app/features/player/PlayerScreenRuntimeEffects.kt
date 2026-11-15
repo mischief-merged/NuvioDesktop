@@ -673,6 +673,8 @@ private fun PlayerScreenRuntime.BindPlayerMetadataAndSkipEffects() {
         nextEpisodeCardDismissed = false
         cancelNextEpisodeAutoPlay()
 
+        launch { saveCompanionsOfPlayingDownload() }
+
         if (!playerSettingsUiState.skipIntroEnabled) return@LaunchedEffect
 
         if (applyDownloadedSkipIntervals()) return@LaunchedEffect

@@ -47,7 +47,7 @@ class DownloadSkipTimesLifecycleTest {
 
     private val backend = FakeBackend()
     private val realBackend = DownloadsRepository.backend
-    private val realSkipTimes = DownloadsRepository.skipTimes
+    private val realSkipTimes = DownloadsRepository.companions
     private lateinit var folder: File
     private val intro = SkipInterval(10.0, 90.0, "intro", "introdb")
     private val requests = mutableListOf<SkipTimesRequest>()
@@ -60,16 +60,19 @@ class DownloadSkipTimesLifecycleTest {
         val skipTimes = OfflineSkipTimes(
             fetcher = { request -> requests += request; SkipFetchResult.Found(listOf(intro)) },
             isOnline = { true },
-            scope = CoroutineScope(Dispatchers.Unconfined),
         )
-        DownloadsRepository.skipTimes = { skipTimes }
+        val companions = DownloadCompanions(
+            listOf(skipTimes), isOnline = { true },
+            scope = CoroutineScope(Dispatchers.Unconfined), io = Dispatchers.Unconfined,
+        )
+        DownloadsRepository.companions = { companions }
     }
 
     @AfterTest
     fun restore_the_real_repository_and_remove_the_folder() {
         DownloadsRepository.clearLocalState()
         DownloadsRepository.backend = realBackend
-        DownloadsRepository.skipTimes = realSkipTimes
+        DownloadsRepository.companions = realSkipTimes
         folder.deleteRecursively()
     }
 
