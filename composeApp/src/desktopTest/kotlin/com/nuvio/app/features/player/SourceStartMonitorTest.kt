@@ -152,4 +152,45 @@ class SourceStartMonitorTest {
         val (_, step) = runUntil(Limits.fromSettingSeconds(15), 30_000L) { t -> reading(t, duration = 7_200_000L) }
         assertEquals(null, step)
     }
+
+    // The clock of the start
+
+    @Test
+    fun aSleepDuringLoadingDoesNotEndTheStart() {
+        val clock = SourceStartClock(0L)
+        var t = 0L
+        var progress = Progress()
+        repeat(8) {
+            t += 1_000L
+            val elapsed = clock.read(t, held = false)
+            progress = (SourceStartMonitor.next(progress, reading(elapsed), Limits()) as Step.Pending).progress
+        }
+        // The machine sleeps for ten minutes, then the next read comes.
+        t += 600_000L
+        val elapsed = clock.read(t, held = false)
+        assertTrue(clock.restarted)
+        assertEquals(0L, elapsed)
+        // Without the restart the same read would have been past every limit.
+        assertIs<Step.GiveUp>(SourceStartMonitor.next(progress, reading(8_000L + 600_000L), Limits()))
+    }
+
+    @Test
+    fun theClockStandsStillWhileHeldAndResumesWhereItStopped() {
+        val clock = SourceStartClock(0L)
+        assertEquals(1_000L, clock.read(1_000L, held = false))
+        assertEquals(1_000L, clock.read(2_000L, held = true))
+        assertEquals(1_000L, clock.read(3_000L, held = true))
+        assertEquals(2_000L, clock.read(4_000L, held = false))
+        assertEquals(false, clock.restarted)
+    }
+
+    @Test
+    fun aNormalPollIntervalIsNotAGap() {
+        val clock = SourceStartClock(0L)
+        assertEquals(SourceStartMonitor.POLL_INTERVAL_MS, clock.read(SourceStartMonitor.POLL_INTERVAL_MS, held = false))
+        assertEquals(false, clock.restarted)
+        // A late poll just under the gap limit is still counted.
+        assertEquals(1_000L + 4_900L, clock.read(1_000L + 4_900L, held = false))
+        assertEquals(false, clock.restarted)
+    }
 }

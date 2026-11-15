@@ -23,6 +23,9 @@ internal object SourceStartMonitor {
     /** How often the caller should read the player. */
     const val POLL_INTERVAL_MS = 1_000L
 
+    /** Two reads further apart than this mean the app was suspended or hung, so the start clocks begin again. */
+    const val MAX_READING_GAP_MS = 5_000L
+
     data class Limits(
         val noSignalMs: Long = DEFAULT_NO_SIGNAL_MS,
         val signOfLifeMs: Long = DEFAULT_SIGN_OF_LIFE_MS,
@@ -108,5 +111,34 @@ internal object SourceStartMonitor {
         }
         val idleFor = reading.elapsedMs - seen.lastAdvanceAtMs
         return if (idleFor >= limits.idleAfterProgressMs) Step.GiveUp(GiveUpCause.WentIdle) else Step.Pending(seen)
+    }
+}
+
+/**
+ * The time spent starting one source, measured between reads. It stands still while [held] (the user paused,
+ * the device is offline) and starts over when two reads are further apart than
+ * [SourceStartMonitor.MAX_READING_GAP_MS], which is a sleeping or hung machine and says nothing about the source.
+ */
+internal class SourceStartClock(nowMs: Long) {
+    private var startedAtMs = nowMs
+    private var lastReadMs = nowMs
+
+    /** Whether the last [read] found a gap and started over. */
+    var restarted = false
+        private set
+
+    /** Time spent starting as of [nowMs]. */
+    fun read(nowMs: Long, held: Boolean): Long {
+        val gap = nowMs - lastReadMs
+        restarted = gap < 0L || gap > SourceStartMonitor.MAX_READING_GAP_MS
+        if (restarted) startedAtMs = nowMs else if (held) startedAtMs += gap
+        lastReadMs = nowMs
+        return nowMs - startedAtMs
+    }
+
+    fun restart(nowMs: Long) {
+        startedAtMs = nowMs
+        lastReadMs = nowMs
+        restarted = false
     }
 }
