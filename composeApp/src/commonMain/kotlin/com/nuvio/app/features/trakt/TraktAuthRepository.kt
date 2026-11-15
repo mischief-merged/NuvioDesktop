@@ -678,7 +678,25 @@ object TraktAuthRepository : TrackingAuthProvider {
             log.w { "Trakt token refresh transport failure: ${error.message}" }
         }.getOrNull() ?: return@withLock false
 
-        if (ProfileRepository.activeProfileId != profileId || authState.refreshToken != refreshToken) {
+        val profileStillActive = ProfileRepository.activeProfileId == profileId
+        if (!profileStillActive || authState.refreshToken != refreshToken) {
+            val stored = !profileStillActive && storeRotatedTraktTokens(
+                profileId = profileId,
+                responseStatus = response.status,
+                responseBody = response.body,
+                spentRefreshToken = refreshToken,
+                loadPayload = TraktAuthStorage::loadPayload,
+                savePayload = TraktAuthStorage::savePayload,
+            )
+            // The requesting profile may have been selected again while the answer was being stored.
+            if (stored && currentProfileId == profileId && authState.refreshToken == refreshToken) {
+                TraktAuthStorage.loadPayload(profileId)
+                    ?.let { runCatching { json.decodeFromString<TraktAuthState>(it) }.getOrNull() }
+                    ?.let {
+                        authState = it
+                        publish()
+                    }
+            }
             return@withLock false
         }
 
@@ -859,6 +877,43 @@ internal enum class TraktTokenRefreshResponseAction {
     ACCEPT,
     INVALIDATE,
     TRANSIENT_FAILURE,
+}
+
+/**
+ * Stores an accepted refresh answer in the saved login of [profileId], for a profile that is no
+ * longer the active one. Trakt refresh tokens are single use, so dropping the answer would leave a
+ * spent token behind. Writes only while the saved login still holds [spentRefreshToken], so a login
+ * that was replaced or cleared meanwhile is left alone. Returns whether anything was written.
+ */
+internal fun storeRotatedTraktTokens(
+    profileId: Int,
+    responseStatus: Int,
+    responseBody: String,
+    spentRefreshToken: String,
+    loadPayload: (Int) -> String?,
+    savePayload: (Int, String) -> Unit,
+): Boolean {
+    if (traktTokenRefreshResponseAction(responseStatus) != TraktTokenRefreshResponseAction.ACCEPT) return false
+    val codec = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    val rotated = runCatching { codec.decodeFromString<TraktTokenResponse>(responseBody) }.getOrNull()
+        ?: return false
+    val saved = loadPayload(profileId)?.takeIf { it.isNotBlank() }
+        ?.let { runCatching { codec.decodeFromString<TraktAuthState>(it) }.getOrNull() }
+        ?: return false
+    if (saved.refreshToken != spentRefreshToken) return false
+    savePayload(
+        profileId,
+        codec.encodeToString(
+            saved.copy(
+                accessToken = rotated.accessToken,
+                refreshToken = rotated.refreshToken,
+                tokenType = rotated.tokenType,
+                createdAt = rotated.createdAt,
+                expiresIn = rotated.expiresIn,
+            ),
+        ),
+    )
+    return true
 }
 
 internal fun traktTokenRefreshResponseAction(status: Int): TraktTokenRefreshResponseAction = when {
