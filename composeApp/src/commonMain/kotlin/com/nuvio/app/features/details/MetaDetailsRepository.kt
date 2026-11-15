@@ -40,6 +40,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.getString
+import com.nuvio.app.features.streams.WantedContent
 
 object MetaDetailsRepository {
     private data class CachedMetaEntry(
@@ -610,6 +611,13 @@ object MetaDetailsRepository {
         val meta = _uiState.value.meta ?: return null
         if (parentMetaId != null && meta.id != parentMetaId) return null
         return meta.runtimeMinutesFor(videoId, season, episode)
+    }
+
+    /** What a source has to be for a video of the title that is open, when [parentMetaId] (if given) is that title. */
+    internal fun wantedContentFor(parentMetaId: String?, season: Int?, episode: Int?): WantedContent? {
+        val meta = _uiState.value.meta ?: return null
+        if (parentMetaId != null && meta.id != parentMetaId) return null
+        return meta.wantedContent(season, episode)
     }
 
     fun findEmbeddedStreams(videoId: String): List<com.nuvio.app.features.streams.StreamItem> {
