@@ -291,6 +291,8 @@ internal class PlayerScreenRuntime(
     var sourceFailoverPlayingName: String? = null
     /** The failure being moved on from was a placeholder clip, which changes what the screens say. */
     var sourceFailoverForPlaceholder by mutableStateOf(false)
+    /** The failure being moved on from was a source that stopped responding mid-play, which changes what the loading screen says. */
+    var sourceFailoverForStall by mutableStateOf(false)
     /** The source whose first seconds were checked for being a placeholder, so each is checked once. */
     var placeholderCheckedUrl: String? = null
     var placeholderCheckStateUrl: String? = null

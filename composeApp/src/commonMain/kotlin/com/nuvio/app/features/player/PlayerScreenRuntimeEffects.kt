@@ -165,6 +165,14 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
         resetAddonSubtitlesIfSourceChanged()
         WatchProgressRepository.ensureLoaded()
 
+        if (isDesktop) {
+            // A provider's status clip can be told from its link or file name before any frame.
+            checkForPlaceholderBySourceSignals()
+            // One watch decides about the start and about a stall later on; see monitorSourceHealth.
+            monitorSourceHealth()
+            return@LaunchedEffect
+        }
+
         // A source that does not finish loading within the configured time counts as failed when
         // falling back to the next source. It has an effect only where that fallback applies.
         val startupTimeoutSeconds = playerSettingsUiState.streamAutoPlayFallbackStartupTimeoutSeconds
