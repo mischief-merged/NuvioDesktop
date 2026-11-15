@@ -1861,6 +1861,11 @@
     <string name="profile_label_number">Profile %1$d</string>
     <string name="profile_loading_avatars">Loading avatars...</string>
     <string name="profile_manage_profiles">Manage Profiles</string>
+    <string name="profile_manage_state_on">Editing profiles</string>
+    <string name="profile_manage_state_off">Not editing profiles</string>
+    <string name="profile_picker_empty_guidance">No profiles yet. Add a profile to start watching.</string>
+    <string name="profile_card_locked_label">%1$s, locked with a PIN</string>
+    <string name="profile_card_edit_label">Edit %1$s</string>
     <string name="profile_name_placeholder">Profile name</string>
     <string name="profile_new">New profile</string>
     <string name="profile_primary_addons_off">Primary addons off</string>

@@ -1,12 +1,14 @@
 <div align="center">
 
-<img src="assets/fork-logo.png" alt="NuvioRoid logo: the Nuvio play-button icon with two flexing cartoon arms" width="260" />
+<img src="assets/fork-banner.png" alt="NuvioRoid: the Nuvio play-button icon with two flexing cartoon arms, surrounded by lightning" width="100%" />
 
 # NuvioRoid
 
 ### Nuvio Desktop, on steroids. 💪
 
-**Download whole seasons. Keep the next episodes ready. Press Play and it just plays.**
+**Whole seasons in one click. The next episodes always ready. Fakes caught before you press Play.**
+
+**No source picker. No babysitting. It just plays.**
 
 ![Platform](https://img.shields.io/badge/macOS-Apple%20silicon-111111?logo=apple&logoColor=white)
 ![Status](https://img.shields.io/badge/status-alpha%20%C2%B7%20fast%20development-8A2BE2)

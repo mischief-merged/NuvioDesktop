@@ -22,10 +22,15 @@ internal class EpisodeFocusState(val videoId: String, val indexInSeason: Int = 0
 
     var highlighted by mutableStateOf(false)
 
-    fun markPlaced() {
-        if (placed) return
+    /** Whether the page should still move a row or the page to the episode: only until it was placed. */
+    val needsPositioning: Boolean get() = !placed
+
+    /** Marks the episode as placed. True only for the first call, so the request is consumed once. */
+    fun markPlaced(): Boolean {
+        if (placed) return false
         placed = true
         highlighted = true
+        return true
     }
 }
 
