@@ -28,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -38,6 +39,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.app.core.i18n.localizedByteUnit
+import com.nuvio.app.core.network.NetworkStatusRepository
+import kotlinx.coroutines.delay
 import com.nuvio.app.core.ui.NuvioScreen
 import com.nuvio.app.core.ui.NuvioScreenHeader
 import com.nuvio.app.core.ui.NuvioStatusModal
@@ -53,6 +56,7 @@ fun DownloadsScreen(
     initialShowId: String? = null,
     onNavigateToShow: ((showId: String, title: String) -> Unit)? = null,
     onBackFromShow: (() -> Unit)? = null,
+    showAutoDownloads: Boolean = isDesktop,
 ) {
     val uiState by remember {
         DownloadsRepository.ensureLoaded()
@@ -61,6 +65,17 @@ fun DownloadsScreen(
     LaunchedEffect(uiState.completedItems.size) {
         DownloadsRepository.markCompletedSeen()
     }
+    val network by NetworkStatusRepository.uiState.collectAsStateWithLifecycle()
+    val anyDownloading = uiState.items.any { it.status == DownloadStatus.Downloading }
+    // Read again every few seconds while something downloads, so a transfer that went silent shows it.
+    val now by produceState(initialValue = DownloadsClock.nowEpochMs(), anyDownloading) {
+        value = DownloadsClock.nowEpochMs()
+        while (anyDownloading) {
+            delay(StatusRefreshMs)
+            value = DownloadsClock.nowEpochMs()
+        }
+    }
+    val clock = RowClock(nowEpochMs = now, offline = network.isOfflineLike)
 
     var selectedShowId by rememberSaveable(initialShowId) { mutableStateOf(initialShowId) }
     var downloadPendingDeletionId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -111,11 +126,12 @@ fun DownloadsScreen(
         }
 
         if (selectedShowId == null) {
-            if (isDesktop) {
+            if (showAutoDownloads) {
                 item { AutoDownloadSection() }
             }
             downloadsRootContent(
                 uiState = uiState,
+                clock = clock,
                 onOpenDownload = onOpenDownload,
                 onOpenShow = { showId, title ->
                     onNavigateToShow?.invoke(showId, title) ?: run { selectedShowId = showId }
@@ -126,6 +142,7 @@ fun DownloadsScreen(
             downloadsShowContent(
                 showId = selectedShowId.orEmpty(),
                 episodes = completedEpisodes,
+                clock = clock,
                 onOpenDownload = onOpenDownload,
                 onDeleteDownload = { downloadPendingDeletionId = it },
             )
@@ -150,8 +167,14 @@ fun DownloadsScreen(
     }
 }
 
+private const val StatusRefreshMs = 5_000L
+
+/** The time and network state that the rows work out their status from. */
+private data class RowClock(val nowEpochMs: Long, val offline: Boolean)
+
 private fun LazyListScope.downloadsRootContent(
     uiState: DownloadsUiState,
+    clock: RowClock,
     onOpenDownload: (DownloadItem) -> Unit,
     onOpenShow: (showId: String, title: String) -> Unit,
     onDeleteDownload: (String) -> Unit,
@@ -178,6 +201,7 @@ private fun LazyListScope.downloadsRootContent(
         ) { item ->
             DownloadRow(
                 item = item,
+                clock = clock,
                 onOpen = { onOpenDownload(item) },
                 onPause = { DownloadsRepository.pauseDownload(item.id) },
                 onResume = { DownloadsRepository.resumeDownload(item.id) },
@@ -197,6 +221,7 @@ private fun LazyListScope.downloadsRootContent(
         ) { item ->
             DownloadRow(
                 item = item,
+                clock = clock,
                 onOpen = { onOpenDownload(item) },
                 onPause = { DownloadsRepository.pauseDownload(item.id) },
                 onResume = { DownloadsRepository.resumeDownload(item.id) },
@@ -277,6 +302,7 @@ private fun LazyListScope.downloadsRootContent(
 private fun LazyListScope.downloadsShowContent(
     showId: String,
     episodes: List<DownloadItem>,
+    clock: RowClock,
     onOpenDownload: (DownloadItem) -> Unit,
     onDeleteDownload: (String) -> Unit,
 ) {
@@ -330,6 +356,7 @@ private fun LazyListScope.downloadsShowContent(
         ) { item ->
             DownloadRow(
                 item = item,
+                clock = clock,
                 onOpen = { onOpenDownload(item) },
                 onPause = { DownloadsRepository.pauseDownload(item.id) },
                 onResume = { DownloadsRepository.resumeDownload(item.id) },
@@ -343,12 +370,14 @@ private fun LazyListScope.downloadsShowContent(
 @Composable
 private fun DownloadRow(
     item: DownloadItem,
+    clock: RowClock,
     onOpen: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
     onRetry: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    val rowStatus = downloadRowStatus(item, clock.nowEpochMs, clock.offline)
     val displayTitle = item.displayTitle()
     val displaySubtitle = downloadDisplaySubtitle(
         item = item,
@@ -394,10 +423,17 @@ private fun DownloadRow(
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        text = statusText(item),
+                        text = statusText(item, rowStatus),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    resultText(rowStatus)?.let { result ->
+                        Text(
+                            text = result,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -502,25 +538,39 @@ private fun SectionTitle(title: String) {
 }
 
 @Composable
-private fun statusText(item: DownloadItem): String {
-    val size = if (item.totalBytes != null && item.totalBytes > 0L) {
+private fun statusText(item: DownloadItem, status: DownloadRowStatus): String {
+    val size = if (item.status == DownloadStatus.Completed) {
+        formatBytes(item.totalBytes ?: item.downloadedBytes)
+    } else if (item.totalBytes != null && item.totalBytes > 0L) {
         "${formatBytes(item.downloadedBytes)} / ${formatBytes(item.totalBytes)}"
     } else {
         formatBytes(item.downloadedBytes)
     }
 
-    return when (item.status) {
-        DownloadStatus.Downloading -> stringResource(Res.string.downloads_status_downloading, size)
-        DownloadStatus.Paused -> stringResource(Res.string.downloads_status_paused, size)
-        DownloadStatus.Completed -> stringResource(
-            if (item.framesCheck == DownloadFramesCheck.Suspect) {
-                Res.string.downloads_status_completed_suspect
-            } else {
-                Res.string.downloads_status_completed
-            },
-            formatBytes(item.totalBytes ?: item.downloadedBytes),
-        )
-        DownloadStatus.Failed -> item.errorMessage ?: stringResource(Res.string.downloads_status_failed)
+    val line = when (status.phase) {
+        DownloadPhase.Failed -> item.errorMessage ?: stringResource(status.phase.message)
+        else -> if (status.phase.showsSize) {
+            stringResource(status.phase.message, size)
+        } else {
+            stringResource(status.phase.message)
+        }
+    }
+    return if (status.isAuto) {
+        stringResource(Res.string.downloads_status_auto) + " • " + line
+    } else {
+        line
+    }
+}
+
+/** What was checked about a finished file, or null for any other row. */
+@Composable
+private fun resultText(status: DownloadRowStatus): String? {
+    val result = status.result ?: return null
+    val message = stringResource(result.message)
+    return if (status.pictureChecked) {
+        message + " • " + stringResource(Res.string.downloads_result_picture_ok)
+    } else {
+        message
     }
 }
 

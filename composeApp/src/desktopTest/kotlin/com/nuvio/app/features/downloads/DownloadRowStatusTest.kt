@@ -1,0 +1,162 @@
+package com.nuvio.app.features.downloads
+
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import org.jetbrains.compose.resources.getString
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+class DownloadRowStatusTest {
+    private val now = 1_000_000L
+
+    private fun item(
+        status: DownloadStatus,
+        downloaded: Long = 10L,
+        total: Long? = 100L,
+        updatedAt: Long = now,
+        stop: AutoDownloadStop? = null,
+        rule: String? = null,
+        verifiedBy: DownloadVerification? = null,
+        frames: DownloadFramesCheck = DownloadFramesCheck.NotChecked,
+    ) = DownloadItem(
+        id = "a", contentType = "series", parentMetaId = "tt1", parentMetaType = "series", videoId = "tt1:1:1",
+        title = "Show", streamTitle = "1080p", providerName = "Addon", sourceUrl = "https://example.com/a.mkv",
+        fileName = "a.mkv", status = status, downloadedBytes = downloaded, totalBytes = total,
+        createdAtEpochMs = 1, updatedAtEpochMs = updatedAt, autoDownloadStop = stop, autoDownloadRuleKey = rule,
+        verifiedBy = verifiedBy, framesCheck = frames,
+    )
+
+    private fun phase(item: DownloadItem, offline: Boolean = false, at: Long = now) =
+        downloadRowStatus(item, at, offline).phase
+
+    @Test
+    fun a_transfer_that_receives_data_is_downloading() {
+        assertEquals(DownloadPhase.Downloading, phase(item(DownloadStatus.Downloading)))
+        assertEquals(DownloadPhase.Downloading, phase(item(DownloadStatus.Downloading, total = null)))
+    }
+
+    @Test
+    fun a_transfer_without_internet_waits_for_it() {
+        assertEquals(DownloadPhase.WaitingForNetwork, phase(item(DownloadStatus.Downloading), offline = true))
+    }
+
+    @Test
+    fun a_transfer_that_went_silent_while_online_is_reconnecting() {
+        val silent = item(DownloadStatus.Downloading, updatedAt = now - DownloadStalledAfterMs - 1)
+        assertEquals(DownloadPhase.Reconnecting, phase(silent))
+        assertEquals(DownloadPhase.Downloading, phase(item(DownloadStatus.Downloading, updatedAt = now - DownloadStalledAfterMs)))
+    }
+
+    @Test
+    fun without_internet_the_wait_is_named_before_the_silence() {
+        val silent = item(DownloadStatus.Downloading, updatedAt = 0)
+        assertEquals(DownloadPhase.WaitingForNetwork, phase(silent, offline = true))
+    }
+
+    @Test
+    fun a_transfer_with_all_its_bytes_is_checking_the_file_even_when_quiet_or_offline() {
+        val full = item(DownloadStatus.Downloading, downloaded = 100, total = 100, updatedAt = 0)
+        assertEquals(DownloadPhase.CheckingFile, phase(full))
+        assertEquals(DownloadPhase.CheckingFile, phase(full, offline = true))
+    }
+
+    @Test
+    fun an_unknown_size_is_never_checking_the_file() {
+        assertEquals(DownloadPhase.Downloading, phase(item(DownloadStatus.Downloading, downloaded = 500, total = null)))
+        assertEquals(DownloadPhase.Downloading, phase(item(DownloadStatus.Downloading, downloaded = 0, total = 0)))
+    }
+
+    @Test
+    fun a_paused_download_says_why_when_a_limit_stopped_it() {
+        assertEquals(DownloadPhase.Paused, phase(item(DownloadStatus.Paused)))
+        assertEquals(DownloadPhase.PausedStorageLimit, phase(item(DownloadStatus.Paused, stop = AutoDownloadStop.StorageLimit)))
+        assertEquals(DownloadPhase.PausedLowDiskSpace, phase(item(DownloadStatus.Paused, stop = AutoDownloadStop.LowDiskSpace)))
+    }
+
+    @Test
+    fun silence_and_offline_do_not_change_a_paused_or_failed_row() {
+        assertEquals(DownloadPhase.Paused, phase(item(DownloadStatus.Paused, updatedAt = 0), offline = true))
+        assertEquals(DownloadPhase.Failed, phase(item(DownloadStatus.Failed, updatedAt = 0), offline = true))
+    }
+
+    @Test
+    fun an_automatic_download_is_marked_whatever_it_does() {
+        DownloadStatus.entries.forEach { status ->
+            assertTrue(downloadRowStatus(item(status, rule = "rule"), now).isAuto, "$status")
+            assertFalse(downloadRowStatus(item(status), now).isAuto, "$status")
+        }
+    }
+
+    private fun result(verifiedBy: DownloadVerification?, frames: DownloadFramesCheck = DownloadFramesCheck.NotChecked) =
+        downloadRowStatus(item(DownloadStatus.Completed, verifiedBy = verifiedBy, frames = frames), now)
+
+    @Test
+    fun a_finished_file_says_what_it_was_checked_against() {
+        assertEquals(DownloadResult.VerifiedBySource, result(DownloadVerification.Hash).result)
+        assertEquals(DownloadResult.VerifiedByServer, result(DownloadVerification.Digest).result)
+        assertEquals(DownloadResult.VerifiedBySize, result(DownloadVerification.Size).result)
+        assertEquals(DownloadResult.BasicCheck, result(DownloadVerification.None).result)
+        assertEquals(DownloadResult.NotChecked, result(null).result)
+    }
+
+    @Test
+    fun a_suspect_file_is_suspect_whatever_else_matched() {
+        DownloadVerification.entries.forEach { verification ->
+            assertEquals(DownloadResult.Suspect, result(verification, DownloadFramesCheck.Suspect).result)
+        }
+        assertEquals(DownloadResult.Suspect, result(null, DownloadFramesCheck.Suspect).result)
+    }
+
+    @Test
+    fun the_picture_check_is_reported_only_when_it_passed() {
+        assertTrue(result(DownloadVerification.Size, DownloadFramesCheck.Passed).pictureChecked)
+        assertFalse(result(DownloadVerification.Size, DownloadFramesCheck.NotChecked).pictureChecked)
+        assertFalse(result(DownloadVerification.Size, DownloadFramesCheck.Suspect).pictureChecked)
+    }
+
+    @Test
+    fun only_finished_downloads_have_a_result() {
+        listOf(DownloadStatus.Downloading, DownloadStatus.Paused, DownloadStatus.Failed).forEach { status ->
+            assertNull(downloadRowStatus(item(status), now).result, "$status")
+        }
+    }
+
+    private fun text(resource: org.jetbrains.compose.resources.StringResource) = runBlocking { getString(resource) }
+
+    @Test
+    fun every_phase_and_result_has_its_own_plain_wording() {
+        val phases = DownloadPhase.entries.map { text(it.message) }
+        assertEquals(phases.size, phases.toSet().size, "two phases share a text")
+        val results = DownloadResult.entries.map { text(it.message) }
+        assertEquals(results.size, results.toSet().size, "two results share a text")
+    }
+
+    @Test
+    fun the_wording_has_no_technical_terms() {
+        val jargon = listOf("checksum", "decode", "digest", "hash", "sha", "md5", "codec", "frame", "ffmpeg", "crc")
+        (DownloadPhase.entries.map { it.message } + DownloadResult.entries.map { it.message }).forEach { resource ->
+            val message = text(resource).lowercase()
+            jargon.forEach { term -> assertFalse(term in message, "'$term' is in \"$message\"") }
+        }
+    }
+
+    @Test
+    fun messages_with_a_size_have_a_place_for_it_and_the_others_do_not() {
+        DownloadPhase.entries.forEach { phase ->
+            val message = text(phase.message)
+            assertEquals(phase.showsSize, "%1\$s" in message, "$phase: \"$message\"")
+        }
+    }
+
+    @Test
+    fun the_stored_list_of_an_earlier_build_still_reads_and_the_status_follows_from_it() {
+        val stored = """{"id":"a","contentType":"movie","parentMetaId":"tt1","parentMetaType":"movie","videoId":"tt1","title":"Film",""" +
+            """"streamTitle":"1080p","providerName":"Addon","sourceUrl":"https://example.com/a.mkv","fileName":"a.mkv",""" +
+            """"status":"Completed","createdAtEpochMs":1,"updatedAtEpochMs":2}"""
+        val item = Json { ignoreUnknownKeys = true; coerceInputValues = true }.decodeFromString<DownloadItem>(stored)
+        assertEquals(DownloadResult.NotChecked, downloadRowStatus(item, now).result)
+    }
+}
