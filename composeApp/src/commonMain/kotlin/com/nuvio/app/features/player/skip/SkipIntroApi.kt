@@ -9,16 +9,21 @@ internal object SkipIntroApi {
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
+    /** Replaces the configured IntroDB address. Tests only. */
+    internal var introDbBaseUrlOverride: String? = null
+
+    private fun introDbBase(): String = (introDbBaseUrlOverride ?: IntroDbConfig.URL).trimEnd('/')
+
     private const val ANISKIP_BASE = "https://api.aniskip.com/v2/"
     private const val ANIMESKIP_BASE = "https://api.anime-skip.com/"
 
     // --- IntroDb ---
 
     suspend fun getIntroDbMovieSegments(imdbId: String): IntroDbSegmentsResponse? {
-        val baseUrl = IntroDbConfig.URL.trimEnd('/')
+        val baseUrl = introDbBase()
         if (baseUrl.isBlank()) return null
         return try {
-            val text = httpGetText(introDbMovieSegmentsUrl(baseUrl, imdbId))
+            val text = (SkipHttp.get(introDbMovieSegmentsUrl(baseUrl, imdbId)) as? SkipHttpResult.Ok)?.body ?: return null
             json.decodeFromString<IntroDbSegmentsResponse>(text)
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -33,11 +38,11 @@ internal object SkipIntroApi {
         season: Int,
         episode: Int,
     ): IntroDbSegmentsResponse? {
-        val baseUrl = IntroDbConfig.URL.trimEnd('/')
+        val baseUrl = introDbBase()
         if (baseUrl.isBlank()) return null
         val url = "$baseUrl/segments?imdb_id=$imdbId&season=$season&episode=$episode"
         return try {
-            val text = httpGetText(url)
+            val text = (SkipHttp.get(url) as? SkipHttpResult.Ok)?.body ?: return null
             json.decodeFromString<IntroDbSegmentsResponse>(text)
         } catch (error: Exception) {
             reportSkipLookupFailure(error)
@@ -110,7 +115,7 @@ internal object SkipIntroApi {
         val types = "types=op&types=ed&types=recap&types=mixed-op&types=mixed-ed"
         val url = "${ANISKIP_BASE}skip-times/$malId/$episode?$types&episodeLength=0"
         return try {
-            val text = httpGetText(url)
+            val text = (SkipHttp.get(url) as? SkipHttpResult.Ok)?.body ?: return null
             json.decodeFromString<AniSkipResponse>(text)
         } catch (error: Exception) {
             reportSkipLookupFailure(error)
@@ -132,8 +137,16 @@ internal object SkipIntroApi {
             "Content-Type" to "application/json",
         )
         return try {
-            val text = httpPostJsonWithHeaders(ANIMESKIP_BASE + "graphql", body, headers)
-            json.decodeFromString<AnimeSkipGraphqlResponse>(text)
+            val text = when (val result = SkipHttp.request("POST", ANIMESKIP_BASE + "graphql", headers + ("Accept" to "application/json"), body)) {
+                is SkipHttpResult.Ok -> result.body
+                // A fixed POST endpoint answering 404 is a broken service, not a title without an entry.
+                SkipHttpResult.NoEntry -> { reportSkipLookupFailure(IllegalStateException("HTTP 404")); return null }
+                SkipHttpResult.Unanswered -> return null
+            }
+            json.decodeFromString<AnimeSkipGraphqlResponse>(text).also {
+                // GraphQL answers with a body even when it failed: no data means it did not answer.
+                if (it.data == null) reportSkipLookupFailure(IllegalStateException("GraphQL returned no data"))
+            }
         } catch (error: Exception) {
             reportSkipLookupFailure(error)
             null

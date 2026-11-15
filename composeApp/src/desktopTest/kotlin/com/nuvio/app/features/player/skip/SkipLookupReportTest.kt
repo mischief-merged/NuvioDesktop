@@ -24,13 +24,12 @@ class SkipLookupReportTest {
     }
 
     @Test
-    fun a_service_that_answered_with_an_error_status_or_unreadable_text_is_not_a_failure() = runBlocking {
-        val report = SkipLookupReport()
-        withContext(report) {
-            reportSkipLookupFailure(IllegalStateException("HTTP 404"))
-            reportSkipLookupFailure(IllegalArgumentException("not json"))
+    fun any_exception_that_reaches_the_report_means_no_answer_including_a_decoding_failure() = runBlocking {
+        for (error in listOf(IllegalStateException("HTTP 500"), IllegalArgumentException("not json"), IOException("x"))) {
+            val report = SkipLookupReport()
+            withContext(report) { reportSkipLookupFailure(error) }
+            assertTrue(report.hadUnansweredRequest, error.toString())
         }
-        assertFalse(report.hadUnansweredRequest)
     }
 
     @Test
