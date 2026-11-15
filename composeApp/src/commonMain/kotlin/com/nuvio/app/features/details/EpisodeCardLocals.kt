@@ -9,9 +9,17 @@ import androidx.compose.runtime.staticCompositionLocalOf
  * The episode the show page was asked to scroll to. The card of that episode reports back when it
  * is on screen, which ends the search for it, and wears a marker until [highlighted] is cleared.
  */
-internal class EpisodeFocusState(val videoId: String) {
+internal class EpisodeFocusState(val videoId: String, val indexInSeason: Int = 0) {
+    /** Set when the season row that holds the episode is on screen, so the page stops stepping down. */
+    var sectionReached by mutableStateOf(false)
+        private set
     var placed by mutableStateOf(false)
         private set
+
+    fun markSectionReached() {
+        sectionReached = true
+    }
+
     var highlighted by mutableStateOf(false)
 
     fun markPlaced() {

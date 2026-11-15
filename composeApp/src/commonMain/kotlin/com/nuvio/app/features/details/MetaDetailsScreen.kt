@@ -744,7 +744,7 @@ fun MetaDetailsScreen(
                     else -> seriesAction?.episodeNumber
                 }
                 val episodeFocusState = remember(meta.id, focusVideo?.id) {
-                    focusVideo?.let { EpisodeFocusState(it.id) }
+                    focusVideo?.let { EpisodeFocusState(it.id, meta.episodeIndexInSeason(it) ?: 0) }
                 }
                 var selectedEpisodeListSeason by rememberSaveable(meta.id) {
                     mutableStateOf<Int?>(null)
@@ -1061,15 +1061,36 @@ fun MetaDetailsScreen(
                 val listState = rememberLazyListState()
                 LaunchedEffect(episodeFocusState) {
                     val focusState = episodeFocusState ?: return@LaunchedEffect
-                    // The sections are lazy, so step down the page until the episode's card is composed.
+                    val originIndex = listState.firstVisibleItemIndex
+                    val originOffset = listState.firstVisibleItemScrollOffset
                     delay(350)
+                    // The sections are lazy. Step down the page until the episodes section is composed:
+                    // a season row reports itself, and the list layout shows a header whose position
+                    // gives the row of the episode. Both searches end after a bounded number of steps.
+                    val maxSteps = listState.layoutInfo.totalItemsCount.coerceIn(1, 60)
                     var index = 0
-                    while (!focusState.placed && index < listState.layoutInfo.totalItemsCount) {
+                    var steps = 0
+                    while (!focusState.placed && !focusState.sectionReached && steps < maxSteps) {
+                        val header = listState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
+                            (item.key as? String)?.let { it.startsWith("detail-section") && it.endsWith("-header") } == true
+                        }
+                        if (header != null) {
+                            listState.scrollToItem(episodeListItemIndex(header.index, focusState.indexInSeason))
+                            break
+                        }
                         listState.scrollToItem(index)
-                        delay(80)
                         index++
+                        steps++
+                        delay(80)
                     }
-                    if (!focusState.placed) listState.scrollToItem(0)
+                    // Give the row or list a moment to put the card on screen and report it.
+                    var waits = 0
+                    while (!focusState.placed && waits < 20) {
+                        delay(80)
+                        waits++
+                    }
+                    // Never leave the page somewhere odd when the episode could not be reached.
+                    if (!focusState.placed) listState.scrollToItem(originIndex, originOffset)
                 }
                 LaunchedEffect(episodeFocusState?.highlighted) {
                     val focusState = episodeFocusState ?: return@LaunchedEffect

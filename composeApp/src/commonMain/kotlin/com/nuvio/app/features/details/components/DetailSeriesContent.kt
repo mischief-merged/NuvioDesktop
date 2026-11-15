@@ -738,7 +738,20 @@ private fun EpisodeHorizontalRow(
     val listState = rememberLazyListState()
     var hasPositioned by remember(episodes) { mutableStateOf(false) }
 
+    val focus = LocalEpisodeFocus.current
+    val focusIndex = remember(episodes, focus) {
+        focus?.let { target -> episodes.indexOfFirst { it.id == target.videoId } }?.takeIf { it >= 0 }
+    }
+    // The show page was opened on one episode: this row reports that it is on screen, then goes to it.
+    LaunchedEffect(focus, focusIndex) {
+        if (focus != null && focusIndex != null) {
+            focus.markSectionReached()
+            listState.scrollToItem(focusIndex)
+        }
+    }
+
     LaunchedEffect(episodes, preferredEpisodeNumber) {
+        if (focusIndex != null) return@LaunchedEffect
         val targetIndex = if (preferredEpisodeNumber != null) {
             episodes.indexOfFirst { it.episode == preferredEpisodeNumber }
         } else {
