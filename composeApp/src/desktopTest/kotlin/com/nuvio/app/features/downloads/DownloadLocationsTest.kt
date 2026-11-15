@@ -34,16 +34,13 @@ class DownloadLocationsTest {
     }
 
     @Test
-    fun a_record_that_was_not_updated_after_a_move_still_finds_its_file_by_name() {
+    fun a_file_of_the_same_name_in_another_location_is_never_adopted_by_a_record() {
         val drive = world.driveLocation("Archive")
         val oldAddress = world.appFolder.resolve("c.mp4").toUri().toString()
         drive.path.resolve("c.mp4").writeVideo(3)
 
-        // The record still says the app folder and the old address.
-        val lookup = found(world.locations.locate(null, oldAddress, "c.mp4"))
-
-        assertEquals(drive.id, lookup.locationId)
-        assertTrue(lookup.uri.endsWith("/Archive/Movies/c.mp4"), lookup.uri)
+        // The record says the app folder. A file of that name on a drive is another file.
+        assertEquals(FileLookup.Missing, world.locations.locate(null, oldAddress, "c.mp4"))
     }
 
     @Test
@@ -79,7 +76,8 @@ class DownloadLocationsTest {
         // What macOS does when a program writes to /Volumes/Archive/Movies while the drive is away.
         drive.path.createDirectories()
 
-        assertEquals(FolderAvailability.NotFound, world.locations.availability(drive))
+        // The folder is there but was not set up as a download location: nothing is lost, choose it again.
+        assertEquals(FolderAvailability.NotSetUp, world.locations.availability(drive))
     }
 
     @Test

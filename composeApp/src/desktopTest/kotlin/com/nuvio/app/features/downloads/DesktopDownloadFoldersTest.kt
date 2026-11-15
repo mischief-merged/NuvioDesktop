@@ -23,9 +23,16 @@ class DesktopDownloadFoldersTest {
         val log = mutableListOf<String>()
         var onRelocate: (String) -> Unit = {}
         override fun items() = items
-        override fun pause(downloadId: String) {
+        var stopFails = false
+        var profile = 1
+        var otherProfileRecords: List<Pair<String?, String?>> = emptyList()
+        override fun profileId() = profile
+        override fun recordsOfAllProfiles() = items.map { it.locationId to it.localFileUri } + otherProfileRecords
+        override fun pauseAndWait(downloadId: String): Boolean {
             log += "pause $downloadId"
+            if (stopFails) return false
             items = items.map { if (it.id == downloadId) it.copy(status = DownloadStatus.Paused) else it }
+            return true
         }
         override fun resume(downloadId: String) {
             log += "resume $downloadId"
@@ -180,6 +187,7 @@ class DesktopDownloadFoldersTest {
     fun active_downloads_of_the_moved_items_pause_first_and_resume_after_and_are_held_meanwhile() {
         val done = episode("A", 1)
         val running = episodeItem("A", 2, status = DownloadStatus.Downloading, bytes = 5_000L)
+        Files.createDirectories(world.appFolder)
         val partial = world.appFolder.resolve(running.fileName + ".part")
         Files.write(partial, ByteArray(5_000) { it.toByte() })
         val drive = world.driveLocation("Archive")
@@ -246,41 +254,153 @@ class DesktopDownloadFoldersTest {
         val report = folders.move(setOf(item.id), drive.path.toString())
 
         assertEquals(0, report.moved)
-        assertEquals(FolderProblem.NotAFolder, report.problem)
+        assertEquals(FolderProblem.NotConnected, report.problem)
         assertTrue(fileOf(item).exists())
     }
 
     @Test
-    fun a_move_cut_short_by_a_crash_is_settled_on_the_next_start_and_the_paused_downloads_come_back() {
-        val items = (1..3).map { episode("A", it) }
-        val running = episodeItem("A", 9, status = DownloadStatus.Downloading)
+    fun a_move_cut_short_by_a_crash_is_settled_from_the_journal_and_the_moved_partial_is_repointed() {
+        val done = episode("A", 1)
+        val running = episodeItem("A", 9, status = DownloadStatus.Downloading, bytes = 5_000L)
+        val partial = world.appFolder.resolve(running.fileName + ".part")
+        Files.write(partial, ByteArray(5_000) { it.toByte() })
         val drive = world.driveLocation("Archive")
-        val originals = items.associate { it.id to Files.readAllBytes(fileOf(it)) }
-        val hooks = Hooks(items + running)
+        val original = Files.readAllBytes(fileOf(done))
+        val hooks = Hooks(listOf(done, running))
         var crashed = false
         try {
-            controller(hooks, crashAt = "renamed").move((items + running).map { it.id }.toSet(), drive.path.toString())
+            controller(hooks, crashAt = "record-updating").move(setOf(done.id, running.id), drive.path.toString())
         } catch (_: IllegalStateException) {
             crashed = true
         }
         assertTrue(crashed)
         assertTrue(world.root.resolve("journal.json").exists())
 
-        val report = assertNotNull(controller(Hooks(emptyList())).recoverInterrupted())
+        // The next start, before the list is loaded: nothing can be told apart yet, so nothing is touched.
+        val restarted = Hooks(listOf(done, running.copy(status = DownloadStatus.Paused)))
+        val folders = controller(restarted)
+        val first = assertNotNull(folders.recoverInterrupted())
+        assertEquals(listOf(done.id), first.unresolved)
+        assertEquals(listOf(running.id), first.pausedIds)
+        assertTrue(fileOf(done).exists() && drive.path.resolve(done.fileName).exists())
 
-        assertEquals(listOf(running.id), report.pausedIds)
+        // Then, with the list loaded, the journal says where the file went and the record is pointed there.
+        folders.settleInterrupted(withRecords = true)
+
         assertFalse(world.root.resolve("journal.json").exists())
-        items.forEach {
-            val places = listOf(fileOf(it), drive.path.resolve(it.fileName)).filter { p -> p.exists() }
-            assertTrue(places.isNotEmpty(), "${it.id} is lost")
-            places.forEach { p -> assertContentEquals(originals.getValue(it.id), Files.readAllBytes(p)) }
+        assertContentEquals(original, Files.readAllBytes(drive.path.resolve(done.fileName)))
+        assertFalse(fileOf(done).exists())
+        assertTrue("relocate ${done.id}" in restarted.log, "the record was not pointed from the journal")
+        assertEquals(drive.id, restarted.items.first { it.id == done.id }.locationId)
+    }
+
+    @Test
+    fun a_download_that_will_not_stop_is_not_moved_and_nothing_of_it_is_touched() {
+        val running = episodeItem("A", 2, status = DownloadStatus.Downloading, bytes = 5_000L)
+        Files.createDirectories(world.appFolder)
+        val partial = world.appFolder.resolve(running.fileName + ".part")
+        Files.write(partial, ByteArray(5_000) { it.toByte() })
+        val drive = world.driveLocation("Archive")
+        val hooks = Hooks(listOf(running)).apply { stopFails = true }
+
+        val report = controller(hooks).move(setOf(running.id), drive.path.toString())
+
+        assertEquals(0, report.moved)
+        assertEquals(MoveFailureReason.StillWriting, report.failures.single().reason)
+        assertTrue(partial.exists())
+        assertFalse(ItemLocks.isHeld(running.id), "the lock was kept")
+    }
+
+    @Test
+    fun an_item_being_moved_cannot_be_deleted_and_an_item_that_is_playing_is_skipped_and_reported() {
+        val a = episode("A", 1)
+        val b = episode("A", 2)
+        val drive = world.driveLocation("Archive")
+        val hooks = Hooks(listOf(a, b))
+        val folders = DesktopDownloadFolders(
+            world.locations, world.validator,
+            DownloadMover(world.root.resolve("journal.json"), sameStore = { _, _ -> false }), hooks,
+            isPlaying = { it.id == b.id },
+        )
+        var deleteWhileMoving: Boolean? = null
+        var heldInState: Set<String>? = null
+        hooks.onRelocate = {
+            deleteWhileMoving = ItemLocks.tryAcquire(a.id)
+            heldInState = folders.state.value.movingIds
         }
-        // The first file was finished by the crash step: it is on the drive only; the rest stayed.
-        assertTrue(drive.path.resolve(items[0].fileName).exists() && !fileOf(items[0]).exists())
-        assertTrue(fileOf(items[1]).exists() && !drive.path.resolve(items[1].fileName).exists())
-        // Records follow the files at the next load: the file is found on the drive although the record says the app folder.
-        val lookup = world.locations.locate(null, items[0].localFileUri, items[0].fileName)
-        assertEquals(drive.id, (lookup as FileLookup.Found).locationId)
+
+        val report = folders.move(setOf(a.id, b.id), drive.path.toString())
+
+        assertEquals(false, deleteWhileMoving, "a delete could take the item while it was moving")
+        assertEquals(setOf(a.id), heldInState)
+        assertEquals(1, report.moved)
+        assertEquals(listOf(MoveFailure(b.fileName, MoveFailureReason.Playing)), report.failures)
+        assertTrue(fileOf(b).exists())
+        assertFalse(ItemLocks.isHeld(a.id))
+    }
+
+    @Test
+    fun a_move_does_not_start_when_the_destination_is_inside_a_download_folder_or_is_the_trash() {
+        val a = episode("A", 1)
+        val drive = world.driveLocation("Archive")
+        val hooks = Hooks(listOf(a))
+        val folders = controller(hooks)
+        folders.move(setOf(a.id), drive.path.toString())
+
+        val inside = folders.move(setOf(a.id), drive.path.resolve("sub").toString())
+        val trash = folders.move(setOf(a.id), world.root.resolve("home/.Trash").toString())
+
+        assertEquals(FolderProblem.OverlapsDownloadFolder, inside.problem)
+        assertEquals(FolderProblem.IsTrash, trash.problem)
+        assertEquals(0, inside.moved + trash.moved)
+        assertTrue(drive.path.resolve(a.fileName).exists())
+    }
+
+    @Test
+    fun moving_a_folder_into_itself_moves_nothing() {
+        val a = episode("A", 1)
+        val hooks = Hooks(listOf(a))
+
+        val report = controller(hooks).move(setOf(a.id), world.appFolder.toString())
+
+        assertEquals(0, report.moved)
+        assertTrue(fileOf(a).exists())
+    }
+
+    @Test
+    fun a_location_stays_while_another_profile_still_uses_it() {
+        val item = episode("A", 1)
+        val first = world.driveLocation("One")
+        val second = world.driveLocation("Two")
+        val hooks = Hooks(listOf(item))
+        val folders = controller(hooks)
+        folders.move(setOf(item.id), first.path.toString())
+        // Another profile's stored list has a download in the first location.
+        hooks.otherProfileRecords = listOf(first.id to first.path.resolve("x.mp4").toUri().toString())
+
+        folders.move(setOf(item.id), second.path.toString())
+
+        assertTrue(first.id in world.locations.all().map { it.id }, "forgotten although another profile uses it")
+        hooks.otherProfileRecords = emptyList()
+        folders.refresh()
+        folders.move(setOf(item.id), first.path.toString())
+        assertTrue(second.id !in world.locations.all().map { it.id } || second.path != world.locations.defaultLocation().path)
+    }
+
+    @Test
+    fun a_profile_switched_during_a_move_stops_it_safely_and_changes_nothing_in_the_other_profile() {
+        val items = (1..3).map { episode("A", it) }
+        val drive = world.driveLocation("Archive")
+        val hooks = Hooks(items)
+        val folders = controller(hooks)
+        hooks.onRelocate = { hooks.profile = 2 } // the profile changes after the first item
+
+        val report = folders.move(items.map { it.id }.toSet(), drive.path.toString())
+
+        assertTrue(report.cancelled)
+        assertEquals(1, report.moved)
+        assertEquals(listOf(false, true, true), items.map { fileOf(it).exists() })
+        assertEquals(1, hooks.log.count { it.startsWith("relocate") })
     }
 
     @Test

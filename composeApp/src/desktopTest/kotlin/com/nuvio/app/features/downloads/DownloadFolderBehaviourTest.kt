@@ -53,7 +53,7 @@ class DownloadFolderBehaviourTest {
         val drive = world.driveLocation("Archive")
         val folders = DesktopDownloadFolders(world.locations, world.validator, DownloadMover(world.root.resolve("j.json")), object : DownloadsHooks {
             override fun items() = emptyList<DownloadItem>()
-            override fun pause(downloadId: String) = Unit
+            override fun pauseAndWait(downloadId: String) = true
             override fun resume(downloadId: String) = Unit
             override fun relocate(downloadId: String, locationId: String, localFileUri: String?) = Unit
             override fun resumeHeld() = Unit
@@ -83,7 +83,7 @@ class DownloadFolderBehaviourTest {
         val drive = world.driveLocation("Archive")
         val folders = DesktopDownloadFolders(world.locations, world.validator, DownloadMover(world.root.resolve("j.json")), object : DownloadsHooks {
             override fun items() = emptyList<DownloadItem>()
-            override fun pause(downloadId: String) = Unit
+            override fun pauseAndWait(downloadId: String) = true
             override fun resume(downloadId: String) = Unit
             override fun relocate(downloadId: String, locationId: String, localFileUri: String?) = Unit
             override fun resumeHeld() = Unit

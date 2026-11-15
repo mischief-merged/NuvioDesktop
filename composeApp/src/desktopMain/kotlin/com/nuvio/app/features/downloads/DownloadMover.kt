@@ -452,9 +452,11 @@ internal class DownloadMover(
                 }
             }
             // Sidecar folders that are now empty go too; one that still holds something stays.
-            item.entries.map { Paths.get(it.from).parent }.distinct().forEach { folder ->
-                if (folder != null && folder.fileName?.toString()?.let { it.contains('.') } == true) runCatching { Files.delete(folder) }
-            }
+            val base = item.entries.firstOrNull { it.kind != MoveKind.RecordOnly }?.let { Paths.get(it.from).parent }
+            item.entries.filter { it.kind != MoveKind.RecordOnly }
+                .flatMap { generateSequence(Paths.get(it.from).parent) { dir -> dir.parent }.takeWhile { dir -> base != null && dir != base && dir.startsWith(base) }.toList() }
+                .distinct().sortedByDescending { it.nameCount }
+                .forEach { folder -> runCatching { Files.delete(folder) } }
             checkpoint("original-removed")
         }
 
