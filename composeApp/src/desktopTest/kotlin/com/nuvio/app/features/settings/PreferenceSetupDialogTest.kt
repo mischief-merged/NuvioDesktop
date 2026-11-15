@@ -30,6 +30,7 @@ import kotlinx.coroutines.runBlocking
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.action_save
 import nuvio.composeapp.generated.resources.downloads_season_audio_language
+import nuvio.composeapp.generated.resources.downloads_season_audio_language_prefilled
 import nuvio.composeapp.generated.resources.downloads_season_audio_language_any
 import nuvio.composeapp.generated.resources.downloads_season_bitrate_no_limit
 import nuvio.composeapp.generated.resources.downloads_season_quality_1080
@@ -79,6 +80,30 @@ class PreferenceSetupDialogTest {
         compose.onNodeWithText(text(Res.string.downloads_season_audio_language_any)).assertIsDisplayed()
         radio(Res.string.settings_preferences_play_ask).assertIsSelected()
         radio(Res.string.settings_preferences_play_best).assertIsNotSelected()
+    }
+
+    @Test
+    fun the_download_language_starts_from_the_playback_language_and_is_saved_only_with_save() {
+        playbackLanguage = "es"
+        show()
+
+        compose.onNodeWithText(DebridStreamLanguage.ES.label).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_season_audio_language_prefilled), substring = true).assertIsDisplayed()
+        assertEquals(false, SeasonDownloadDefaultsRepository.hasSaved(profile))
+
+        compose.onNodeWithText(text(Res.string.action_save)).performClick()
+
+        assertEquals(DebridStreamLanguage.ES, SeasonDownloadDefaultsRepository.load(profile).audioLanguage)
+    }
+
+    @Test
+    fun not_now_leaves_the_language_of_playback_unsaved() {
+        playbackLanguage = "es"
+        show()
+
+        compose.onNodeWithText(text(Res.string.settings_preferences_setup_skip)).performClick()
+
+        assertEquals(false, SeasonDownloadDefaultsRepository.hasSaved(profile))
     }
 
     @Test
@@ -206,6 +231,8 @@ class PreferenceSetupDialogTest {
         assertEquals(listOf(StreamAutoPlayMode.MANUAL), modeChanges)
     }
 
+    private var playbackLanguage = "default"
+
     private fun show() {
         compose.setContent {
             NuvioTheme {
@@ -215,6 +242,7 @@ class PreferenceSetupDialogTest {
                         canInterrupt = canInterrupt,
                         playMode = playMode,
                         onPlayModeChange = { modeChanges += it },
+                        playbackAudioLanguage = playbackLanguage,
                     )
                 }
             }

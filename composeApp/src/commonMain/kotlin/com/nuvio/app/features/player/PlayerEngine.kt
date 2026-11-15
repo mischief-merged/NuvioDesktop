@@ -163,7 +163,7 @@ data class PlayerControlsState(
     val panelCloseLabel: String = "Close",
     val cancelLabel: String = "Cancel",
     val playingLabel: String = "Playing",
-    val noStreamsLabel: String = "No streams found",
+    val noStreamsLabel: String = "No sources found",
     val noEpisodesLabel: String = "No episodes available",
     val submitIntroPanelTitle: String = "Submit Timestamps",
     val submitIntroSegmentTypeLabel: String = "SEGMENT TYPE",

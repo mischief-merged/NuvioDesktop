@@ -46,6 +46,20 @@ import nuvio.composeapp.generated.resources.downloads_delete_message_trash
 import nuvio.composeapp.generated.resources.downloads_delete_not_moved_toast
 import nuvio.composeapp.generated.resources.downloads_delete_title
 import nuvio.composeapp.generated.resources.downloads_choose_another_source
+import nuvio.composeapp.generated.resources.downloads_run_dismiss_description
+import nuvio.composeapp.generated.resources.downloads_choose_another_source_description
+import nuvio.composeapp.generated.resources.downloads_run_problem_failed
+import nuvio.composeapp.generated.resources.downloads_run_problem_not_found
+import nuvio.composeapp.generated.resources.downloads_run_problem_row
+import nuvio.composeapp.generated.resources.downloads_run_failed
+import nuvio.composeapp.generated.resources.downloads_run_not_found
+import nuvio.composeapp.generated.resources.downloads_run_existing
+import nuvio.composeapp.generated.resources.downloads_run_added
+import nuvio.composeapp.generated.resources.downloads_run_title_season
+import nuvio.composeapp.generated.resources.downloads_runs_heading
+import nuvio.composeapp.generated.resources.downloads_speed_limit_change_description
+import nuvio.composeapp.generated.resources.downloads_speed_limit_line
+import nuvio.composeapp.generated.resources.settings_download_speed_limit_value
 import nuvio.composeapp.generated.resources.downloads_clear_failed
 import nuvio.composeapp.generated.resources.downloads_error_not_enough_space
 import nuvio.composeapp.generated.resources.downloads_failed_count
@@ -136,14 +150,20 @@ class DownloadsScreenTest {
     private val backend = FakeBackend()
     private val realBackend = DownloadsRepository.backend
 
+    private fun clearBatchRuns() {
+        SeasonDownloadDefaultsStorage.saveBatchRunsPayload(com.nuvio.app.features.profiles.ProfileRepository.activeProfileId, "")
+    }
+
     @Before
     fun use_an_in_memory_store() {
+        clearBatchRuns()
         DownloadsRepository.clearLocalState()
         DownloadsRepository.backend = backend
     }
 
     @After
     fun restore_the_real_repository() {
+        clearBatchRuns()
         DownloadsRepository.clearLocalState()
         DownloadsRepository.backend = realBackend
     }
@@ -662,6 +682,168 @@ class DownloadsScreenTest {
             ),
             useUnmergedTree = true,
         ).assertIsDisplayed()
+    }
+
+    private fun withSpeedLimit(megabytesPerSecond: Int?, body: () -> Unit) {
+        DownloadBandwidth.setUserCap(megabytesPerSecond?.let { it * 1_000_000L })
+        try {
+            body()
+        } finally {
+            DownloadBandwidth.setUserCap(null)
+        }
+    }
+
+    private fun speedLine(megabytesPerSecond: Int) = text(
+        Res.string.downloads_speed_limit_line,
+        text(Res.string.settings_download_speed_limit_value, megabytesPerSecond),
+    )
+
+    @Test
+    fun a_speed_limit_that_is_set_is_stated_at_the_top_with_a_link_to_the_setting() {
+        withSpeedLimit(5) {
+            val opened = mutableListOf<com.nuvio.app.features.settings.SettingsPage>()
+            backend.payload = null
+            compose.setContent {
+                androidx.compose.runtime.CompositionLocalProvider(
+                    com.nuvio.app.features.settings.LocalOpenSettingsPage provides { page -> opened += page },
+                ) {
+                    NuvioTheme {
+                        DownloadsScreen(onBack = {}, onOpenDownload = {}, showAutoDownloads = false)
+                    }
+                }
+            }
+
+            compose.onNodeWithText(speedLine(5)).assertIsDisplayed()
+            compose.onNodeWithContentDescription(text(Res.string.downloads_speed_limit_change_description)).performClick()
+
+            assertEquals(listOf(com.nuvio.app.features.settings.SettingsPage.Playback), opened)
+        }
+    }
+
+    @Test
+    fun without_a_speed_limit_the_screen_does_not_mention_one() {
+        withSpeedLimit(null) {
+            show()
+
+            compose.onNodeWithText(speedLine(5)).assertDoesNotExist()
+            compose.onNodeWithContentDescription(text(Res.string.downloads_speed_limit_change_description)).assertDoesNotExist()
+        }
+    }
+
+    @Test
+    fun the_speed_limit_is_stated_without_a_link_where_settings_cannot_be_opened() {
+        withSpeedLimit(2) {
+            show()
+
+            compose.onNodeWithText(speedLine(2)).assertIsDisplayed()
+            compose.onNodeWithContentDescription(text(Res.string.downloads_speed_limit_change_description)).assertDoesNotExist()
+        }
+    }
+
+    private val runKey = "tt1|2"
+
+    private fun runRecord(withProblems: Boolean = true) = BatchRunRecord(
+        key = runKey,
+        kind = BatchRunKind.Season,
+        title = "Pantheon",
+        seasonNumber = 2,
+        added = 3,
+        alreadyThere = 1,
+        notFound = if (withProblems) 1 else 0,
+        failed = if (withProblems) 1 else 0,
+        problems = if (withProblems) {
+            listOf(
+                BatchRunProblem(BatchRunProblemKind.NotFound, "series", "tt1", "series", "tt1:2:4", "Pantheon", seasonNumber = 2, episodeNumber = 4, episodeTitle = "Four"),
+                BatchRunProblem(BatchRunProblemKind.Failed, "series", "tt1", "series", "tt1:2:5", "Pantheon", seasonNumber = 2, episodeNumber = 5),
+            )
+        } else {
+            emptyList()
+        },
+    )
+
+    private fun withStoredRun(record: BatchRunRecord = runRecord(), body: () -> Unit) {
+        val profile = com.nuvio.app.features.profiles.ProfileRepository.activeProfileId
+        BatchRunSummaries.record(profile, record)
+        try {
+            body()
+        } finally {
+            BatchRunSummaries.dismiss(profile, record.key)
+        }
+    }
+
+    @Test
+    fun the_last_season_run_stays_on_the_screen_with_its_counts_and_the_episodes_that_need_attention() {
+        withStoredRun {
+            show()
+
+            compose.onNodeWithText(text(Res.string.downloads_runs_heading)).assertIsDisplayed()
+            compose.onNodeWithText(text(Res.string.downloads_run_title_season, "Pantheon", text(Res.string.episodes_season, 2))).assertIsDisplayed()
+            compose.onNodeWithText(
+                listOf(
+                    text(Res.string.downloads_run_added, 3),
+                    text(Res.string.downloads_run_existing, 1),
+                    text(Res.string.downloads_run_not_found, 1),
+                    text(Res.string.downloads_run_failed, 1),
+                ).joinToString(", "),
+            ).assertIsDisplayed()
+            compose.onNodeWithText(
+                text(Res.string.downloads_run_problem_row, "S2 E4 \u2022 Four", text(Res.string.downloads_run_problem_not_found)),
+            ).assertIsDisplayed()
+            compose.onNodeWithText(
+                text(Res.string.downloads_run_problem_row, "S2 E5", text(Res.string.downloads_run_problem_failed)),
+            ).assertIsDisplayed()
+        }
+    }
+
+    @Test
+    fun an_episode_that_needs_attention_offers_to_choose_another_source() {
+        withStoredRun {
+            show()
+
+            compose.onNodeWithContentDescription(text(Res.string.downloads_choose_another_source_description, "S2 E4 \u2022 Four")).performClick()
+
+            assertEquals("tt1:2:4", chooseSourceFor?.videoId)
+            assertEquals("tt1", chooseSourceFor?.parentMetaId)
+            assertEquals(2, chooseSourceFor?.seasonNumber)
+            assertEquals(4, chooseSourceFor?.episodeNumber)
+        }
+    }
+
+    @Test
+    fun without_a_way_to_open_the_sources_a_run_shows_what_failed_but_no_button() {
+        withStoredRun {
+            show(withChooseSource = false)
+
+            compose.onNodeWithText(text(Res.string.downloads_run_problem_row, "S2 E5", text(Res.string.downloads_run_problem_failed))).assertIsDisplayed()
+            compose.onNodeWithText(text(Res.string.downloads_choose_another_source)).assertDoesNotExist()
+        }
+    }
+
+    @Test
+    fun a_run_is_dismissed_by_name_and_stays_dismissed() {
+        withStoredRun {
+            show()
+
+            compose.onNodeWithContentDescription(
+                text(Res.string.downloads_run_dismiss_description, text(Res.string.downloads_run_title_season, "Pantheon", text(Res.string.episodes_season, 2))),
+            ).performClick()
+            compose.waitForIdle()
+
+            compose.onNodeWithText(text(Res.string.downloads_runs_heading)).assertDoesNotExist()
+            assertTrue(BatchRunSummaries.load(com.nuvio.app.features.profiles.ProfileRepository.activeProfileId).none { it.key == runKey })
+        }
+    }
+
+    @Test
+    fun a_run_without_problems_shows_only_its_counts() {
+        withStoredRun(runRecord(withProblems = false)) {
+            show()
+
+            compose.onNodeWithText(
+                listOf(text(Res.string.downloads_run_added, 3), text(Res.string.downloads_run_existing, 1)).joinToString(", "),
+            ).assertIsDisplayed()
+            compose.onNodeWithText(text(Res.string.downloads_choose_another_source)).assertDoesNotExist()
+        }
     }
 
     @Test

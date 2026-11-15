@@ -96,7 +96,7 @@ class ProviderFilterRowTest {
         compose.onNodeWithText("Ready").assertDoesNotExist()
         compose.runOnIdle { assertNull(state.value.selectedFilter) }
         if (!inPlayer) {
-            compose.onNodeWithContentDescription("Refresh streams").performClick()
+            compose.onNodeWithContentDescription("Refresh sources").performClick()
             compose.runOnIdle { assertEquals(1, refreshes) }
         }
     }

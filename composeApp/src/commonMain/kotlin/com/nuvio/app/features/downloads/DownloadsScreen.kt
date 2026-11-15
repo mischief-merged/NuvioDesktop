@@ -51,6 +51,9 @@ import com.nuvio.app.core.ui.NuvioScreen
 import com.nuvio.app.core.ui.NuvioScreenHeader
 import com.nuvio.app.core.ui.NuvioStatusModal
 import com.nuvio.app.core.ui.NuvioToastController
+import com.nuvio.app.features.profiles.ProfileRepository
+import com.nuvio.app.features.settings.LocalOpenSettingsPage
+import com.nuvio.app.features.settings.SettingsPage
 import com.nuvio.app.isDesktop
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.pluralStringResource
@@ -93,6 +96,18 @@ fun DownloadsScreen(
         }
     }
     val clock = RowClock(nowEpochMs = now, offline = network.isOfflineLike)
+
+    // The last run of each season, movie set and movie downloaded in one go, kept until dismissed.
+    val batchRunProfileId = ProfileRepository.activeProfileId
+    val batchRunRevision by BatchRunSummaries.revision.collectAsStateWithLifecycle()
+    val batchRuns = remember(batchRunProfileId, batchRunRevision) { BatchRunSummaries.load(batchRunProfileId) }
+
+    // The speed limit, when one is set, so it is not a surprise why downloads are slow.
+    val speedLimitBytes by remember {
+        DownloadBandwidth.applyStoredLimit()
+        DownloadBandwidth.userCapBytesPerSecond
+    }.collectAsStateWithLifecycle()
+    val openSettingsPage = LocalOpenSettingsPage.current
 
     var selectedShowId by rememberSaveable(initialShowId) { mutableStateOf(initialShowId) }
     var downloadPendingDeletionId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -143,9 +158,22 @@ fun DownloadsScreen(
         }
 
         if (selectedShowId == null) {
+            speedLimitBytes?.let { limit ->
+                item(key = "speed-limit") {
+                    SpeedLimitLine(
+                        megabytesPerSecond = (limit / 1_000_000L).toInt().coerceAtLeast(1),
+                        onChange = openSettingsPage?.let { open -> { open(SettingsPage.Playback) } },
+                    )
+                }
+            }
             if (showAutoDownloads) {
                 item { AutoDownloadSection() }
             }
+            batchRunSummaries(
+                runs = batchRuns,
+                onChooseAnotherSource = onChooseAnotherSource,
+                onDismiss = { key -> BatchRunSummaries.dismiss(batchRunProfileId, key) },
+            )
             downloadsRootContent(
                 uiState = uiState,
                 clock = clock,
@@ -693,6 +721,34 @@ private fun FailureDetails(
                 onClick = onRetry,
             ) {
                 Text(text = retryText, style = MaterialTheme.typography.labelLarge)
+            }
+        }
+    }
+}
+
+/** "Speed limit: 5 MB/s", with a link to the setting where it can be changed. */
+@Composable
+private fun SpeedLimitLine(megabytesPerSecond: Int, onChange: (() -> Unit)?) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = stringResource(
+                Res.string.downloads_speed_limit_line,
+                stringResource(Res.string.settings_download_speed_limit_value, megabytesPerSecond),
+            ),
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (onChange != null) {
+            val description = stringResource(Res.string.downloads_speed_limit_change_description)
+            TextButton(
+                modifier = Modifier.semantics { contentDescription = description },
+                onClick = onChange,
+            ) {
+                Text(text = stringResource(Res.string.downloads_speed_limit_change), style = MaterialTheme.typography.labelLarge)
             }
         }
     }

@@ -31,6 +31,9 @@ import com.nuvio.app.features.downloads.AutoDownloadStore
 import com.nuvio.app.features.downloads.AutoDownloads
 import com.nuvio.app.features.downloads.SeasonDownloadDefaults
 import com.nuvio.app.features.downloads.SeasonDownloadDefaultsRepository
+import com.nuvio.app.features.downloads.downloadChoicesStart
+import com.nuvio.app.features.player.AudioLanguageOption
+import com.nuvio.app.features.player.DeviceLanguagePreferences
 import com.nuvio.app.features.downloads.autoDownloadStorageLimitLabel
 import com.nuvio.app.features.player.PlayerSettingsRepository
 import com.nuvio.app.features.player.PlayerSettingsUiState
@@ -53,9 +56,12 @@ internal fun PlaybackPreferencesSettings(
 ) {
     val profileState by ProfileRepository.state.collectAsStateWithLifecycle()
     val profileId = profileState.activeProfile?.profileIndex ?: ProfileRepository.activeProfileId
+    val deviceLanguages = remember { DeviceLanguagePreferences.preferredLanguageCodes() }
     PlaybackPreferencesContent(
         isTablet = isTablet,
         profileId = profileId,
+        playbackAudioLanguage = settings.preferredAudioLanguage,
+        deviceLanguages = deviceLanguages,
         playMode = settings.streamAutoPlayMode,
         onPlayModeChange = PlayerSettingsRepository::setStreamAutoPlayMode,
         onOpenStreamAutoPlay = onOpenStreamAutoPlay,
@@ -69,15 +75,25 @@ internal fun PlaybackPreferencesContent(
     playMode: StreamAutoPlayMode,
     onPlayModeChange: (StreamAutoPlayMode) -> Unit,
     onOpenStreamAutoPlay: () -> Unit,
+    /** The playback audio language. A profile that never saved choices starts with the download language that goes with it. */
+    playbackAudioLanguage: String = AudioLanguageOption.DEFAULT,
+    deviceLanguages: List<String> = emptyList(),
     autoDownloads: AutoDownloadController = AutoDownloads,
     showStorageLimit: Boolean = isDesktop && AppFeaturePolicy.downloadsEnabled,
 ) {
     // What is shown is read again for each profile, and every change is saved at once, so the
     // season download dialog, which reads the same saved choices, shows what was chosen here.
-    var saved by remember(profileId) { mutableStateOf(SeasonDownloadDefaultsRepository.load(profileId)) }
+    // A profile that never saved choices starts with the download language that goes with its
+    // playback audio language. That is shown, not saved: the first change saves everything shown.
+    val start = remember(profileId, playbackAudioLanguage, deviceLanguages) {
+        downloadChoicesStart(profileId, playbackAudioLanguage, deviceLanguages)
+    }
+    var saved by remember(start) { mutableStateOf(start.defaults) }
+    var languageFromPlayback by remember(start) { mutableStateOf(start.languageFromPlayback) }
     fun change(updated: SeasonDownloadDefaults) {
         val normalized = updated.normalized()
         saved = normalized
+        languageFromPlayback = false
         SeasonDownloadDefaultsRepository.save(profileId, normalized)
     }
 
@@ -105,6 +121,11 @@ internal fun PlaybackPreferencesContent(
                         onQualityChange = { change(saved.copy(quality = it)) },
                         onMaxBitrateChange = { change(saved.copy(maxBitrateMbps = it)) },
                         onAudioLanguageChange = { change(saved.copy(audioLanguage = it)) },
+                        audioLanguageNote = if (languageFromPlayback) {
+                            stringResource(Res.string.downloads_season_audio_language_prefilled)
+                        } else {
+                            null
+                        },
                     )
                 }
             }

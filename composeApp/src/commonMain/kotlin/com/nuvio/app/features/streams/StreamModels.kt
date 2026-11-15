@@ -327,6 +327,10 @@ data class StreamsUiState(
     val isDirectAutoPlayFlow: Boolean = false,
     val showDirectAutoPlayOverlay: Boolean = false,
     val overlayMessage: String? = null,
+    /** Set when best match was the mode: what it was asked to match. Null in the other modes. */
+    val autoPlayContext: AutoPlayContext? = null,
+    /** True when automatic selection finished with no source to play, so the list is shown instead. */
+    val autoPlayFoundNoMatch: Boolean = false,
 ) {
     val filteredGroups: List<AddonStreamGroup>
         get() = if (selectedFilter == null) groups

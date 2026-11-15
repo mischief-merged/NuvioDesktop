@@ -35,6 +35,9 @@ import com.nuvio.app.features.streams.StreamAutoPlayMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.settings_playback_preferred_audio_language
+import nuvio.composeapp.generated.resources.downloads_season_audio_language_prefilled
+import nuvio.composeapp.generated.resources.downloads_season_audio_language_description
 import nuvio.composeapp.generated.resources.downloads_auto_storage_limit
 import nuvio.composeapp.generated.resources.downloads_auto_storage_limit_none
 import nuvio.composeapp.generated.resources.downloads_auto_storage_limit_value
@@ -101,6 +104,70 @@ class PlaybackPreferencesSettingsTest {
         compose.onNodeWithText(text(Res.string.downloads_season_bitrate_no_limit)).assertIsDisplayed()
         compose.onNodeWithText(text(Res.string.downloads_season_audio_language_any)).assertIsDisplayed()
         compose.onNodeWithText(text(Res.string.settings_preferences_play_ask)).assertIsSelected()
+    }
+
+    @Test
+    fun the_two_audio_languages_have_distinct_names_and_the_download_one_says_how_they_differ() {
+        show()
+
+        val playback = text(Res.string.settings_playback_preferred_audio_language)
+        val download = text(Res.string.downloads_season_audio_language)
+        assertEquals("Playback audio language", playback)
+        assertEquals("Download audio language", download)
+        compose.onNodeWithContentDescription(download).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_season_audio_language_description)).assertIsDisplayed()
+        assertTrue(text(Res.string.downloads_season_audio_language_description).contains(playback))
+    }
+
+    @Test
+    fun a_profile_that_never_saved_choices_starts_with_the_language_of_playback_and_nothing_is_saved_by_looking() {
+        playbackLanguage = "fr"
+        show()
+
+        compose.onNodeWithText(DebridStreamLanguage.FR.label).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_season_audio_language_prefilled), substring = true).assertIsDisplayed()
+        assertEquals(false, SeasonDownloadDefaultsRepository.hasSaved(profile))
+    }
+
+    @Test
+    fun the_device_language_stands_in_when_playback_follows_the_device() {
+        playbackLanguage = "device"
+        deviceLanguages = listOf("de-DE")
+        show()
+
+        compose.onNodeWithText(DebridStreamLanguage.DE.label).assertIsDisplayed()
+    }
+
+    @Test
+    fun changing_any_choice_saves_the_whole_page_including_the_language_taken_from_playback() {
+        playbackLanguage = "fr"
+        show()
+
+        openPicker(Res.string.downloads_season_quality_heading)
+        compose.onNodeWithText(text(Res.string.downloads_season_quality_720)).performClick()
+
+        assertEquals(SeasonDownloadDefaults(BatchQuality.P720, audioLanguage = DebridStreamLanguage.FR), SeasonDownloadDefaultsRepository.load(profile))
+        compose.onNodeWithText(text(Res.string.downloads_season_audio_language_prefilled), substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun a_saved_choice_is_never_replaced_by_the_playback_language_not_even_a_saved_any_language() {
+        playbackLanguage = "fr"
+        SeasonDownloadDefaultsRepository.save(profile, SeasonDownloadDefaults(BatchQuality.P1080))
+        show()
+
+        compose.onNodeWithText(text(Res.string.downloads_season_audio_language_any)).assertIsDisplayed()
+        compose.onNodeWithText(DebridStreamLanguage.FR.label).assertDoesNotExist()
+        compose.onNodeWithText(text(Res.string.downloads_season_audio_language_prefilled), substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun a_playback_language_without_a_download_equivalent_leaves_any_language() {
+        playbackLanguage = "original"
+        show()
+
+        compose.onNodeWithText(text(Res.string.downloads_season_audio_language_any)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_season_audio_language_prefilled), substring = true).assertDoesNotExist()
     }
 
     @Test
@@ -293,12 +360,17 @@ class PlaybackPreferencesSettingsTest {
         assertEquals(PlayChoice.SetElsewhere, StreamAutoPlayMode.REGEX_MATCH.playChoice())
     }
 
+    private var playbackLanguage = "default"
+    private var deviceLanguages = emptyList<String>()
+
     private fun show(showStorageLimit: Boolean = false) {
         compose.setContent {
             NuvioTheme {
                 PlaybackPreferencesContent(
                     isTablet = false,
                     profileId = profile,
+                    playbackAudioLanguage = playbackLanguage,
+                    deviceLanguages = deviceLanguages,
                     playMode = playMode,
                     onPlayModeChange = {
                         modeChanges += it

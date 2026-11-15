@@ -32,6 +32,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import com.nuvio.app.core.build.AppFeaturePolicy
 import com.nuvio.app.core.ui.DialogButton
 import com.nuvio.app.core.ui.DialogButtonStyle
@@ -197,6 +199,7 @@ internal fun SeasonDownloadButton(
             choices = choices,
             title = dialogTitle,
             message = stringResource(Res.string.downloads_season_dialog_message),
+            confirmLabel = stringResource(Res.string.downloads_season_button),
             onDismiss = { openChoices = null },
             onConfirm = { confirmed ->
                 openChoices = null
@@ -257,6 +260,7 @@ internal fun DownloadChoicesDialog(
             onPick = { picker = it },
         )
         content()
+        SavedChoicesNote(choices)
         DialogButtons {
             DialogButton(
                 text = stringResource(Res.string.action_cancel),
@@ -283,6 +287,37 @@ internal fun DownloadChoicesDialog(
     )
 }
 
+/**
+ * Says that the choices above are saved, where they apply and where to change them, and offers
+ * "Just this time" so that a one-off download leaves the saved choices alone.
+ */
+@Composable
+private fun SavedChoicesNote(choices: SeasonDownloadChoices) {
+    val tokens = MaterialTheme.nuvio
+    Column(
+        modifier = Modifier.padding(top = NuvioTokens.Space.s8),
+        verticalArrangement = Arrangement.spacedBy(tokens.spacing.controlGap),
+    ) {
+        Text(
+            text = stringResource(Res.string.downloads_choices_saved_note),
+            style = MaterialTheme.typography.bodySmall,
+            color = tokens.colors.textMuted,
+        )
+        val label = stringResource(Res.string.downloads_choices_just_this_time)
+        DialogOption(
+            text = label,
+            description = stringResource(Res.string.downloads_choices_just_this_time_description),
+            selected = choices.justThisTime,
+            role = Role.Checkbox,
+            modifier = Modifier.semantics {
+                contentDescription = label
+                toggleableState = ToggleableState(choices.justThisTime)
+            },
+            onClick = { choices.justThisTime = !choices.justThisTime },
+        )
+    }
+}
+
 /** The three download preferences. Each one has a row and, once picked, a picker. */
 internal enum class DownloadPreferencePicker { Quality, MaxBitrate, AudioLanguage }
 
@@ -297,6 +332,8 @@ internal fun DownloadPreferenceRows(
     maxBitrateMbps: Int?,
     audioLanguage: DebridStreamLanguage?,
     onPick: (DownloadPreferencePicker) -> Unit,
+    /** Added to the audio language row's help, for a language that was taken from playback and is not saved yet. */
+    audioLanguageNote: String? = null,
 ) {
     val tokens = MaterialTheme.nuvio
     Column(verticalArrangement = Arrangement.spacedBy(tokens.spacing.controlGap)) {
@@ -313,6 +350,10 @@ internal fun DownloadPreferenceRows(
         )
         SeasonDownloadChoiceRow(
             title = stringResource(Res.string.downloads_season_audio_language),
+            description = listOfNotNull(
+                stringResource(Res.string.downloads_season_audio_language_description),
+                audioLanguageNote,
+            ).joinToString(" "),
             value = audioLanguageLabel(audioLanguage),
             onClick = { onPick(DownloadPreferencePicker.AudioLanguage) },
         )
@@ -385,9 +426,10 @@ internal fun DownloadPreferenceEditor(
     onQualityChange: (BatchQuality) -> Unit,
     onMaxBitrateChange: (Int?) -> Unit,
     onAudioLanguageChange: (DebridStreamLanguage?) -> Unit,
+    audioLanguageNote: String? = null,
 ) {
     var picker by remember { mutableStateOf<DownloadPreferencePicker?>(null) }
-    DownloadPreferenceRows(quality, maxBitrateMbps, audioLanguage, onPick = { picker = it })
+    DownloadPreferenceRows(quality, maxBitrateMbps, audioLanguage, onPick = { picker = it }, audioLanguageNote = audioLanguageNote)
     DownloadPreferencePickers(
         picker = picker,
         quality = quality,
