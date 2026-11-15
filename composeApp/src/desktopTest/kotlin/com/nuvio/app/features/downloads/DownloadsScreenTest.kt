@@ -57,6 +57,9 @@ import nuvio.composeapp.generated.resources.downloads_run_existing
 import nuvio.composeapp.generated.resources.downloads_run_added
 import nuvio.composeapp.generated.resources.downloads_run_title_season
 import nuvio.composeapp.generated.resources.downloads_runs_heading
+import nuvio.composeapp.generated.resources.downloads_speed_limit_change_description
+import nuvio.composeapp.generated.resources.downloads_speed_limit_line
+import nuvio.composeapp.generated.resources.settings_download_speed_limit_value
 import nuvio.composeapp.generated.resources.downloads_clear_failed
 import nuvio.composeapp.generated.resources.downloads_error_not_enough_space
 import nuvio.composeapp.generated.resources.downloads_failed_count
@@ -147,14 +150,20 @@ class DownloadsScreenTest {
     private val backend = FakeBackend()
     private val realBackend = DownloadsRepository.backend
 
+    private fun clearBatchRuns() {
+        SeasonDownloadDefaultsStorage.saveBatchRunsPayload(com.nuvio.app.features.profiles.ProfileRepository.activeProfileId, "")
+    }
+
     @Before
     fun use_an_in_memory_store() {
+        clearBatchRuns()
         DownloadsRepository.clearLocalState()
         DownloadsRepository.backend = backend
     }
 
     @After
     fun restore_the_real_repository() {
+        clearBatchRuns()
         DownloadsRepository.clearLocalState()
         DownloadsRepository.backend = realBackend
     }
@@ -673,6 +682,62 @@ class DownloadsScreenTest {
             ),
             useUnmergedTree = true,
         ).assertIsDisplayed()
+    }
+
+    private fun withSpeedLimit(megabytesPerSecond: Int?, body: () -> Unit) {
+        DownloadBandwidth.setUserCap(megabytesPerSecond?.let { it * 1_000_000L })
+        try {
+            body()
+        } finally {
+            DownloadBandwidth.setUserCap(null)
+        }
+    }
+
+    private fun speedLine(megabytesPerSecond: Int) = text(
+        Res.string.downloads_speed_limit_line,
+        text(Res.string.settings_download_speed_limit_value, megabytesPerSecond),
+    )
+
+    @Test
+    fun a_speed_limit_that_is_set_is_stated_at_the_top_with_a_link_to_the_setting() {
+        withSpeedLimit(5) {
+            val opened = mutableListOf<com.nuvio.app.features.settings.SettingsPage>()
+            backend.payload = null
+            compose.setContent {
+                androidx.compose.runtime.CompositionLocalProvider(
+                    com.nuvio.app.features.settings.LocalOpenSettingsPage provides { page -> opened += page },
+                ) {
+                    NuvioTheme {
+                        DownloadsScreen(onBack = {}, onOpenDownload = {}, showAutoDownloads = false)
+                    }
+                }
+            }
+
+            compose.onNodeWithText(speedLine(5)).assertIsDisplayed()
+            compose.onNodeWithContentDescription(text(Res.string.downloads_speed_limit_change_description)).performClick()
+
+            assertEquals(listOf(com.nuvio.app.features.settings.SettingsPage.Playback), opened)
+        }
+    }
+
+    @Test
+    fun without_a_speed_limit_the_screen_does_not_mention_one() {
+        withSpeedLimit(null) {
+            show()
+
+            compose.onNodeWithText(speedLine(5)).assertDoesNotExist()
+            compose.onNodeWithContentDescription(text(Res.string.downloads_speed_limit_change_description)).assertDoesNotExist()
+        }
+    }
+
+    @Test
+    fun the_speed_limit_is_stated_without_a_link_where_settings_cannot_be_opened() {
+        withSpeedLimit(2) {
+            show()
+
+            compose.onNodeWithText(speedLine(2)).assertIsDisplayed()
+            compose.onNodeWithContentDescription(text(Res.string.downloads_speed_limit_change_description)).assertDoesNotExist()
+        }
     }
 
     private val runKey = "tt1|2"

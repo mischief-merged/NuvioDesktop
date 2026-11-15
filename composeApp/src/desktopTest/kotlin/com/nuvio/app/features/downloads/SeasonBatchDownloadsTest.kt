@@ -1,6 +1,8 @@
 package com.nuvio.app.features.downloads
 
 import com.nuvio.app.core.ui.NuvioToastController
+import com.nuvio.app.features.profiles.ProfileRepository
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -84,5 +86,22 @@ class SeasonBatchDownloadsTest {
         val toast = withTimeout(60_000) { NuvioToastController.currentToast.first { it?.message?.startsWith(heading) == true } }
         assertEquals(true, toast?.message?.startsWith(heading))
         withTimeout(30_000) { SeasonBatchDownloads.running.first { it.isEmpty() } }
+
+        // The result also stays: the toast goes away, the summary on the Downloads screen does not.
+        val profile = ProfileRepository.activeProfileId
+        val key = seasonBatchKey(showId, 1)
+        val record = withTimeout(30_000) {
+            var found: BatchRunRecord? = null
+            while (found == null) {
+                found = BatchRunSummaries.load(profile).firstOrNull { it.key == key }
+                if (found == null) delay(50)
+            }
+            found
+        }
+        BatchRunSummaries.dismiss(profile, key)
+        assertEquals("Show", record.title)
+        assertEquals(1, record.seasonNumber)
+        assertEquals(3, record.added + record.alreadyThere + record.notFound + record.failed + record.paused)
+        assertEquals(record.notFound + record.failed, record.problems.size)
     }
 }

@@ -23,6 +23,8 @@ import com.nuvio.app.core.ui.NuvioTheme
 import com.nuvio.app.features.downloads.DownloadBandwidth
 import kotlinx.coroutines.runBlocking
 import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.action_done
+import nuvio.composeapp.generated.resources.settings_download_speed_limit_description
 import nuvio.composeapp.generated.resources.settings_download_speed_limit_title
 import nuvio.composeapp.generated.resources.settings_download_speed_limit_unlimited
 import nuvio.composeapp.generated.resources.settings_download_speed_limit_value
@@ -34,6 +36,7 @@ import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 @OptIn(ExperimentalTestApi::class)
 class DownloadSpeedSettingTest {
@@ -60,6 +63,26 @@ class DownloadSpeedSettingTest {
         compose.onNode(hasText(title) and hasText(unlimited)).assertIsDisplayed().assertHasClickAction().performClick()
 
         compose.onNodeWithContentDescription(unlimited).assertIsDisplayed()
+    }
+
+    @Test
+    fun the_row_says_in_one_line_what_the_limit_does_and_in_which_unit() {
+        show()
+
+        compose.onNodeWithText(text(Res.string.settings_download_speed_limit_description)).assertIsDisplayed()
+        assertTrue(text(Res.string.settings_download_speed_limit_description).contains("megabytes per second"))
+    }
+
+    @Test
+    fun choosing_a_speed_closes_the_picker_at_once_like_the_other_download_pickers() {
+        show()
+        compose.onNode(hasText(title) and hasText(unlimited)).performClick()
+
+        compose.onNodeWithContentDescription(speed(10)).performClick()
+
+        assertEquals(10_000_000L, DownloadBandwidth.userCapBytesPerSecond.value)
+        compose.onNodeWithContentDescription(speed(10)).assertDoesNotExist()
+        compose.onNodeWithText(text(Res.string.action_done)).assertDoesNotExist()
     }
 
     @Test

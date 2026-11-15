@@ -42,6 +42,8 @@ import nuvio.composeapp.generated.resources.downloads_season_audio_language_any
 import nuvio.composeapp.generated.resources.downloads_season_bitrate_no_limit
 import nuvio.composeapp.generated.resources.downloads_season_bitrate_value
 import nuvio.composeapp.generated.resources.downloads_season_dialog_title
+import nuvio.composeapp.generated.resources.downloads_season_max_bitrate
+import nuvio.composeapp.generated.resources.downloads_season_max_bitrate_description
 import nuvio.composeapp.generated.resources.downloads_season_quality_1080
 import nuvio.composeapp.generated.resources.downloads_season_quality_720
 import nuvio.composeapp.generated.resources.downloads_season_quality_any
@@ -54,6 +56,7 @@ import org.junit.Before
 import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class SeasonDownloadDialogTest {
     @get:Rule
@@ -154,6 +157,18 @@ class SeasonDownloadDialogTest {
         compose.onNode(hasContentDescription(text(Res.string.downloads_choices_just_this_time)))
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Checkbox))
             .assertIsNotSelected()
+    }
+
+    @Test
+    fun the_bitrate_choice_names_its_unit_and_says_what_lower_means() {
+        showButton()
+        openDialog()
+
+        val title = text(Res.string.downloads_season_max_bitrate)
+        assertTrue(title.contains("megabits per second"))
+        compose.onNodeWithText(text(Res.string.downloads_season_max_bitrate_description)).assertIsDisplayed()
+        assertTrue(text(Res.string.downloads_season_max_bitrate_description).contains("smaller files"))
+        assertTrue(bitrate(10).contains("megabits per second"))
     }
 
     @Test
