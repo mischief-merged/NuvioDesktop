@@ -89,6 +89,10 @@ internal data class OutboxEntry(
     /** The tracker may already hold this watch, so its history is read before the entry is sent. */
     val verifyBeforeSend: Boolean = false,
 ) {
+    /** A refused watch can be sent again only when it names a usable title and an account. */
+    val canRetry: Boolean
+        get() = state == OutboxState.DEAD && media.isValid && accountKey.isNotBlank()
+
     fun isSameWatch(watch: OutboxWatch): Boolean =
         profileId == watch.profileId &&
             accountKey == watch.accountKey &&
@@ -101,6 +105,38 @@ internal data class OutboxEntry(
  * twice, or a queued watch the tracker already holds. From this distance on they are separate plays.
  */
 internal const val SameWatchWindowMs = 5 * 60_000L
+
+/** What the user can be told about the queue of one profile and, when given, one account. */
+internal data class OutboxCounts(
+    /** Watches queued or being sent, which will be delivered without further action. */
+    val waiting: Int = 0,
+    /** Watches the tracker refused. They are never sent again unless the user retries. */
+    val undeliverable: Int = 0,
+    /** The part of [undeliverable] that can be retried. */
+    val retryable: Int = 0,
+    /** Watches removed after [TrackerOutbox.MaxAgeMs] without reaching the tracker, until dismissed. */
+    val droppedForAge: Int = 0,
+) {
+    val isEmpty: Boolean get() = waiting == 0 && undeliverable == 0 && droppedForAge == 0
+}
+
+/** The whole queue at one moment, as observable state. */
+internal data class OutboxSnapshot(
+    val entries: List<OutboxEntry> = emptyList(),
+    val droppedForAge: Map<Int, Int> = emptyMap(),
+) {
+    /** [accountKey] null counts the entries of every account of the profile. */
+    fun countsFor(profileId: Int, accountKey: String?): OutboxCounts {
+        val own = entries.filter { it.profileId == profileId && (accountKey == null || it.accountKey == accountKey) }
+        val dead = own.filter { it.state == OutboxState.DEAD }
+        return OutboxCounts(
+            waiting = own.size - dead.size,
+            undeliverable = dead.size,
+            retryable = dead.count { it.canRetry },
+            droppedForAge = droppedForAge[profileId] ?: 0,
+        )
+    }
+}
 
 internal sealed interface OutboxSendOutcome {
     data object Delivered : OutboxSendOutcome
