@@ -84,13 +84,19 @@ internal class DownloadLocations(
 ) {
     private val lock = Any()
 
+    // The saved list is read once and again only after this class changes it: it is asked for every
+    // row of the list, many times a second.
+    private var cachedAll: List<DesktopDownloadLocation>? = null
+
     fun appLocation(): DesktopDownloadLocation = DesktopDownloadLocation(AppId, appFolder().toAbsolutePath().normalize())
 
     /** The app's folder first, then the others in the order they were added. */
     fun all(): List<DesktopDownloadLocation> = synchronized(lock) {
-        listOf(appLocation()) + config.locations()
-            .filter { it.id != AppId }
-            .mapNotNull { stored -> runCatching { DesktopDownloadLocation(stored.id, Paths.get(stored.path).toAbsolutePath().normalize()) }.getOrNull() }
+        cachedAll ?: (
+            listOf(appLocation()) + config.locations()
+                .filter { it.id != AppId }
+                .mapNotNull { stored -> runCatching { DesktopDownloadLocation(stored.id, Paths.get(stored.path).toAbsolutePath().normalize()) }.getOrNull() }
+            ).also { cachedAll = it }
     }
 
     fun defaultLocation(): DesktopDownloadLocation = synchronized(lock) {
@@ -109,6 +115,7 @@ internal class DownloadLocations(
         }
         val location = DesktopDownloadLocation("loc-" + UUID.randomUUID().toString().take(8), wanted)
         config.saveLocations(config.locations() + StoredLocation(location.id, wanted.toString()))
+        cachedAll = null
         writeMarker(location)
         location
     }
@@ -125,7 +132,10 @@ internal class DownloadLocations(
     fun forgetExcept(keepIds: Set<String>) = synchronized(lock) {
         val keep = keepIds + config.defaultId().orEmpty()
         val remaining = config.locations().filter { it.id in keep }
-        if (remaining.size != config.locations().size) config.saveLocations(remaining)
+        if (remaining.size != config.locations().size) {
+            config.saveLocations(remaining)
+            cachedAll = null
+        }
     }
 
     fun availability(location: DesktopDownloadLocation): FolderAvailability {

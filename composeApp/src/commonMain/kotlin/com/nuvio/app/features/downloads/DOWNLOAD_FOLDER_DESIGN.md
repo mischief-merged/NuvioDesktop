@@ -54,5 +54,11 @@ macOS: `java.awt.FileDialog` with `apple.awt.fileDialogForDirectories` (read by 
 ## 11. Accessibility
 Every control has a role and a label; the setting row reads title, folder, free space and state as one item; locations are list items with their state; progress uses `progressBarRangeInfo` and a polite live region for per-file and result announcements; the checklist rows are checkboxes with state; every dialog and button works from the keyboard.
 
-## 12. Not built / limits
+## 12. Details settled while building
+- Locations that hold no items and are not the default are forgotten from the registry, but only after a move that ended normally; after a crash or an error the destination stays known so files already there are still found. Forgetting does not touch the folder on disk. A forgotten folder that is chosen again gets a new id and marker.
+- The saved list of locations is read once and again only after this code changes it, because it is asked for by every row.
+- A download whose show is in a location that is away is queued waiting (paused, `pausedByFolder`) and the row offers "Choose where to save"; choosing a location discards any partial file at the old place (it was never reachable) and starts the download there.
+- When moving to the Trash fails the toast says so and a second dialog offers "Delete permanently".
+
+## 13. Not built / limits
 Old builds can mark items on an unplugged drive failed. The ask for a manual download is on the Downloads row, not in the details dialog. Moving to a drive that is removed mid-move is recovered by the journal and reported as failed entries.

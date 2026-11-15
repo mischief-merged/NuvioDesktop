@@ -117,6 +117,8 @@ internal fun movieItem(id: String, locationId: String? = null, file: Path? = nul
 internal class LocationsBackend(private val world: FolderWorld) : DownloadsBackend {
     var payload: String? = null
     val trashed = mutableListOf<String>()
+    val removedOutright = mutableListOf<String?>()
+    var trashSucceeds = true
     val started = mutableListOf<String>()
 
     override fun loadPayload(): String? = payload
@@ -139,7 +141,11 @@ internal class LocationsBackend(private val world: FolderWorld) : DownloadsBacke
         }
     }
 
-    override fun removeFile(localFileUri: String?): Boolean = true
+    override fun removeFile(localFileUri: String?): Boolean {
+        removedOutright += localFileUri
+        return true
+    }
+
     override fun removePartialFile(destinationFileName: String): Boolean = true
 
     override fun resolveLocalFileUri(localFileUri: String?, destinationFileName: String): String? =
@@ -148,8 +154,8 @@ internal class LocationsBackend(private val world: FolderWorld) : DownloadsBacke
     override fun inspectFile(localFileUri: String): DownloadedFileFacts? = inspectDownloadedFile(localFileUri)
 
     override fun trashFile(localFileUri: String): Boolean {
-        trashed += localFileUri
-        return true
+        if (trashSucceeds) trashed += localFileUri
+        return trashSucceeds
     }
 
     override fun locate(item: DownloadItem): FileLookup = world.locations.locate(item.locationId, item.localFileUri, item.fileName)

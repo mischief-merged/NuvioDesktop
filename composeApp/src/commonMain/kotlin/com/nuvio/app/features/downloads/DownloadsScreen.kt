@@ -394,7 +394,10 @@ internal fun DownloadsScreenContent(
                     rememberDeletion(pendingDeletion)
                     when (DownloadsRepository.deleteDownload(pendingDeletion.id)) {
                         // Say so, and offer to delete it for good, which needs its own confirmation.
-                        DownloadDeleteResult.NotMoved -> permanentDeletionId = pendingDeletion.id
+                        DownloadDeleteResult.NotMoved -> {
+                            NuvioToastController.show(deleteNotMovedText)
+                            permanentDeletionId = pendingDeletion.id
+                        }
                         DownloadDeleteResult.NotReachable -> NuvioToastController.show(deleteNotConnectedText)
                         DownloadDeleteResult.Removed, DownloadDeleteResult.Gone -> Unit
                     }
