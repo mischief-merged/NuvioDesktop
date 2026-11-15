@@ -31,10 +31,22 @@ internal fun MetaDetails.wantedContent(season: Int?, episode: Int?): WantedConte
     } else {
         null
     }
+    val count = videos.count { it.season == season }.takeIf { isEpisode && it > 0 }
     return WantedContent(
         title = name.takeIf { it.isNotBlank() },
         season = season.takeIf { isEpisode },
         episode = episode.takeIf { isEpisode },
         year = year,
+        alternativeTitles = alternativeTitles,
+        seasonEpisodeCount = count,
+        numberingUnreliable = isAnime(),
     )
 }
+
+private val animeIdPrefixes = listOf("kitsu", "mal", "anilist", "anidb")
+
+/** The title is known to be anime: it comes from an anime id source or carries the genre. Its numbering follows other rules than release names. */
+internal fun MetaDetails.isAnime(): Boolean =
+    animeIdPrefixes.any { id.startsWith("$it:", ignoreCase = true) } ||
+        type.equals("anime", ignoreCase = true) ||
+        genres.any { it.equals("anime", ignoreCase = true) }

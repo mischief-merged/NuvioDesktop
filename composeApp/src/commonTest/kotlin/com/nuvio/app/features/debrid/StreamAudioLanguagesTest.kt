@@ -116,4 +116,46 @@ class StreamAudioLanguagesTest {
         assertEquals(emptySet(), hungarian.audio)
         assertTrue(hungarian.looksForeign)
     }
+
+    @Test
+    fun `a subtitle word applies to the whole list of languages it belongs to`() {
+        for (text in listOf(
+            "Movie.1080p.FRENCH.GERMAN.SUBS",
+            "Movie.1080p.SUBS.FRENCH.GERMAN",
+            "Movie 1080p Subs: French, German",
+            "Movie 1080p French and German Subs",
+            "Movie.1080p.FRENCH+GERMAN.SUBS",
+            "Movie.1080p.FRENCH-GERMAN-ESUB",
+            "Movie.1080p.FR.DE.SUB-GRP",
+        )) {
+            val reading = read(text)
+            assertEquals(emptySet(), reading.audio, text)
+            assertFalse(reading.looksForeign, text)
+        }
+    }
+
+    @Test
+    fun `languages away from the subtitle word stay audio`() {
+        val reading = read("Movie.FRENCH.1080p.WEB.ENG.GERMAN.SUBS")
+        assertEquals(setOf(FR), reading.audio)
+        assertTrue(reading.possiblySubtitles)
+    }
+
+    @Test
+    fun `a text with a subtitle word and audio languages not tied to it is flagged as possibly subtitles`() {
+        val reading = read("Subs.1080p.French")
+        assertEquals(setOf(FR), reading.audio)
+        assertTrue(reading.possiblySubtitles)
+        assertFalse(read("Movie.1080p.French").possiblySubtitles)
+        assertFalse(read("Movie.1080p.FRENCH.SUB").possiblySubtitles)
+    }
+
+    @Test
+    fun `a ten thousand character text is read quickly`() {
+        val text = "Movie FRENCH GERMAN Subs Dub ".repeat(400)
+        val started = kotlin.time.TimeSource.Monotonic.markNow()
+        read(text)
+        assertTrue(text.length >= 10_000)
+        assertTrue(started.elapsedNow() < kotlin.time.Duration.parse("2s"))
+    }
 }

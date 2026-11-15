@@ -208,6 +208,8 @@ private fun languageMatch(reading: AudioLanguageReading, chosen: DebridStreamLan
     reading.audio.isEmpty() ->
         if (reading.looksForeign) LanguageMatch.LooksForeign else LanguageMatch.Unspecified
     DebridStreamLanguage.MULTI in reading.audio -> LanguageMatch.Unspecified
+    // The languages may be subtitle languages the reader could not tie to their word: do not drop.
+    reading.possiblySubtitles -> LanguageMatch.Unspecified
     else -> LanguageMatch.Other
 }
 
@@ -307,7 +309,7 @@ internal fun rankStreamsByPreferences(
                 language = if (audioLanguage == null) {
                     LanguageMatch.Chosen
                 } else {
-                    languageMatch(DebridStreamMetadata.audioLanguages(stream, wanted?.title), audioLanguage)
+                    languageMatch(DebridStreamMetadata.audioLanguages(stream, wanted?.titles.orEmpty()), audioLanguage)
                 },
                 sizeBytes = facts.size?.takeIf { it > 0L && runtimeSeconds != null },
             )

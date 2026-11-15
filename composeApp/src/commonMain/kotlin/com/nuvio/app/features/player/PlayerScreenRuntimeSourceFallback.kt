@@ -323,6 +323,11 @@ internal fun PlayerScreenRuntime.tryFallbackToNextSourceAfterError(
             } else {
                 null
             }
+            val wanted = if (settings.streamAutoPlayMode == StreamAutoPlayMode.PREFERRED) {
+                MetaDetailsRepository.wantedContentFor(parentMetaId, season, episode)
+            } else {
+                null
+            }
             var polls = 0
             while (true) {
                 val state = PlayerStreamsRepository.sourceState.value
@@ -333,6 +338,7 @@ internal fun PlayerScreenRuntime.tryFallbackToNextSourceAfterError(
                     failedInfoHash = failedInfoHash,
                     preferences = preferences,
                     runtimeMinutes = runtimeMinutes,
+                    wanted = wanted,
                 )
                 val decision = decideSourceFailover(
                     failure = failure,
@@ -441,6 +447,7 @@ internal fun rankedSourceFailoverCandidates(
     failedInfoHash: String?,
     preferences: com.nuvio.app.features.downloads.SeasonDownloadDefaults = com.nuvio.app.features.downloads.SeasonDownloadDefaults(),
     runtimeMinutes: Int? = null,
+    wanted: com.nuvio.app.features.streams.WantedContent? = null,
     installedAddonNames: Set<String> = AddonRepository.uiState.value.addons.enabledAddons().map { it.displayTitle }.toSet(),
     debridEnabled: Boolean = DebridSettingsRepository.snapshot().canResolvePlayableLinks,
     activeResolverProviderId: String? = DebridSettingsRepository.snapshot().activeResolverProviderId,
@@ -464,6 +471,7 @@ internal fun rankedSourceFailoverCandidates(
         activeResolverProviderId = activeResolverProviderId,
         preferences = preferences,
         runtimeMinutes = runtimeMinutes,
+        wanted = wanted,
     ).readyStreams
 }
 

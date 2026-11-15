@@ -35,4 +35,29 @@ class MetaDetailsWantedContentTest {
             MetaDetails(id = "tt1", type = "movie", name = " ").wantedContent(null, null),
         )
     }
+
+    @Test
+    fun an_episode_carries_the_alternative_titles_and_the_episode_count_of_its_season() {
+        val meta = MetaDetails(
+            id = "tt1", type = "series", name = "Spirited", alternativeTitles = listOf("Original"),
+            videos = listOf(
+                MetaVideo(id = "a", title = "a", season = 1, episode = 1),
+                MetaVideo(id = "b", title = "b", season = 1, episode = 2),
+                MetaVideo(id = "c", title = "c", season = 2, episode = 1),
+            ),
+        )
+        val wanted = meta.wantedContent(1, 2)
+        assertEquals(listOf("Spirited", "Original"), wanted.titles)
+        assertEquals(2, wanted.seasonEpisodeCount)
+        assertEquals(false, wanted.numberingUnreliable)
+    }
+
+    @Test
+    fun anime_is_known_by_its_id_source_type_or_genre() {
+        assertEquals(true, MetaDetails(id = "kitsu:1", type = "series", name = "A").isAnime())
+        assertEquals(true, MetaDetails(id = "mal:1", type = "series", name = "A").isAnime())
+        assertEquals(true, MetaDetails(id = "tt1", type = "series", name = "A", genres = listOf("Anime")).isAnime())
+        assertEquals(false, MetaDetails(id = "tt1", type = "series", name = "A", genres = listOf("Animation")).isAnime())
+        assertEquals(true, MetaDetails(id = "kitsu:1", type = "series", name = "A").wantedContent(1, 1).numberingUnreliable)
+    }
 }

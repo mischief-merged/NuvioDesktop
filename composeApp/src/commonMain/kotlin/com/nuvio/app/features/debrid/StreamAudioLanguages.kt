@@ -12,6 +12,11 @@ package com.nuvio.app.features.debrid
 internal data class AudioLanguageReading(
     val audio: Set<DebridStreamLanguage>,
     val looksForeign: Boolean,
+    /**
+     * The text has a subtitle word, so the languages in [audio] may be subtitle languages that the
+     * reader could not tie to it. Callers must not drop a source for its languages then.
+     */
+    val possiblySubtitles: Boolean = false,
 )
 
 private typealias L = DebridStreamLanguage
@@ -27,27 +32,62 @@ internal object StreamAudioLanguages {
                 else -> Unit
             }
         }
+        var possiblySubtitles = false
         for (text in texts) {
             val marks = marksOf(text)
-            marks.forEachIndexed { i, mark ->
-                val before = marks.getOrNull(i - 1)
-                val after = marks.getOrNull(i + 1)
-                when (mark) {
-                    is Mark.Lang ->
-                        if (before != Mark.Subtitles && after != Mark.Subtitles) {
-                            if (mark.language != null) audio += mark.language else foreign = true
+            val audioBefore = audio.toSet()
+            var i = 0
+            while (i < marks.size) {
+                val mark = marks[i]
+                if (mark is Mark.Lang || mark == Mark.Multi) {
+                    // A run is a list of languages ("FRENCH.GERMAN", "French and German"). A subtitle
+                    // word on either side of it makes the whole list subtitle languages.
+                    var end = i
+                    while (true) {
+                        val next = marks.getOrNull(end + 1)
+                        val afterJoiner = marks.getOrNull(end + 2)
+                        end = when {
+                            next is Mark.Lang || next == Mark.Multi -> end + 1
+                            next == Mark.Joiner && (afterJoiner is Mark.Lang || afterJoiner == Mark.Multi) -> end + 2
+                            else -> break
                         }
-                    Mark.Multi -> if (after != Mark.Subtitles) audio += L.MULTI
-                    // A bare "Dub" is an English dub; next to a language it belongs to that language.
-                    Mark.Dub -> if (before !is Mark.Lang && after !is Mark.Lang) audio += L.EN
-                    Mark.Subtitles ->
-                        if (before !is Mark.Lang && before != Mark.Multi && after !is Mark.Lang) foreign = true
-                    Mark.Plain -> Unit
+                    }
+                    val subtitles = marks.getOrNull(i - 1) == Mark.Subtitles || marks.getOrNull(end + 1) == Mark.Subtitles
+                    if (!subtitles) {
+                        for (k in i..end) {
+                            when (val m = marks[k]) {
+                                is Mark.Lang -> if (m.language != null) audio += m.language else foreign = true
+                                Mark.Multi -> audio += L.MULTI
+                                else -> Unit
+                            }
+                        }
+                    }
+                    i = end + 1
+                    continue
                 }
+                when (mark) {
+                    // A bare "Dub" is an English dub; next to a language it belongs to that language.
+                    Mark.Dub ->
+                        if (marks.getOrNull(i - 1).let { it !is Mark.Lang && it != Mark.Multi } &&
+                            marks.getOrNull(i + 1).let { it !is Mark.Lang && it != Mark.Multi }
+                        ) {
+                            audio += L.EN
+                        }
+                    Mark.Subtitles ->
+                        if (marks.getOrNull(i - 1).let { it !is Mark.Lang && it != Mark.Multi } &&
+                            marks.getOrNull(i + 1).let { it !is Mark.Lang && it != Mark.Multi }
+                        ) {
+                            foreign = true
+                        }
+                    else -> Unit
+                }
+                i++
             }
+            // A subtitle word somewhere in a text whose audio languages were not next to it.
+            if (Mark.Subtitles in marks && audio != audioBefore) possiblySubtitles = true
         }
         audio -= L.UNKNOWN
-        return AudioLanguageReading(audio, foreign)
+        return AudioLanguageReading(audio, foreign, possiblySubtitles)
     }
 
     private sealed interface Mark {
@@ -56,6 +96,7 @@ internal object StreamAudioLanguages {
         object Multi : Mark
         object Dub : Mark
         object Subtitles : Mark
+        object Joiner : Mark
         object Plain : Mark
     }
 
@@ -64,6 +105,7 @@ internal object StreamAudioLanguages {
     )
     private val dubWords = setOf("dub", "dubs", "dubbed", "dubbing")
     private val multiWords = setOf("multi", "dual", "multiaudio", "dualaudio", "multilang")
+    private val joinerWords = setOf("and", "et", "und")
     private val gluedSuffixes = listOf("subbed", "dubbed", "subs", "sub", "dub")
 
     private val unlisted: L? = null
@@ -215,6 +257,7 @@ internal object StreamAudioLanguages {
             lower in subtitleWords -> Mark.Subtitles
             lower in dubWords -> Mark.Dub
             lower in multiWords -> Mark.Multi
+            lower in joinerWords -> Mark.Joiner
             lower in names -> Mark.Lang(names[lower])
             // "DTS-ES" is an audio format, not Spanish.
             word == "ES" && previousWord.equals("DTS", ignoreCase = true) -> null

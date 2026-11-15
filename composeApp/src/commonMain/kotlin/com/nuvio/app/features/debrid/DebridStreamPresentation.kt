@@ -505,14 +505,14 @@ internal object DebridStreamMetadata {
 
     /**
      * The audio languages [stream] states, read by [StreamAudioLanguages]. The words of the
-     * media title, the one the source names and [contentTitle] are removed first, so a title
+     * media title, the one the source names and the [contentTitles] are removed first, so a title
      * ("The German Doctor") is not read as a language. Case is kept: short codes count only in
      * uppercase.
      */
-    fun audioLanguages(stream: StreamItem, contentTitle: String? = null): AudioLanguageReading {
+    fun audioLanguages(stream: StreamItem, contentTitles: List<String> = emptyList()): AudioLanguageReading {
         val resolve = stream.clientResolve
         val parsed = resolve?.stream?.raw?.parsed
-        val titles = listOfNotNull(parsed?.parsedTitle, resolve?.title, contentTitle)
+        val titles = (listOfNotNull(parsed?.parsedTitle, resolve?.title) + contentTitles)
             .mapNotNull { titleStripRegex(it) }
             .distinctBy { it.pattern }
             .sortedByDescending { it.pattern.length }

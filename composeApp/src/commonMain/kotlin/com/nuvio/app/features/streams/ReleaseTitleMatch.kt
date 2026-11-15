@@ -1,36 +1,49 @@
 package com.nuvio.app.features.streams
 
 /**
- * Tells whether a source's release name is clearly another title than the wanted one. It is only a
- * hint for ordering: it never drops a source, and it says nothing unless some source in the same
- * list clearly is the wanted title, so a title the metadata gives in another language than the
- * releases leaves the order alone.
+ * Compares a source's release name with the titles the wanted item is known by. It is only a hint
+ * for ordering: it never drops a source, and the caller acts on [TitleVerdict.Different] only when
+ * some source in the same list is clearly [TitleVerdict.Same], so a title the metadata gives in
+ * another language than the releases changes nothing on its own.
  */
+internal enum class TitleVerdict { Same, Different, Unclear }
+
 internal object ReleaseTitleMatch {
     private const val SameShare = 0.75
     private const val DifferentShare = 0.25
 
-    private enum class Verdict { Same, Different, Unclear }
-
-    /** One flag per source in list order: true when it is clearly another title. */
-    fun differentTitle(streams: List<StreamItem>, wantedTitle: String?): List<Boolean> {
-        val wanted = titleWords(wantedTitle.orEmpty(), cutAtTechnicalTags = false)
-        if (wanted.isEmpty() || (wanted.size == 1 && wanted.first().length < 4)) return streams.map { false }
-        val verdicts = streams.map { verdict(StreamReleaseName.of(it), wanted) }
-        if (Verdict.Same !in verdicts) return streams.map { false }
-        return verdicts.map { it == Verdict.Different }
+    /**
+     * One verdict per source in list order. A source is [TitleVerdict.Same] when its name matches any
+     * of [titles], [TitleVerdict.Different] only when it differs from every one of them, and
+     * [TitleVerdict.Unclear] otherwise. A title that is a single very short word is not judged.
+     */
+    fun verdicts(streams: List<StreamItem>, titles: List<String>): List<TitleVerdict> {
+        val usable = titles.map { titleWords(it, cutAtTechnicalTags = false) }
+            .filter { it.isNotEmpty() && !(it.size == 1 && it.first().length < 4) }
+            .distinct()
+        if (usable.isEmpty()) return streams.map { TitleVerdict.Unclear }
+        return streams.map { stream ->
+            val name = StreamReleaseName.of(stream)
+            val each = usable.map { verdict(name, it) }
+            when {
+                TitleVerdict.Same in each -> TitleVerdict.Same
+                each.all { it == TitleVerdict.Different } -> TitleVerdict.Different
+                else -> TitleVerdict.Unclear
+            }
+        }
     }
 
-    private fun verdict(releaseName: String?, wanted: Set<String>): Verdict {
+    private fun verdict(releaseName: String?, wanted: Set<String>): TitleVerdict {
         val words = titleWords(releaseName.orEmpty().substringAfterLast('/').substringAfterLast('\\'), cutAtTechnicalTags = true)
-        if (words.isEmpty()) return Verdict.Unclear
+        if (words.isEmpty()) return TitleVerdict.Unclear
         // "SpiderMan" in a release against "Spider-Man" in the metadata: the words run together.
-        if (words.joinToString("").contains(wanted.joinToString("")) && wanted.joinToString("").length >= 4) return Verdict.Same
+        val joinedWanted = wanted.joinToString("")
+        if (joinedWanted.length >= 4 && words.joinToString("").contains(joinedWanted)) return TitleVerdict.Same
         val share = wanted.count { it in words }.toDouble() / wanted.size
         return when {
-            share >= SameShare -> Verdict.Same
-            share <= DifferentShare -> Verdict.Different
-            else -> Verdict.Unclear
+            share >= SameShare -> TitleVerdict.Same
+            share <= DifferentShare -> TitleVerdict.Different
+            else -> TitleVerdict.Unclear
         }
     }
 

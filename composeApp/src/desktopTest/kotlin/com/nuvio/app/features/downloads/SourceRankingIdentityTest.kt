@@ -99,7 +99,7 @@ class SourceRankingIdentityTest {
 
     @Test
     fun a_source_of_another_title_goes_last_and_stays_in_the_list() {
-        val other = "Unrelated.Show.S03E13.2160p.WEB-DL-GRP"
+        val other = "Unrelated.Show.2160p.WEB-DL-GRP"
         val right = "The.Legend.of.Korra.S03E13.1080p.WEB-DL-GRP"
         assertEquals(listOf(right, other), rank(listOf(source(other), source(right)), wanted = korra))
         // Without the wanted title the higher resolution wins, as before.
@@ -259,5 +259,155 @@ class SourceRankingIdentityTest {
             preferences = SeasonDownloadDefaults(audioLanguage = DebridStreamLanguage.EN),
         )
         assertNull(evaluation.stream)
+    }
+
+    // Review findings: abstain when the evidence is ambiguous ------------------------------
+
+    @Test
+    fun a_source_whose_subtitles_are_listed_is_not_dropped_for_its_languages() {
+        for (name in listOf(
+            "Movie.1080p.FRENCH.GERMAN.SUBS",
+            "Movie.1080p.SUBS.FRENCH.GERMAN",
+            "Movie 1080p Subs: French, German",
+            "Movie.1080p.Subs.French",
+        )) {
+            assertEquals(listOf(name), rank(listOf(source(name)), language = DebridStreamLanguage.EN), name)
+        }
+        // Clearly stated audio in another language is still dropped.
+        assertEquals(emptyList(), rank(listOf(source("Movie.1080p.FRENCH.GERMAN")), language = DebridStreamLanguage.EN))
+    }
+
+    @Test
+    fun a_film_with_a_number_for_a_title_is_not_demoted_for_its_title_year() {
+        for ((title, year, name) in listOf(
+            Triple("1917", 2019, "1917.2019.2160p.mkv"),
+            Triple("2001: A Space Odyssey", 1968, "2001.A.Space.Odyssey.1968.2160p.mkv"),
+            Triple("Blade Runner 2049", 2017, "Blade.Runner.2049.2017.2160p.mkv"),
+            Triple("2012", 2009, "2012.2009.2160p.mkv"),
+        )) {
+            val demoted = source("Other.Film.1999.1080p")
+            val right = source(name)
+            val ranked = rank(listOf(demoted, right), wanted = WantedContent(title = title, year = year))
+            assertEquals(listOf(name, "Other.Film.1999.1080p"), ranked, name)
+        }
+    }
+
+    @Test
+    fun a_remake_of_another_year_goes_last_only_when_both_years_differ_by_more_than_one() {
+        val wanted = WantedContent(title = "Heat", year = 1995)
+        val sources = listOf("Heat.2021.2160p.mkv", "Heat.1996.1080p.mkv", "Heat.1080p.mkv", "Heat.1995.720p.mkv")
+        assertEquals(
+            listOf("Heat.1996.1080p.mkv", "Heat.1080p.mkv", "Heat.1995.720p.mkv", "Heat.2021.2160p.mkv"),
+            rank(sources.map(::source), wanted = wanted),
+        )
+        // No year on the wanted side, nothing is judged.
+        assertEquals(rank(sources.map(::source)), rank(sources.map(::source), wanted = WantedContent(title = "Heat")))
+    }
+
+    @Test
+    fun a_range_in_nxnn_form_covers_the_wanted_episode() {
+        val wanted = WantedContent(title = "Show", season = 2, episode = 6)
+        for (name in listOf("Show.2x05-06.1080p.mkv", "Show.2x05-2x06.1080p.mkv", "Show.2x05x06.1080p.mkv")) {
+            val wrong = "Show.S02E01.2160p.mkv"
+            assertEquals(listOf(name, wrong), rank(listOf(source(wrong), source(name)), wanted = wanted), name)
+        }
+    }
+
+    @Test
+    fun a_release_under_another_localised_title_is_not_demoted_when_it_agrees_on_the_year() {
+        val wanted = WantedContent(title = "Spirited Away", year = 2001)
+        val english = "Spirited.Away.2001.720p.mkv"
+        val japanese = "Sen.to.Chihiro.no.Kamikakushi.2001.2160p.mkv"
+        val unrelated = "Unrelated.Film.2160p.mkv"
+        val otherYear = "Other.Film.2015.2160p.mkv"
+        // Without knowing the other title the year agreement keeps the release in place; the one
+        // with no year to agree on and the one with another year go behind.
+        assertEquals(
+            listOf(japanese, english, unrelated, otherYear),
+            rank(listOf(source(english), source(japanese), source(unrelated), source(otherYear)), wanted = wanted),
+        )
+        // With the title known the release matches outright.
+        val known = wanted.copy(alternativeTitles = listOf("Sen to Chihiro no Kamikakushi"))
+        assertEquals(
+            listOf(japanese, english, unrelated, otherYear),
+            rank(listOf(source(english), source(japanese), source(unrelated), source(otherYear)), wanted = known),
+        )
+    }
+
+    @Test
+    fun a_release_of_another_title_that_agrees_on_the_episode_is_inconclusive_not_a_mismatch() {
+        val wanted = WantedContent(title = "Attack on Titan", season = 1, episode = 1)
+        val romaji = "Shingeki.no.Kyojin.S01E01.1080p.mkv"
+        val english = "Attack.on.Titan.S01E01.720p.mkv"
+        val other = "Shingeki.no.Kyojin.S01E02.2160p.mkv"
+        assertEquals(listOf(romaji, english, other), rank(listOf(source(english), source(romaji), source(other)), wanted = wanted))
+    }
+
+    @Test
+    fun absolute_numbering_is_not_judged() {
+        val release = "Naruto.Shippuden.S01E033.1080p.mkv"
+        val other = "Naruto.Shippuden.S02E01.720p.mkv"
+        // Three digit number: abstain, the 1080p release keeps its place by resolution.
+        val wanted = WantedContent(title = "Naruto Shippuden", season = 2, episode = 1)
+        assertEquals(listOf(release, other), rank(listOf(source(other), source(release)), wanted = wanted))
+        // More than the season has.
+        val counted = WantedContent(title = "Show", season = 2, episode = 1, seasonEpisodeCount = 12)
+        assertEquals(listOf("Show.S01E15.2160p.mkv", "Show.S02E01.720p.mkv"),
+            rank(listOf(source("Show.S02E01.720p.mkv"), source("Show.S01E15.2160p.mkv")), wanted = counted))
+        // Known anime numbering.
+        val anime = WantedContent(title = "Show", season = 2, episode = 1, numberingUnreliable = true)
+        assertEquals(listOf("Show.S01E09.2160p.mkv", "Show.S02E01.720p.mkv"),
+            rank(listOf(source("Show.S02E01.720p.mkv"), source("Show.S01E09.2160p.mkv")), wanted = anime))
+    }
+
+    @Test
+    fun specials_and_daily_shows_are_not_judged_on_episode() {
+        val special = WantedContent(title = "Show", season = 0, episode = 1)
+        assertEquals(listOf("Show.S01E05.2160p.mkv", "Show.S00E01.720p.mkv"),
+            rank(listOf(source("Show.S00E01.720p.mkv"), source("Show.S01E05.2160p.mkv")), wanted = special))
+        val daily = WantedContent(title = "Daily Show", season = 29, episode = 75)
+        assertEquals(listOf("Daily.Show.S29E10.2024.03.15.2160p.mkv", "Daily.Show.S29E75.720p.mkv"),
+            rank(listOf(source("Daily.Show.S29E75.720p.mkv"), source("Daily.Show.S29E10.2024.03.15.2160p.mkv")), wanted = daily))
+    }
+
+    @Test
+    fun a_single_common_word_title_judges_nothing_by_title() {
+        for ((title, year) in listOf("Her" to 2013, "It" to 2017, "Up" to 2009)) {
+            val sources = listOf("Unrelated.Words.$year.2160p.mkv", "$title.$year.1080p.mkv")
+            assertEquals(rank(sources.map(::source)), rank(sources.map(::source), wanted = WantedContent(title = title, year = year)), title)
+        }
+        // The year still separates a remake.
+        assertEquals(
+            listOf("It.2017.1080p.mkv", "It.1990.2160p.mkv"),
+            rank(listOf(source("It.1990.2160p.mkv"), source("It.2017.1080p.mkv")), wanted = WantedContent(title = "It", year = 2017)),
+        )
+    }
+
+    @Test
+    fun technical_tags_are_never_read_as_episodes_or_years() {
+        val wanted = WantedContent(title = "Show", season = 2, episode = 6, year = null)
+        val names = listOf(
+            "Show.S02E06.720p.x265.10bit.DDP5.1.mkv",
+            "Show.S02E06.2160p.H.264.5.1.mkv",
+            "Show.S02E06-1080p.HEVC.mkv",
+        )
+        assertEquals(rank(names.map(::source)), rank(names.map(::source), wanted = wanted))
+        val film = WantedContent(title = "Film", year = 2019)
+        val filmNames = listOf("Film.2019.2160p.x265.10bit.DDP5.1.mkv", "Film.1080p.H.264.5.1.mkv")
+        assertEquals(rank(filmNames.map(::source)), rank(filmNames.map(::source), wanted = film))
+    }
+
+    @Test
+    fun a_ten_thousand_character_release_name_is_ranked_quickly() {
+        val long = "Show.S01E01-E02.FRENCH.GERMAN.SUBS.".repeat(300)
+        val started = kotlin.time.TimeSource.Monotonic.markNow()
+        val ranked = rank(
+            listOf(source(long), source("Show.S02E06.1080p.mkv")),
+            wanted = WantedContent(title = "Show", season = 2, episode = 6, alternativeTitles = listOf("Other Show")),
+            language = DebridStreamLanguage.EN,
+        )
+        assertEquals(true, long.length >= 10_000)
+        assertEquals(2, ranked.size)
+        assertEquals(true, started.elapsedNow() < kotlin.time.Duration.parse("3s"))
     }
 }
