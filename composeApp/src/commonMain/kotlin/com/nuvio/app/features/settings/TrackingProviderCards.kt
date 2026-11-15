@@ -45,6 +45,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -68,6 +73,10 @@ import com.nuvio.app.features.simkl.SimklSyncRepository
 import com.nuvio.app.features.simkl.simklBrandPainter
 import com.nuvio.app.features.tracking.TrackingProviderId
 import com.nuvio.app.features.tracking.TrackingRefreshIntent
+import com.nuvio.app.features.tracking.outbox.OutboxCounts
+import com.nuvio.app.features.tracking.outbox.QueueSyncState
+import com.nuvio.app.features.tracking.outbox.TrackerOutboxRuntime
+import com.nuvio.app.features.tracking.outbox.TrackerQueueController
 import com.nuvio.app.features.trakt.TraktAuthRepository
 import com.nuvio.app.features.trakt.TraktAuthUiState
 import com.nuvio.app.features.trakt.TraktBrandAsset
@@ -107,7 +116,11 @@ import nuvio.composeapp.generated.resources.settings_trakt_connect
 import nuvio.composeapp.generated.resources.settings_trakt_connected_as
 import nuvio.composeapp.generated.resources.settings_trakt_default_user
 import nuvio.composeapp.generated.resources.settings_trakt_disconnect
+import nuvio.composeapp.generated.resources.settings_trakt_disconnect_anyway
 import nuvio.composeapp.generated.resources.settings_trakt_disconnect_description
+import nuvio.composeapp.generated.resources.settings_trakt_disconnect_pending
+import nuvio.composeapp.generated.resources.settings_trakt_disconnect_sync_first
+import nuvio.composeapp.generated.resources.settings_trakt_queue_syncing
 import nuvio.composeapp.generated.resources.settings_trakt_failed_open_browser
 import nuvio.composeapp.generated.resources.settings_trakt_finish_sign_in
 import nuvio.composeapp.generated.resources.settings_trakt_missing_credentials
@@ -118,6 +131,7 @@ import nuvio.composeapp.generated.resources.settings_trakt_device_finish_sign_in
 import nuvio.composeapp.generated.resources.settings_trakt_device_instructions
 import nuvio.composeapp.generated.resources.settings_trakt_save_actions_description
 import nuvio.composeapp.generated.resources.settings_trakt_sign_in_description
+import org.jetbrains.compose.resources.pluralStringResource
 import org.jetbrains.compose.resources.stringResource
 
 internal enum class TrackingBrand(val displayName: String) {
@@ -212,6 +226,7 @@ internal fun TrackingProviderCards(
 private fun TraktProviderCard(
     uiState: TraktAuthUiState,
     modifier: Modifier,
+    queue: TrackerQueueController? = TrackerOutboxRuntime.queueController,
 ) {
     val usesDeviceCodeFlow = uiState.usesDeviceCodeFlow
     TrackingProviderCard(
@@ -263,6 +278,7 @@ private fun TraktProviderCard(
         },
         onCancelAuthorization = TraktAuthRepository::onCancelAuthorization,
         onDisconnect = TraktAuthRepository::onDisconnectRequested,
+        queue = queue,
         modifier = modifier,
     )
 }
@@ -367,6 +383,7 @@ internal fun TrackingProviderCard(
     onSyncRequested: (() -> Unit)? = null,
     onInfoRequested: (() -> Unit)? = null,
     onDisconnect: () -> Unit,
+    queue: TrackerQueueController? = null,
 ) {
     val tokens = MaterialTheme.nuvio
     val clipboardManager = LocalClipboardManager.current
@@ -422,6 +439,9 @@ internal fun TrackingProviderCard(
                         label = connectedLabel,
                         description = connectedDescription,
                     )
+                    if (queue != null) {
+                        TrackerQueueSection(queue = queue)
+                    }
                     if (syncLabel != null && onSyncRequested != null) {
                         TrackingBrandPrimaryButton(
                             label = syncLabel,
@@ -584,6 +604,7 @@ internal fun TrackingProviderCard(
     if (showDisconnectDialog) {
         TrackingDisconnectDialog(
             brand = brand,
+            queue = queue,
             onConfirm = {
                 showDisconnectDialog = false
                 onDisconnect()
@@ -651,19 +672,25 @@ private fun TrackingConnectedIdentity(
 }
 
 @Composable
-private fun TrackingBrandPrimaryButton(
+internal fun TrackingBrandPrimaryButton(
     label: String,
     loading: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
     showSyncIcon: Boolean = false,
+    /** Spoken as the button's state while it is busy, so the busy indicator is not the only sign. */
+    busyDescription: String? = null,
 ) {
     Button(
         onClick = onClick,
         enabled = enabled,
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 48.dp),
+            .heightIn(min = 48.dp)
+            .semantics {
+                contentDescription = label
+                if (loading && busyDescription != null) stateDescription = busyDescription
+            },
         colors = ButtonDefaults.buttonColors(
             containerColor = Color.White,
             contentColor = Color(0xFF171717),
@@ -690,9 +717,11 @@ private fun TrackingBrandPrimaryButton(
 }
 
 @Composable
-private fun TrackingBrandMessage(
+internal fun TrackingBrandMessage(
     text: String,
     isError: Boolean,
+    /** Announced when it appears or changes, for results that follow an action. */
+    announce: Boolean = false,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -701,51 +730,110 @@ private fun TrackingBrandMessage(
     ) {
         Text(
             text = text,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            modifier = Modifier
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+                .then(if (announce) Modifier.semantics { liveRegion = LiveRegionMode.Polite } else Modifier),
             style = MaterialTheme.typography.bodySmall,
             color = if (isError) TrackingErrorColor else Color.White.copy(alpha = 0.82f),
         )
     }
 }
 
+/** What the disconnect dialog asks, given how many watches are still waiting for Trakt. */
+internal sealed interface TrackingDisconnectPrompt {
+    data object Confirm : TrackingDisconnectPrompt
+    data class PendingWatches(val count: Int) : TrackingDisconnectPrompt
+}
+
+internal fun trackingDisconnectPrompt(waitingWatches: Int): TrackingDisconnectPrompt =
+    if (waitingWatches > 0) {
+        TrackingDisconnectPrompt.PendingWatches(waitingWatches)
+    } else {
+        TrackingDisconnectPrompt.Confirm
+    }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TrackingDisconnectDialog(
+internal fun TrackingDisconnectDialog(
     brand: TrackingBrand,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
+    queue: TrackerQueueController? = null,
 ) {
     val tokens = MaterialTheme.nuvio
+    val counts = queue?.counts?.collectAsStateWithLifecycle()?.value ?: OutboxCounts()
+    val syncState = queue?.syncState?.collectAsStateWithLifecycle()?.value ?: QueueSyncState.Idle
+    val syncing = syncState is QueueSyncState.Syncing
+    val prompt = trackingDisconnectPrompt(if (brand == TrackingBrand.TRAKT) counts.waiting else 0)
     DialogSurface(
         onDismissRequest = onDismiss,
         title = stringResource(Res.string.settings_tracking_disconnect_title, brand.displayName),
     ) {
         Text(
-            text = when (brand) {
-                TrackingBrand.TRAKT ->
-                    stringResource(Res.string.settings_trakt_disconnect_description)
-                TrackingBrand.SIMKL ->
-                    stringResource(Res.string.settings_simkl_disconnect_description)
-                TrackingBrand.MDBLIST -> stringResource(Res.string.settings_mdblist_disconnect_description)
-                TrackingBrand.NUVIO,
-                TrackingBrand.TMDB,
-                -> stringResource(
-                    Res.string.settings_tracking_disconnect_description,
-                    brand.displayName,
-                )
+            text = when (prompt) {
+                is TrackingDisconnectPrompt.PendingWatches ->
+                    pluralStringResource(Res.plurals.settings_trakt_disconnect_pending, prompt.count, prompt.count)
+                TrackingDisconnectPrompt.Confirm -> when (brand) {
+                    TrackingBrand.TRAKT ->
+                        stringResource(Res.string.settings_trakt_disconnect_description)
+                    TrackingBrand.SIMKL ->
+                        stringResource(Res.string.settings_simkl_disconnect_description)
+                    TrackingBrand.MDBLIST -> stringResource(Res.string.settings_mdblist_disconnect_description)
+                    TrackingBrand.NUVIO,
+                    TrackingBrand.TMDB,
+                    -> stringResource(
+                        Res.string.settings_tracking_disconnect_description,
+                        brand.displayName,
+                    )
+                }
             },
             style = MaterialTheme.typography.bodyMedium,
             color = tokens.colors.textMuted,
         )
+        when {
+            syncing -> Text(
+                text = stringResource(Res.string.settings_trakt_queue_syncing),
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                style = MaterialTheme.typography.bodyMedium,
+                color = tokens.colors.textPrimary,
+            )
+            syncState is QueueSyncState.Done -> Text(
+                text = queueResultText(syncState.result),
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                style = MaterialTheme.typography.bodyMedium,
+                color = tokens.colors.textPrimary,
+            )
+        }
         DialogButtons {
             DialogButton(
                 text = stringResource(Res.string.action_cancel),
                 onClick = onDismiss,
             )
+            if (prompt is TrackingDisconnectPrompt.PendingWatches && queue != null) {
+                val syncFirst = stringResource(Res.string.settings_trakt_disconnect_sync_first)
+                val syncingText = stringResource(Res.string.settings_trakt_queue_syncing)
+                DialogButton(
+                    text = syncFirst,
+                    onClick = queue::syncNow,
+                    style = DialogButtonStyle.Primary,
+                    loading = syncing,
+                    modifier = Modifier.semantics {
+                        contentDescription = syncFirst
+                        if (syncing) stateDescription = syncingText
+                    },
+                )
+            }
             DialogButton(
-                text = stringResource(Res.string.settings_trakt_disconnect),
+                text = stringResource(
+                    if (prompt is TrackingDisconnectPrompt.PendingWatches) {
+                        Res.string.settings_trakt_disconnect_anyway
+                    } else {
+                        Res.string.settings_trakt_disconnect
+                    },
+                ),
                 onClick = onConfirm,
                 style = DialogButtonStyle.Destructive,
+                enabled = !syncing,
             )
         }
     }
