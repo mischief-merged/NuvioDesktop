@@ -13,6 +13,7 @@ import com.nuvio.app.features.streams.StreamParser
 import com.nuvio.app.features.streams.runCatchingUnlessCancelled
 import com.nuvio.app.features.streams.streamAddonInstanceId
 import com.nuvio.app.features.streams.supportsStream
+import com.nuvio.app.features.tmdb.TmdbService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -24,6 +25,8 @@ import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.download_failed
 import nuvio.composeapp.generated.resources.downloads_movie_already_downloaded
 import nuvio.composeapp.generated.resources.downloads_movie_not_found
+import nuvio.composeapp.generated.resources.downloads_movies_finished
+import nuvio.composeapp.generated.resources.downloads_movies_stopped
 import nuvio.composeapp.generated.resources.downloads_season_count_existing
 import nuvio.composeapp.generated.resources.downloads_season_count_failed
 import nuvio.composeapp.generated.resources.downloads_season_count_new
@@ -98,11 +101,12 @@ internal object SeasonBatchDownloads {
 
     private suspend fun fetchAddonStreams(episode: SeasonBatchEpisode): List<StreamItem> {
         val type = episode.movie?.metaType ?: "series"
+        val streamId = if (episode.movie != null) movieStreamId(episode.videoId) else episode.videoId
         return coroutineScope {
             AddonRepository.uiState.value.addons.enabledAddons()
                 .mapNotNull { addon ->
                     val manifest = addon.manifest ?: return@mapNotNull null
-                    if (!manifest.supportsStream(type, episode.videoId)) return@mapNotNull null
+                    if (!manifest.supportsStream(type, streamId)) return@mapNotNull null
                     async {
                         runCatchingUnlessCancelled {
                             StreamParser.parse(
@@ -111,7 +115,7 @@ internal object SeasonBatchDownloads {
                                         manifestUrl = manifest.transportUrl,
                                         resource = "stream",
                                         type = type,
-                                        id = episode.videoId,
+                                        id = streamId,
                                     ),
                                 ),
                                 addonName = addon.displayTitle.ifBlank { manifest.name },
@@ -126,6 +130,15 @@ internal object SeasonBatchDownloads {
         }
     }
 
+    /**
+     * The id addons are asked with for a movie. The movies of a collection carry a TMDB id, which is
+     * turned into the IMDb id addons know. When that is not known the id is used as it is.
+     */
+    private suspend fun movieStreamId(videoId: String): String {
+        val tmdbId = videoId.takeIf { it.startsWith("tmdb:") }?.removePrefix("tmdb:")?.toIntOrNull() ?: return videoId
+        return runCatchingUnlessCancelled { TmdbService.tmdbToImdb(tmdbId, "movie") }.getOrNull() ?: videoId
+    }
+
     private suspend fun prepareStream(stream: StreamItem, episode: SeasonBatchEpisode): StreamItem? {
         val resolved = DirectDebridPlaybackResolver.resolveToPlayableStream(
             stream = stream,
@@ -137,7 +150,7 @@ internal object SeasonBatchDownloads {
 
     /** What to tell the user when a batch has ended, or null when there is nothing to tell. */
     internal suspend fun summaryToast(request: SeasonBatchRequest, summary: SeasonBatchSummary): String? {
-        if (!request.isSingleMovie) return summary.toastMessage()
+        if (!request.isSingleMovie) return summary.toastMessage(movieSet = request.isMovieSet)
         return when (summary.results.values.single()) {
             SeasonBatchEpisodeResult.NoMatchingSource -> getString(Res.string.downloads_movie_not_found)
             SeasonBatchEpisodeResult.Failed -> getString(Res.string.download_failed)
@@ -149,9 +162,14 @@ internal object SeasonBatchDownloads {
         }
     }
 
-    private suspend fun SeasonBatchSummary.toastMessage(): String {
+    private suspend fun SeasonBatchSummary.toastMessage(movieSet: Boolean): String {
         val heading = getString(
-            if (wasCancelled) Res.string.downloads_season_stopped else Res.string.downloads_season_finished,
+            when {
+                movieSet && wasCancelled -> Res.string.downloads_movies_stopped
+                movieSet -> Res.string.downloads_movies_finished
+                wasCancelled -> Res.string.downloads_season_stopped
+                else -> Res.string.downloads_season_finished
+            },
         )
         val counts = nonZeroCounts().mapNotNull { (result, count) ->
             val label = when (result) {

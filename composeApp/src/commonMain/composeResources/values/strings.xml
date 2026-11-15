@@ -2050,6 +2050,21 @@
     <string name="downloads_movie_already_running">This movie is already being added</string>
     <string name="downloads_movie_not_found">No matching source found</string>
     <string name="downloads_movie_already_downloaded">This movie is already in downloads</string>
+    <string name="downloads_movies_button">Download movies</string>
+    <string name="downloads_movies_dialog_message">Adds the ticked movies to downloads.</string>
+    <string name="downloads_movies_list_heading">Movies</string>
+    <string name="downloads_movies_select_all">Select all</string>
+    <string name="downloads_movies_clear">Clear</string>
+    <plurals name="downloads_movies_confirm">
+        <item quantity="one">Download %1$d movie</item>
+        <item quantity="other">Download %1$d movies</item>
+    </plurals>
+    <string name="downloads_movies_state_in_downloads">Already in downloads</string>
+    <string name="downloads_movies_state_unreleased">Not released yet</string>
+    <string name="downloads_movies_started">Adding movies to downloads</string>
+    <string name="downloads_movies_already_running">These movies are already being added</string>
+    <string name="downloads_movies_finished">Movies added</string>
+    <string name="downloads_movies_stopped">Stopped adding movies</string>
     <string name="downloads_error_empty_body">Empty response body</string>
     <string name="downloads_error_finalize_failed">Failed to finalize download file</string>
     <string name="downloads_error_http_failed">Request failed with HTTP %1$d</string>
