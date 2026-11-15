@@ -41,6 +41,12 @@ import nuvio.composeapp.generated.resources.action_retry
 import nuvio.composeapp.generated.resources.downloads_delete_confirm_partial
 import nuvio.composeapp.generated.resources.downloads_delete_confirm_trash
 import nuvio.composeapp.generated.resources.downloads_delete_message_held
+import nuvio.composeapp.generated.resources.downloads_auto_keep_description
+import nuvio.composeapp.generated.resources.downloads_row_deletes_in_hours
+import nuvio.composeapp.generated.resources.downloads_row_deletes_soon
+import com.nuvio.app.features.details.MetaDetails
+import kotlinx.coroutines.flow.MutableStateFlow
+import nuvio.composeapp.generated.resources.downloads_delete_auto_note
 import nuvio.composeapp.generated.resources.downloads_delete_message_partial
 import nuvio.composeapp.generated.resources.downloads_delete_message_trash
 import nuvio.composeapp.generated.resources.downloads_delete_not_moved_toast
@@ -174,6 +180,7 @@ class DownloadsScreenTest {
 
     private var chooseSourceFor: DownloadItem? = null
     private var folderOpened = 0
+    private val rememberedDeletions = mutableListOf<Pair<String, Int>>()
 
     private fun show(vararg items: String, withChooseSource: Boolean = true) {
         backend.payload = """{"items":[${items.joinToString(",")}]}"""
@@ -192,6 +199,7 @@ class DownloadsScreenTest {
                         folderOpened++
                         true
                     },
+                    rememberDeletion = { rememberedDeletions += it.id to DownloadsRepository.uiState.value.items.size },
                 )
             }
         }
@@ -461,6 +469,116 @@ class DownloadsScreenTest {
         assertEquals(1, DownloadsRepository.uiState.value.items.size)
         assertTrue(backend.removedOutright.isEmpty())
         assertEquals(text(Res.string.downloads_delete_not_moved_toast), NuvioToastController.currentToast.value?.message)
+    }
+
+    private val autoPaused = ""","downloadedBytes":5,"autoDownloadRuleKey":"series|tt1""""
+
+    @Test
+    fun deleting_an_automatic_download_says_it_will_not_come_back_and_is_remembered_before_it_goes() {
+        show(stored("p", "Paused", extra = autoPaused))
+
+        pressDelete()
+
+        compose.onNodeWithText(text(Res.string.downloads_delete_message_partial) + " " + text(Res.string.downloads_delete_auto_note))
+            .assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_delete_confirm_partial)).performClick()
+        compose.waitForIdle()
+        // Remembered while the download was still listed, then removed.
+        assertEquals(listOf("p" to 1), rememberedDeletions)
+        assertTrue(DownloadsRepository.uiState.value.items.isEmpty())
+    }
+
+    @Test
+    fun cancelling_the_delete_of_an_automatic_download_remembers_nothing() {
+        show(stored("p", "Paused", extra = autoPaused))
+        pressDelete()
+
+        compose.onNodeWithText(text(Res.string.action_cancel)).performClick()
+
+        compose.waitForIdle()
+        assertTrue(rememberedDeletions.isEmpty())
+        assertEquals(1, DownloadsRepository.uiState.value.items.size)
+    }
+
+    @Test
+    fun deleting_a_download_the_user_started_has_no_auto_download_note() {
+        show(stored("p", "Paused", extra = ""","downloadedBytes":5"""))
+
+        pressDelete()
+
+        compose.onNodeWithText(text(Res.string.downloads_delete_message_partial)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_delete_auto_note), substring = true).assertDoesNotExist()
+    }
+
+    private class SchedulingController : AutoDownloadController {
+        override val rules = MutableStateFlow(emptyList<AutoDownloadRule>())
+        override val statuses = MutableStateFlow(emptyMap<String, AutoDownloadStatus>())
+        override val storageLimitGb = MutableStateFlow<Int?>(50)
+        override val removals = MutableStateFlow(emptyList<AutoDownloadRemoval>())
+        override var usesSystemTrash = true
+        val kept = mutableListOf<String>()
+
+        override fun save(profileId: Int, meta: MetaDetails, keepCount: Int, scope: AutoDownloadScope, deleteAfterWatching: Boolean) = Unit
+        override fun turnOff(profileId: Int, ruleKey: String) = Unit
+        override fun setStorageLimit(profileId: Int, limitGb: Int?) = Unit
+        override fun keepDownload(profileId: Int, downloadId: String) {
+            kept += downloadId
+        }
+        override fun deleteDownloadNow(profileId: Int, downloadId: String) = Unit
+        override fun checkNow() = Unit
+    }
+
+    private fun showShowWith(controller: AutoDownloadController, vararg items: String) {
+        backend.payload = """{"items":[${items.joinToString(",")}]}"""
+        compose.setContent {
+            NuvioTheme {
+                DownloadsScreenContent(
+                    onBack = {},
+                    onOpenDownload = {},
+                    initialShowId = "tt1",
+                    showAutoDownloads = false,
+                    autoDownloads = controller,
+                )
+            }
+        }
+    }
+
+    private fun keepDescription() = text(Res.string.downloads_auto_keep_description, "Pantheon", 2, 3)
+
+    @Test
+    fun an_episode_that_will_be_deleted_after_watching_says_when_and_has_a_keep_button() {
+        val controller = SchedulingController()
+        controller.removals.value = listOf(
+            AutoDownloadRemoval("a", "series|tt1", dueAtEpochMs = DownloadsClock.nowEpochMs() + 20 * 3_600_000L + 60_000L),
+        )
+        showShowWith(controller, completedEpisode("a"), completedEpisode("b", episode = 4))
+
+        compose.onNodeWithText(text(Res.plurals.downloads_row_deletes_in_hours, 20)).assertIsDisplayed()
+        // Only the episode with a scheduled deletion has the line and the button.
+        compose.onAllNodesWithText(text(Res.plurals.downloads_row_deletes_in_hours, 20)).assertCountEquals(1)
+        compose.onNodeWithContentDescription(keepDescription())
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button))
+            .assertHasClickAction()
+            .performClick()
+
+        assertEquals(listOf("a"), controller.kept)
+    }
+
+    @Test
+    fun the_last_half_hour_before_a_deletion_is_said_in_words() {
+        val controller = SchedulingController()
+        controller.removals.value = listOf(AutoDownloadRemoval("a", "series|tt1", dueAtEpochMs = DownloadsClock.nowEpochMs() + 10 * 60_000L))
+        showShowWith(controller, completedEpisode("a"))
+
+        compose.onNodeWithText(text(Res.string.downloads_row_deletes_soon)).assertIsDisplayed()
+    }
+
+    @Test
+    fun an_episode_with_nothing_scheduled_has_no_deletion_line_or_keep_button() {
+        showShowWith(SchedulingController(), completedEpisode("a"))
+
+        compose.onNodeWithContentDescription(keepDescription()).assertDoesNotExist()
+        compose.onNodeWithText(text(Res.string.downloads_row_deletes_soon)).assertDoesNotExist()
     }
 
     private fun pressDelete(name: String = "Pantheon S02E03") {

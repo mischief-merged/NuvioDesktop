@@ -20,6 +20,9 @@ import kotlinx.coroutines.sync.withLock
  * failed or was stopped is tried again: after 1 hour, then 3 hours, 12 hours and daily. The waiting
  * times are kept in memory and start over when the app restarts.
  *
+ * An episode the user deleted by hand from Downloads is remembered like one that was removed
+ * after watching, whatever state its download was in, so it is not fetched again.
+ *
  * Once automatic downloads take as much as the storage limit, no further episode is queued. A
  * download that a limit paused is resumed by a check when there is room again; whether it then
  * fits is decided by the transfer itself.
@@ -246,6 +249,23 @@ internal class AutoDownloadEngine(
                 store.update(profileId, ruleKey) { it.copy(ownedEpisodeKeys = it.ownedEpisodeKeys + keys) }
             }
         }
+    }
+
+    /**
+     * The user deleted [item] from Downloads. When a rule queued it, the rule remembers the episode
+     * as one it had, also when the download was not finished, so that the next check does not
+     * fetch it again. Returns whether a rule was updated.
+     */
+    fun onDeletedByUser(profileId: Int, item: DownloadItem): Boolean {
+        val ruleKey = item.autoDownloadRuleKey ?: return false
+        val season = item.seasonNumber ?: return false
+        val episode = item.episodeNumber ?: return false
+        val key = autoDownloadEpisodeKey(season, episode)
+        if (store.rule(profileId, ruleKey) == null) return false
+        if (!store.update(profileId, ruleKey) { it.copy(ownedEpisodeKeys = it.ownedEpisodeKeys + key) }) return false
+        synchronized(lock) { retriesByRule[ruleKey]?.remove(key) }
+        refreshStatus(profileId, ruleKey)
+        return true
     }
 
     /** Works out the status of a rule again from the downloads as they are now. Fetches nothing. */

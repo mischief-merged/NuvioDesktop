@@ -291,6 +291,67 @@ class DeleteAfterWatchingTest {
     }
 
     @Test
+    fun a_removed_episode_is_noted_so_the_user_can_see_it_happened_also_after_a_restart() {
+        optIn()
+        watch(2)
+        now += 24 * hour
+
+        feature.runDue(1)
+
+        val expected = AutoDownloadDeleted("Show", seasonNumber = 1, episodeNumber = 2, atEpochMs = now)
+        assertEquals(listOf(expected), store.recentlyDeleted.value)
+        restart()
+        assertEquals(listOf(expected), store.currentRules().let { store.recentlyDeleted.value })
+    }
+
+    @Test
+    fun an_episode_deleted_early_at_the_users_request_is_noted_too() {
+        optIn()
+        watch(1)
+
+        feature.deleteNow(1, item(1).id)
+
+        assertEquals(listOf(1), store.recentlyDeleted.value.map { it.episodeNumber })
+    }
+
+    @Test
+    fun nothing_is_noted_when_nothing_was_removed() {
+        optIn()
+        watch(1)
+        now += 24 * hour
+        removeResult = AutoDownloadRemovalResult.NotMoved
+
+        feature.runDue(1)
+
+        assertEquals(emptyList(), store.recentlyDeleted.value)
+    }
+
+    @Test
+    fun the_hours_left_are_rounded_to_the_nearest_and_never_negative() {
+        assertEquals(24, removalHoursLeft(dueAtEpochMs = 24 * hour, nowEpochMs = 0))
+        assertEquals(24, removalHoursLeft(dueAtEpochMs = 24 * hour - 10 * 60_000, nowEpochMs = 0))
+        assertEquals(1, removalHoursLeft(dueAtEpochMs = 40 * 60_000, nowEpochMs = 0))
+        assertEquals(0, removalHoursLeft(dueAtEpochMs = 20 * 60_000, nowEpochMs = 0))
+        assertEquals(0, removalHoursLeft(dueAtEpochMs = 0, nowEpochMs = 5 * hour))
+    }
+
+    @Test
+    fun only_the_last_week_of_removed_episodes_is_shown_newest_first() {
+        val day = 24 * hour
+        val entries = listOf(
+            AutoDownloadDeleted("Old", 1, 1, atEpochMs = 0),
+            AutoDownloadDeleted("Recent", 1, 2, atEpochMs = 9 * day),
+            AutoDownloadDeleted("Newest", 1, 3, atEpochMs = 10 * day - hour),
+        )
+
+        val shown = recentlyDeletedShown(entries, nowEpochMs = 10 * day)
+
+        assertEquals(listOf("Newest", "Recent"), shown.map { it.title })
+        assertEquals(0, daysSinceDeleted(shown[0], 10 * day))
+        assertEquals(1, daysSinceDeleted(shown[1], 10 * day))
+    }
+
+    @Test
     fun a_file_that_cannot_be_moved_stays_scheduled() {
         optIn()
         watch(1)

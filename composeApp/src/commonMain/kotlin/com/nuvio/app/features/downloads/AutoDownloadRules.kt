@@ -31,7 +31,8 @@ internal data class AutoDownloadRule(
     val deleteAfterWatching: Boolean = false,
     /**
      * Episodes ("season|episode") that were seen in Downloads as a finished download this rule
-     * queued. One that is no longer there was removed, and the rule does not fetch it again.
+     * queued, or that the user deleted from Downloads. One that is no longer there was removed, and
+     * the rule does not fetch it again.
      */
     val ownedEpisodeKeys: Set<String> = emptySet(),
 ) {

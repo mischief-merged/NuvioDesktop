@@ -292,6 +292,52 @@ class AutoDownloadEngineTest {
     }
 
     @Test
+    fun an_episode_deleted_by_hand_before_it_finished_is_not_fetched_again() = runTest {
+        val harness = harness(testRule(keepCount = 2))
+        harness.check()
+        harness.settle(1, DownloadStatus.Completed)
+        advanceUntilIdle()
+        val unfinished = harness.downloads.value.items.first { it.episodeNumber == 2 }
+        assertEquals(DownloadStatus.Downloading, unfinished.status)
+
+        // The user deletes the second episode while it is still downloading.
+        assertTrue(harness.engine.onDeletedByUser(1, unfinished))
+        harness.settle(2, null)
+        harness.check(ignoreWaiting = true)
+
+        assertTrue("1|2" in harness.store.rule(1, ruleKey)!!.ownedEpisodeKeys)
+        assertEquals(1, harness.queued.count { it == 2 }, "episode 2 was queued again: ${harness.queued}")
+    }
+
+    @Test
+    fun a_failed_episode_deleted_by_hand_stops_waiting_for_another_try() = runTest {
+        val harness = harness(testRule(keepCount = 1))
+        harness.sources = { emptyList() }
+        harness.check()
+        assertEquals(AutoDownloadStatus.NoSource, harness.status())
+        val failed = testDownload(1, DownloadStatus.Failed, ruleKey = ruleKey)
+
+        harness.engine.onDeletedByUser(1, failed)
+
+        assertTrue(harness.engine.rulesWithDueRetry().isEmpty())
+        advanceTimeBy(2 * hour)
+        assertTrue(harness.engine.rulesWithDueRetry().isEmpty())
+    }
+
+    @Test
+    fun deleting_a_download_no_rule_queued_changes_no_rule() = runTest {
+        val harness = harness(testRule(keepCount = 2))
+        val byHand = testDownload(1, DownloadStatus.Paused, ruleKey = null)
+        val unknownRule = testDownload(1, DownloadStatus.Paused, ruleKey = "series|other")
+
+        assertFalse(harness.engine.onDeletedByUser(1, byHand))
+        assertFalse(harness.engine.onDeletedByUser(1, unknownRule))
+        assertFalse(harness.engine.onDeletedByUser(2, testDownload(1, DownloadStatus.Paused, ruleKey = ruleKey)))
+
+        assertEquals(emptySet(), harness.store.rule(1, ruleKey)!!.ownedEpisodeKeys)
+    }
+
+    @Test
     fun watching_an_episode_moves_the_rule_on_to_the_next_one() = runTest {
         val harness = harness(testRule(keepCount = 2))
         harness.check()

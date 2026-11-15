@@ -33,6 +33,8 @@ internal enum class AutoDownloadRemovalOutcome {
  *   never removed by itself. It is dropped from the schedule when the user chose Keep, when it is
  *   no longer watched to the end, or when its rule no longer asks for removal.
  * - Turning the option or the rule off drops what was scheduled for it at once.
+ * - Every episode that was removed is noted in the store, so that the user can see for a week that
+ *   it happened.
  * - [deleteNow] is the user's own request: it skips the wait and the last two checks.
  *
  * The schedule is kept in [store] with the rules of the profile, and every call names the profile
@@ -117,6 +119,7 @@ internal class DeleteAfterWatching(
                     }
                 }
                 store.dropRemoval(profileId, removal)
+                store.recordDeleted(profileId, AutoDownloadDeleted(item.title, season, episode, nowEpochMs()))
                 AutoDownloadRemovalOutcome.Removed
             }
             AutoDownloadRemovalResult.Changed -> cancel(profileId, removal)
@@ -142,3 +145,20 @@ internal fun hasLaterReleasedEpisode(item: DownloadItem, episodes: List<SeasonBa
         it.seasonNumber > 0 && (it.seasonNumber > season || (it.seasonNumber == season && it.episodeNumber > episode))
     }
 }
+
+private const val MillisPerHour = 3_600_000L
+
+/** The whole hours until [dueAtEpochMs], rounded to the nearest. 0 means less than half an hour; never negative. */
+internal fun removalHoursLeft(dueAtEpochMs: Long, nowEpochMs: Long): Int =
+    ((dueAtEpochMs - nowEpochMs + MillisPerHour / 2) / MillisPerHour).coerceAtLeast(0L).toInt()
+
+/** The removed episodes the user is still shown: those of the last week, newest first. */
+internal fun recentlyDeletedShown(entries: List<AutoDownloadDeleted>, nowEpochMs: Long, max: Int = 5): List<AutoDownloadDeleted> =
+    entries
+        .filter { nowEpochMs - it.atEpochMs < AutoDownloadStore.RecentlyDeletedMs }
+        .sortedByDescending { it.atEpochMs }
+        .take(max)
+
+/** How many whole days ago [entry] was removed. */
+internal fun daysSinceDeleted(entry: AutoDownloadDeleted, nowEpochMs: Long): Int =
+    ((nowEpochMs - entry.atEpochMs) / (24 * MillisPerHour)).coerceAtLeast(0L).toInt()
