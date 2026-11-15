@@ -120,8 +120,22 @@ data class DownloadItem(
         }
 }
 
+/** What went wrong with the stored list of downloads when it was loaded. */
+enum class DownloadsStoreProblem {
+    /** The list could not be read and was kept aside. An earlier copy of it is shown instead. */
+    EarlierCopyShown,
+
+    /** The list could not be read and was kept aside. Nothing could be read in its place, so the list starts empty. */
+    StartedEmpty,
+
+    /** The list could not be read and could not be kept aside. It is left as it is, and nothing is saved until the app restarts. */
+    NotSaving,
+}
+
 data class DownloadsUiState(
     val items: List<DownloadItem> = emptyList(),
+    /** Set when the stored list could not be read. The screen must not present the list as simply empty then. */
+    val storeProblem: DownloadsStoreProblem? = null,
 ) {
     val activeItems: List<DownloadItem>
         get() = items.filter { it.status != DownloadStatus.Completed }

@@ -35,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -65,6 +66,7 @@ fun DownloadsScreen(
      * Null where the screen cannot reach it: the action is then not offered.
      */
     onChooseAnotherSource: ((DownloadItem) -> Unit)? = null,
+    openDownloadsFolder: () -> Boolean = DownloadsPlatformDownloader::openDownloadsDirectory,
 ) {
     val uiState by remember {
         DownloadsRepository.ensureLoaded()
@@ -119,7 +121,7 @@ fun DownloadsScreen(
                 actions = {
                     IconButton(
                         onClick = {
-                            if (!DownloadsPlatformDownloader.openDownloadsDirectory()) {
+                            if (!openDownloadsFolder()) {
                                 NuvioToastController.show(openDownloadsDirectoryFailedText)
                             }
                         },
@@ -141,6 +143,9 @@ fun DownloadsScreen(
                 uiState = uiState,
                 clock = clock,
                 onChooseAnotherSource = onChooseAnotherSource,
+                onOpenDownloadsFolder = {
+                    if (!openDownloadsFolder()) NuvioToastController.show(openDownloadsDirectoryFailedText)
+                },
                 onOpenDownload = onOpenDownload,
                 onOpenShow = { showId, title ->
                     onNavigateToShow?.invoke(showId, title) ?: run { selectedShowId = showId }
@@ -202,10 +207,17 @@ private fun LazyListScope.downloadsRootContent(
     uiState: DownloadsUiState,
     clock: RowClock,
     onChooseAnotherSource: ((DownloadItem) -> Unit)?,
+    onOpenDownloadsFolder: () -> Unit,
     onOpenDownload: (DownloadItem) -> Unit,
     onOpenShow: (showId: String, title: String) -> Unit,
     onDeleteDownload: (String) -> Unit,
 ) {
+    uiState.storeProblem?.let { problem ->
+        item(key = "store-problem") {
+            StoreProblemBanner(problem = problem, onOpenDownloadsFolder = onOpenDownloadsFolder)
+        }
+    }
+
     val activeItems = uiState.activeItems
     val completedMovies = uiState.completedItems.filterNot(DownloadItem::isEpisode)
     val completedShows = uiState.completedItems
@@ -319,7 +331,8 @@ private fun LazyListScope.downloadsRootContent(
         }
     }
 
-    if (uiState.items.isEmpty()) {
+    // A list that could not be read is not an empty one: the banner says so instead.
+    if (uiState.items.isEmpty() && uiState.storeProblem == null) {
         item {
             Box(
                 modifier = Modifier
@@ -649,6 +662,49 @@ private fun FailureDetails(
                 onClick = onRetry,
             ) {
                 Text(text = retryText, style = MaterialTheme.typography.labelLarge)
+            }
+        }
+    }
+}
+
+/** Says that the stored list could not be read, what was kept, and offers the downloads folder, where the files still are. */
+@Composable
+private fun StoreProblemBanner(problem: DownloadsStoreProblem, onOpenDownloadsFolder: () -> Unit) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.errorContainer,
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                text = stringResource(Res.string.downloads_store_problem_title),
+                modifier = Modifier.semantics { heading() },
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = stringResource(
+                    when (problem) {
+                        DownloadsStoreProblem.EarlierCopyShown -> Res.string.downloads_store_problem_earlier_copy
+                        DownloadsStoreProblem.StartedEmpty -> Res.string.downloads_store_problem_started_empty
+                        DownloadsStoreProblem.NotSaving -> Res.string.downloads_store_problem_not_saving
+                    },
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            TextButton(onClick = onOpenDownloadsFolder) {
+                Text(
+                    text = stringResource(Res.string.downloads_open_directory),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                )
             }
         }
     }

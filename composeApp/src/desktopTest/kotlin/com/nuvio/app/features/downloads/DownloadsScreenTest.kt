@@ -1,7 +1,12 @@
 package com.nuvio.app.features.downloads
 
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onFirst
@@ -29,7 +34,13 @@ import nuvio.composeapp.generated.resources.downloads_failed_next_bad_file
 import nuvio.composeapp.generated.resources.downloads_failed_next_not_enough_space
 import nuvio.composeapp.generated.resources.downloads_failed_next_other
 import nuvio.composeapp.generated.resources.downloads_failed_next_source_refused
+import nuvio.composeapp.generated.resources.downloads_empty_title
+import nuvio.composeapp.generated.resources.downloads_open_directory
 import nuvio.composeapp.generated.resources.downloads_result_picture_ok
+import nuvio.composeapp.generated.resources.downloads_store_problem_earlier_copy
+import nuvio.composeapp.generated.resources.downloads_store_problem_not_saving
+import nuvio.composeapp.generated.resources.downloads_store_problem_started_empty
+import nuvio.composeapp.generated.resources.downloads_store_problem_title
 import nuvio.composeapp.generated.resources.downloads_retry_all_failed
 import nuvio.composeapp.generated.resources.downloads_status_failed_reason
 import nuvio.composeapp.generated.resources.downloads_try_source_again
@@ -55,6 +66,8 @@ class DownloadsScreenTest {
     internal class FakeBackend : DownloadsBackend {
         var payload: String? = null
         val started = mutableListOf<String>()
+        var previousPayload: String? = null
+        var puttingAsideFails = false
         val trashed = mutableListOf<String>()
         val removedOutright = mutableListOf<String?>()
         var trashSucceeds = true
@@ -66,6 +79,11 @@ class DownloadsScreenTest {
         }
 
         override fun loadPayload(): String? = payload
+        override fun loadPreviousPayload(): String? = previousPayload
+        override fun saveUnreadablePayload(payload: String, atEpochMs: Long) {
+            if (puttingAsideFails) error("the store is read-only")
+        }
+
         override fun savePayload(payload: String) {
             this.payload = payload
         }
@@ -134,9 +152,14 @@ class DownloadsScreenTest {
     }
 
     private var chooseSourceFor: DownloadItem? = null
+    private var folderOpened = 0
 
     private fun show(vararg items: String, withChooseSource: Boolean = true) {
         backend.payload = """{"items":[${items.joinToString(",")}]}"""
+        showPayload(withChooseSource)
+    }
+
+    private fun showPayload(withChooseSource: Boolean = true) {
         compose.setContent {
             NuvioTheme {
                 DownloadsScreen(
@@ -144,6 +167,10 @@ class DownloadsScreenTest {
                     onOpenDownload = {},
                     showAutoDownloads = false,
                     onChooseAnotherSource = if (withChooseSource) ({ chooseSourceFor = it }) else null,
+                    openDownloadsFolder = {
+                        folderOpened++
+                        true
+                    },
                 )
             }
         }
@@ -421,5 +448,61 @@ class DownloadsScreenTest {
 
     private fun openShow() {
         compose.onNodeWithText("Pantheon").performClick()
+    }
+
+    @Test
+    fun a_list_that_could_not_be_read_says_so_instead_of_no_downloads_yet() {
+        backend.payload = "this is not a list"
+        showPayload()
+
+        compose.onNodeWithText(text(Res.string.downloads_store_problem_title)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_store_problem_started_empty)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_empty_title)).assertDoesNotExist()
+    }
+
+    @Test
+    fun the_banner_title_is_a_heading() {
+        backend.payload = "this is not a list"
+        showPayload()
+
+        compose.onNode(
+            hasText(text(Res.string.downloads_store_problem_title)) and SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading),
+        ).assertIsDisplayed()
+    }
+
+    @Test
+    fun an_earlier_copy_is_said_to_be_an_earlier_copy_and_its_downloads_are_listed() {
+        backend.payload = "{\"items\": 12}"
+        backend.previousPayload = """{"items":[${stored("a", "Paused", extra = ""","downloadedBytes":5""")}]}"""
+        showPayload()
+
+        compose.onNodeWithText(text(Res.string.downloads_store_problem_earlier_copy)).assertIsDisplayed()
+        compose.onNodeWithText(text(DownloadPhase.Paused.message, "5 B")).assertIsDisplayed()
+    }
+
+    @Test
+    fun a_list_that_cannot_be_kept_says_that_changes_are_not_saved() {
+        backend.payload = "garbage"
+        backend.puttingAsideFails = true
+        showPayload()
+
+        compose.onNodeWithText(text(Res.string.downloads_store_problem_not_saving)).assertIsDisplayed()
+    }
+
+    @Test
+    fun the_banner_offers_the_downloads_folder_where_the_files_still_are() {
+        backend.payload = "garbage"
+        showPayload()
+
+        compose.onAllNodesWithText(text(Res.string.downloads_open_directory)).onLast().performClick()
+
+        assertEquals(1, folderOpened)
+    }
+
+    @Test
+    fun a_readable_list_has_no_banner() {
+        show(stored("a", "Paused"))
+
+        compose.onNodeWithText(text(Res.string.downloads_store_problem_title)).assertDoesNotExist()
     }
 }

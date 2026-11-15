@@ -410,6 +410,7 @@ object DownloadsRepository {
         savingIsUnsafe = false
         val payload = backend.loadPayload().orEmpty().trim()
         var decoded = if (payload.isEmpty()) null else DownloadsCodec.decode(payload)
+        val payloadUnreadable = payload.isNotEmpty() && decoded == null
         if (decoded == null && payload.isNotEmpty()) {
             // A payload that cannot be read is put aside before anything can be saved in its place,
             // and the one from before the last write is read instead when there is one. That one
@@ -422,8 +423,15 @@ object DownloadsRepository {
                 ?.takeIf { it.isNotEmpty() }
                 ?.let(DownloadsCodec::decode)
         }
+        // A payload with content that could not be read is a problem to show, whatever was read in its place.
+        val storeProblem = when {
+            !payloadUnreadable -> null
+            savingIsUnsafe -> DownloadsStoreProblem.NotSaving
+            decoded != null -> DownloadsStoreProblem.EarlierCopyShown
+            else -> DownloadsStoreProblem.StartedEmpty
+        }
         if (decoded == null) {
-            _uiState.value = DownloadsUiState()
+            _uiState.value = DownloadsUiState(storeProblem = storeProblem)
             notifyLiveStatusPlatform()
             return
         }
@@ -441,7 +449,7 @@ object DownloadsRepository {
                 localUriNormalized
             }
 
-        _uiState.value = DownloadsUiState(normalized)
+        _uiState.value = DownloadsUiState(normalized, storeProblem)
         notifyLiveStatusPlatform()
         if (shouldPersistNormalized) {
             persist()
@@ -794,9 +802,7 @@ object DownloadsRepository {
         if (items.any { it.status == DownloadStatus.Completed && previousStatuses[it.id].let { status -> status != null && status != DownloadStatus.Completed } }) {
             _hasUnseenCompleted.value = true
         }
-        _uiState.value = DownloadsUiState(
-            items = items,
-        )
+        _uiState.value = _uiState.value.copy(items = items)
         notifyLiveStatusPlatform()
     }
 
