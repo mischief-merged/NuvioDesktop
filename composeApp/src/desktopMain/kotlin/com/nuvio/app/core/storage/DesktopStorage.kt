@@ -113,6 +113,21 @@ internal object DesktopStorage {
             if (changed) persist()
         }
 
+        /** Every key the store holds. */
+        fun keys(): Set<String> = synchronized(lock) {
+            ensureLoaded()
+            properties.stringPropertyNames().toSet()
+        }
+
+        /** Flushes the saved file and its folder to disk. For the few writes that must survive a power cut. */
+        fun sync(): Boolean = synchronized(lock) {
+            ensureLoaded()
+            runCatching {
+                java.nio.channels.FileChannel.open(file, java.nio.file.StandardOpenOption.WRITE).use { it.force(true) }
+                runCatching { java.nio.channels.FileChannel.open(file.parent, java.nio.file.StandardOpenOption.READ).use { it.force(true) } }
+            }.isSuccess
+        }
+
         fun getBoolean(key: String): Boolean? =
             getString(key)?.toBooleanStrictOrNull()
 

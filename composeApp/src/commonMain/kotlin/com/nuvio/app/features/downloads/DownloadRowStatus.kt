@@ -6,6 +6,10 @@ import nuvio.composeapp.generated.resources.downloads_announce_completed
 import nuvio.composeapp.generated.resources.downloads_announce_downloading
 import nuvio.composeapp.generated.resources.downloads_announce_failed
 import nuvio.composeapp.generated.resources.downloads_announce_drive_not_connected
+import nuvio.composeapp.generated.resources.downloads_announce_moving
+import nuvio.composeapp.generated.resources.downloads_announce_folder_not_set_up
+import nuvio.composeapp.generated.resources.downloads_status_moving
+import nuvio.composeapp.generated.resources.downloads_status_folder_not_set_up
 import nuvio.composeapp.generated.resources.downloads_announce_folder_not_found
 import nuvio.composeapp.generated.resources.downloads_announce_waiting_drive
 import nuvio.composeapp.generated.resources.downloads_status_drive_not_connected
@@ -70,6 +74,12 @@ internal enum class DownloadPhase(
     /** The drive is there but the folder is not. */
     FolderNotFound(Res.string.downloads_status_folder_not_found, showsSize = false, Res.string.downloads_announce_folder_not_found),
 
+    /** The item is in the hands of a move. */
+    Moving(Res.string.downloads_status_moving, showsSize = false, Res.string.downloads_announce_moving),
+
+    /** The folder is there but is not set up as a download location. Nothing is lost. */
+    FolderNotSetUp(Res.string.downloads_status_folder_not_set_up, showsSize = false, Res.string.downloads_announce_folder_not_set_up),
+
     /** Paused because its location is away or being moved. It goes on by itself. */
     WaitingForDrive(Res.string.downloads_status_waiting_drive, showsSize = true, Res.string.downloads_announce_waiting_drive),
 }
@@ -117,12 +127,16 @@ internal fun downloadRowStatus(
     offline: Boolean = false,
     /** Whether the location the item is in can be used. An item in one that cannot is neither failed nor missing. */
     location: FolderAvailability = FolderAvailability.Available,
+    /** A move has the item. */
+    moving: Boolean = false,
 ): DownloadRowStatus {
     val isAuto = item.autoDownloadRuleKey != null
+    if (moving) return DownloadRowStatus(DownloadPhase.Moving, isAuto = isAuto)
     if (location != FolderAvailability.Available && (item.status == DownloadStatus.Completed || item.pausedByFolder)) {
         val phase = when {
             item.status != DownloadStatus.Completed -> DownloadPhase.WaitingForDrive
             location == FolderAvailability.NotConnected -> DownloadPhase.DriveNotConnected
+            location == FolderAvailability.NotSetUp -> DownloadPhase.FolderNotSetUp
             else -> DownloadPhase.FolderNotFound
         }
         return DownloadRowStatus(phase, isAuto = isAuto)

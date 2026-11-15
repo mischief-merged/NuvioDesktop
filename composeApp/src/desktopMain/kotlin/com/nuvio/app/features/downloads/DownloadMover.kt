@@ -502,7 +502,7 @@ internal class DownloadMover(
      */
     fun recover(
         recordSide: ((itemId: String, destinationId: String, destination: Path) -> RecordSide)? = null,
-        repoint: (MoveItem, Path?) -> Unit = { _, _ -> },
+        repoint: (MoveItem, String, Path?) -> Unit = { _, _, _ -> },
     ): RecoveryReport? {
         if (!Files.isRegularFile(journalFile)) return null
         val journal = runCatching { json.decodeFromString<MoveJournal>(Files.readString(journalFile)) }.getOrNull()
@@ -532,7 +532,7 @@ internal class DownloadMover(
                             item
                         }
                         side == RecordSide.AtDestination || (side == RecordSide.AtSource && allProven(item, destination)) -> {
-                            if (side == RecordSide.AtSource) repoint(item, item.mainName?.let { destination.resolve(it) })
+                            if (side == RecordSide.AtSource) repoint(item, journal.destinationId, item.mainName?.let { destination.resolve(it) })
                             val result = finishItem(item, destination)
                             if (result.second) kept++ else finished++
                             result.first.copy(record = RecordState.Updated)

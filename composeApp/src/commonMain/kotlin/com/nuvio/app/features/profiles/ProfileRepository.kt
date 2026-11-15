@@ -156,6 +156,13 @@ object ProfileRepository {
     }
 
     suspend fun switchToProfile(profileIndex: Int) {
+        // A folder move belongs to the profile that started it and works on that profile's list.
+        if (com.nuvio.app.features.downloads.DownloadFolders.controller.state.value.moving) {
+            com.nuvio.app.core.ui.NuvioToastController.show(
+                org.jetbrains.compose.resources.getString(nuvio.composeapp.generated.resources.Res.string.profile_switch_blocked_by_move),
+            )
+            return
+        }
         profileSwitchMutex.withLock {
             withContext(Dispatchers.Default) {
                 selectProfile(profileIndex)

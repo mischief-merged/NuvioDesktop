@@ -51,7 +51,12 @@ internal fun DownloadFolderSetting(
 ) {
     if (!controller.supported) return
     val folderState by controller.state.collectAsStateWithLifecycle()
-    remember { DownloadsRepository.ensureLoaded(); controller.refresh() }
+    androidx.compose.runtime.LaunchedEffect(controller) {
+        withContext(Dispatchers.Default) {
+            DownloadsRepository.ensureLoaded()
+            controller.refresh()
+        }
+    }
     val downloads by DownloadsRepository.uiState.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     var request by remember { mutableStateOf<MoveRequest?>(null) }
@@ -159,6 +164,7 @@ private fun availabilityText(availability: FolderAvailability): String? = when (
     FolderAvailability.Available -> null
     FolderAvailability.NotConnected -> stringResource(Res.string.settings_download_folder_not_connected)
     FolderAvailability.NotFound -> stringResource(Res.string.settings_download_folder_not_found)
+    FolderAvailability.NotSetUp -> stringResource(Res.string.settings_download_folder_not_set_up)
 }
 
 @Composable

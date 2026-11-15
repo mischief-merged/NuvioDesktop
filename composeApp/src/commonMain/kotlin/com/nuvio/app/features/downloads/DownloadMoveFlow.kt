@@ -110,6 +110,12 @@ private fun moveFailureText(reason: MoveFailureReason): String = stringResource(
         MoveFailureReason.CouldNotRead -> Res.string.download_folder_reason_read
         MoveFailureReason.CouldNotWrite -> Res.string.download_folder_reason_write
         MoveFailureReason.Other -> Res.string.download_folder_reason_other
+        MoveFailureReason.Symlink -> Res.string.download_folder_reason_symlink
+        MoveFailureReason.RecordChanged -> Res.string.download_folder_reason_record_changed
+        MoveFailureReason.Playing -> Res.string.download_folder_reason_playing
+        MoveFailureReason.Busy -> Res.string.download_folder_reason_busy
+        MoveFailureReason.StillWriting -> Res.string.download_folder_reason_still_writing
+        MoveFailureReason.OriginalNotRemoved -> Res.string.download_folder_reason_original
     },
 )
 
@@ -125,6 +131,10 @@ internal fun moveReportLines(report: MoveReport): List<String> {
             stringResource(Res.string.download_folder_reason_item, failure.name, moveFailureText(failure.reason))
         }.joinToString("; ")
         lines += pluralStringResource(Res.plurals.download_folder_result_failed, report.failures.size, report.failures.size, reasons)
+    }
+    if (report.originalsKept.isNotEmpty()) {
+        val why = report.originalsKept.map { it.detail ?: stringResource(Res.string.download_folder_reason_original) }.distinct().joinToString("; ")
+        lines += stringResource(Res.string.download_folder_result_kept, report.originalsKept.size, why)
     }
     if (report.cancelled) lines += stringResource(Res.string.download_folder_result_cancelled, report.notReached)
     if (report.unreachable > 0) lines += stringResource(Res.string.download_folder_result_unreachable, report.unreachable)
@@ -251,7 +261,7 @@ internal fun DownloadMoveFlow(
         is FlowStep.Problem -> ProblemDialog(current, onDismiss = onFinished)
     }
     // The location list is also what the confirmation reads from.
-    if (folderState.locations.isEmpty()) controller.refresh()
+    if (folderState.locations.isEmpty()) LaunchedEffect(Unit) { withContext(Dispatchers.Default) { controller.refresh() } }
 }
 
 @Composable
@@ -367,7 +377,9 @@ private fun ChecklistDialog(
     val selectedSet = selected.toSet()
     val total = selectedBytes(all, selectedSet)
     val destinationName = path.substringAfterLast('/').ifBlank { path }
-    val free = remember(path) { controller.freeBytesAt(path) }
+    val free by produceState<Long?>(initialValue = null, path) {
+        value = withContext(Dispatchers.Default) { controller.freeBytesAt(path) }
+    }
     val needed by produceState(initialValue = total, selectedSet) {
         value = withContext(Dispatchers.Default) { controller.bytesToCopy(selectedSet, path) }
     }

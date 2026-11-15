@@ -45,7 +45,7 @@ internal object DownloadCompanions {
             val name = entry.fileName.toString()
             if (!isCompanionName(video.fileName.toString(), name)) return@forEach
             when {
-                Files.isSymbolicLink(entry) -> links += entry
+                Files.isSymbolicLink(entry) -> links.add(entry)
                 Files.isRegularFile(entry, LinkOption.NOFOLLOW_LINKS) -> files += CompanionFile(entry, name)
                 Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS) -> collect(entry, name, files, links)
             }
@@ -58,7 +58,7 @@ internal object DownloadCompanions {
         children.sortedBy { it.fileName.toString() }.forEach { child ->
             val childName = "$relative/${child.fileName}"
             when {
-                Files.isSymbolicLink(child) -> links += child
+                Files.isSymbolicLink(child) -> links.add(child)
                 Files.isRegularFile(child, LinkOption.NOFOLLOW_LINKS) -> files += CompanionFile(child, childName)
                 Files.isDirectory(child, LinkOption.NOFOLLOW_LINKS) -> collect(child, childName, files, links)
             }

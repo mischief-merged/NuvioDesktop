@@ -50,6 +50,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.app.core.i18n.localizedByteUnit
 import com.nuvio.app.core.network.NetworkStatusRepository
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import com.nuvio.app.core.ui.NuvioScreen
 import com.nuvio.app.core.ui.NuvioScreenHeader
@@ -160,7 +162,8 @@ internal fun DownloadsScreenContent(
     var moveRequest by remember { mutableStateOf<MoveRequest?>(null) }
     var chooseLocationFor by remember { mutableStateOf<DownloadItem?>(null) }
     var permanentDeletionId by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(folders) { if (folders.supported) folders.refresh() }
+    // Looking at the volumes can take a while on a drive that is failing, so never on this thread.
+    LaunchedEffect(folders) { if (folders.supported) withContext(Dispatchers.Default) { folders.refresh() } }
     val extras = if (folders.supported) {
         RowExtras(
             folderState = folderState,
@@ -318,6 +321,7 @@ internal fun DownloadsScreenContent(
     val pendingDeletion = downloadPendingDeletionId?.let { id -> uiState.items.firstOrNull { it.id == id } }
     val deleteNotMovedText = stringResource(Res.string.downloads_delete_not_moved_toast)
     val deleteNotConnectedText = stringResource(Res.string.downloads_delete_not_connected_toast)
+    val deleteMovingText = stringResource(Res.string.downloads_delete_moving_toast)
     val permanentDeletion = permanentDeletionId?.let { id -> uiState.items.firstOrNull { it.id == id } }
     if (permanentDeletion != null) {
         NuvioStatusModal(
@@ -399,6 +403,7 @@ internal fun DownloadsScreenContent(
                             permanentDeletionId = pendingDeletion.id
                         }
                         DownloadDeleteResult.NotReachable -> NuvioToastController.show(deleteNotConnectedText)
+                        DownloadDeleteResult.Moving -> NuvioToastController.show(deleteMovingText)
                         DownloadDeleteResult.Removed, DownloadDeleteResult.Gone -> Unit
                     }
                 }
@@ -740,7 +745,8 @@ private fun DownloadRow(
     val location = extras?.folderState?.location(extras.locationIdOf(item))
     val availability = location?.availability ?: FolderAvailability.Available
     val reachable = availability == FolderAvailability.Available
-    val rowStatus = downloadRowStatus(item, clock.nowEpochMs, clock.offline, availability)
+    val isMoving = extras != null && item.id in extras.folderState.movingIds
+    val rowStatus = downloadRowStatus(item, clock.nowEpochMs, clock.offline, availability, isMoving)
     val displayTitle = item.displayTitle()
     val displaySubtitle = downloadDisplaySubtitle(
         item = item,
@@ -918,7 +924,8 @@ private fun DownloadRow(
                             Text(stringResource(Res.string.downloads_choose_location), style = MaterialTheme.typography.labelLarge)
                         }
                     }
-                    IconButton(onClick = onDelete) {
+                    // While a move has the item it cannot be deleted; the status line says why.
+                    IconButton(onClick = onDelete, enabled = !isMoving) {
                         Icon(
                             imageVector = Icons.Rounded.Delete,
                             contentDescription = deleteDescription,

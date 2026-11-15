@@ -3135,4 +3135,18 @@
     <string name="downloads_auto_status_folder_not_connected">Waiting: the drive that holds this show is not connected</string>
     <string name="downloads_auto_delete_not_connected_toast">Its drive is not connected, so it was left alone.</string>
     <string name="download_folder_saved_toast">New downloads will go to %1$s.</string>
+    <string name="profile_switch_blocked_by_move">Wait for the move to finish before switching profile.</string>
+    <string name="downloads_status_moving">Moving…</string>
+    <string name="downloads_announce_moving">Moving</string>
+    <string name="downloads_status_folder_not_set_up">This folder is not set up for downloads yet: choose it again</string>
+    <string name="downloads_announce_folder_not_set_up">This folder is not set up for downloads yet</string>
+    <string name="settings_download_folder_not_set_up">This folder is not set up for downloads yet: choose it again</string>
+    <string name="downloads_delete_moving_toast">It is being moved. Try again when that is done.</string>
+    <string name="download_folder_reason_symlink">it is a link, and links are never moved</string>
+    <string name="download_folder_reason_record_changed">it was changed or deleted while the move ran</string>
+    <string name="download_folder_reason_playing">it is playing</string>
+    <string name="download_folder_reason_busy">something else is changing it</string>
+    <string name="download_folder_reason_still_writing">its download did not stop in time</string>
+    <string name="download_folder_reason_original">the original could not be removed</string>
+    <string name="download_folder_result_kept">%1$d moved; the original could not be removed: %2$s. It is tried again at the next start.</string>
 </resources>
