@@ -3,12 +3,24 @@ package com.nuvio.app.features.downloads
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.nuvio.app.core.ui.NuvioTheme
+import com.nuvio.app.core.ui.NuvioToastController
 import kotlinx.coroutines.runBlocking
 import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.action_cancel
+import nuvio.composeapp.generated.resources.action_delete
 import nuvio.composeapp.generated.resources.action_retry
+import nuvio.composeapp.generated.resources.downloads_delete_confirm_partial
+import nuvio.composeapp.generated.resources.downloads_delete_confirm_trash
+import nuvio.composeapp.generated.resources.downloads_delete_message_held
+import nuvio.composeapp.generated.resources.downloads_delete_message_partial
+import nuvio.composeapp.generated.resources.downloads_delete_message_trash
+import nuvio.composeapp.generated.resources.downloads_delete_not_moved_toast
+import nuvio.composeapp.generated.resources.downloads_delete_title
 import nuvio.composeapp.generated.resources.downloads_choose_another_source
 import nuvio.composeapp.generated.resources.downloads_clear_failed
 import nuvio.composeapp.generated.resources.downloads_error_not_enough_space
@@ -32,6 +44,7 @@ import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /** The Downloads screen, driven by the real repository over an in-memory store. No network, no real folder, no real Trash. */
 @OptIn(ExperimentalTestApi::class)
@@ -42,6 +55,15 @@ class DownloadsScreenTest {
     internal class FakeBackend : DownloadsBackend {
         var payload: String? = null
         val started = mutableListOf<String>()
+        val trashed = mutableListOf<String>()
+        val removedOutright = mutableListOf<String?>()
+        var trashSucceeds = true
+        override var usesSystemTrash = true
+
+        override fun trashFile(localFileUri: String): Boolean {
+            if (trashSucceeds) trashed += localFileUri
+            return trashSucceeds
+        }
 
         override fun loadPayload(): String? = payload
         override fun savePayload(payload: String) {
@@ -63,7 +85,11 @@ class DownloadsScreenTest {
             }
         }
 
-        override fun removeFile(localFileUri: String?): Boolean = true
+        override fun removeFile(localFileUri: String?): Boolean {
+            removedOutright += localFileUri
+            return true
+        }
+
         override fun removePartialFile(destinationFileName: String): Boolean = true
         override fun resolveLocalFileUri(localFileUri: String?, destinationFileName: String): String? = localFileUri
     }
@@ -298,5 +324,102 @@ class DownloadsScreenTest {
         compose.waitForIdle()
         assertEquals(listOf("r"), DownloadsRepository.uiState.value.items.map { it.id })
         compose.onNodeWithText(text(Res.string.downloads_clear_failed)).assertDoesNotExist()
+    }
+
+    private fun completedEpisode(id: String, episode: Int = 3) = stored(
+        id, "Completed", episode = episode,
+        extra = ""","localFileUri":"file:/$id.mkv","downloadedBytes":100,"totalBytes":100,"verifiedBy":"Size"""",
+    )
+
+    private fun deleteTitle() = text(Res.string.downloads_delete_title, "Pantheon S02E03")
+
+    @Test
+    fun deleting_a_finished_download_names_it_and_says_it_moves_to_the_trash() {
+        show(completedEpisode("a"), withChooseSource = false)
+        openShow()
+
+        pressDelete()
+
+        compose.onNodeWithText(deleteTitle()).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_delete_message_trash)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_delete_confirm_trash)).assertIsDisplayed()
+        assertTrue(backend.trashed.isEmpty(), "nothing is deleted before the answer")
+    }
+
+    @Test
+    fun confirming_moves_the_file_to_the_trash_and_never_deletes_it_outright() {
+        show(completedEpisode("a"))
+        openShow()
+        pressDelete()
+
+        compose.onNodeWithText(text(Res.string.downloads_delete_confirm_trash)).performClick()
+
+        compose.waitForIdle()
+        assertEquals(listOf("file:/a.mkv"), backend.trashed)
+        assertTrue(backend.removedOutright.isEmpty(), "the file was deleted outright")
+        assertTrue(DownloadsRepository.uiState.value.items.isEmpty())
+    }
+
+    @Test
+    fun cancelling_keeps_the_download_and_its_file() {
+        show(completedEpisode("a"))
+        openShow()
+        pressDelete()
+
+        compose.onNodeWithText(text(Res.string.action_cancel)).performClick()
+
+        compose.waitForIdle()
+        assertTrue(backend.trashed.isEmpty())
+        assertEquals(1, DownloadsRepository.uiState.value.items.size)
+        compose.onNodeWithText(deleteTitle()).assertDoesNotExist()
+    }
+
+    @Test
+    fun without_a_system_trash_the_dialog_says_the_file_is_held_for_days() {
+        backend.usesSystemTrash = false
+        show(completedEpisode("a"))
+        openShow()
+
+        pressDelete()
+
+        compose.onNodeWithText(text(Res.string.downloads_delete_message_held)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_delete_message_trash)).assertDoesNotExist()
+    }
+
+    @Test
+    fun a_download_that_is_not_finished_says_it_removes_what_was_downloaded() {
+        show(stored("p", "Paused", extra = ""","downloadedBytes":5"""))
+
+        pressDelete()
+
+        compose.onNodeWithText(deleteTitle()).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_delete_message_partial)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_delete_confirm_partial)).performClick()
+        compose.waitForIdle()
+        assertTrue(backend.trashed.isEmpty(), "a partial file is not a thing for the Trash")
+        assertTrue(DownloadsRepository.uiState.value.items.isEmpty())
+    }
+
+    @Test
+    fun a_file_that_cannot_be_moved_stays_listed_and_the_user_is_told() {
+        backend.trashSucceeds = false
+        show(completedEpisode("a"))
+        openShow()
+        pressDelete()
+
+        compose.onNodeWithText(text(Res.string.downloads_delete_confirm_trash)).performClick()
+
+        compose.waitForIdle()
+        assertEquals(1, DownloadsRepository.uiState.value.items.size)
+        assertTrue(backend.removedOutright.isEmpty())
+        assertEquals(text(Res.string.downloads_delete_not_moved_toast), NuvioToastController.currentToast.value?.message)
+    }
+
+    private fun pressDelete() {
+        compose.onAllNodesWithContentDescription(text(Res.string.action_delete)).onFirst().performClick()
+    }
+
+    private fun openShow() {
+        compose.onNodeWithText("Pantheon").performClick()
     }
 }

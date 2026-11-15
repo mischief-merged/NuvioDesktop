@@ -368,6 +368,41 @@ object DownloadsRepository {
         persist()
     }
 
+    /**
+     * Deletes a download the user chose to delete. Its finished file goes to the trash, as it does
+     * for a download deleted after watching, and is not deleted outright; what a transfer wrote so
+     * far is removed. A file that another download also uses stays where it is. When the file cannot
+     * be moved nothing is removed: the entry stays, so that the file is not lost from view.
+     */
+    internal fun deleteDownload(downloadId: String): DownloadDeleteResult = synchronized(stateLock) {
+        ensureLoaded()
+        val items = _uiState.value.items
+        val item = items.firstOrNull { it.id == downloadId } ?: return DownloadDeleteResult.Gone
+
+        val fileUri = if (item.status == DownloadStatus.Completed) {
+            backend.resolveLocalFileUri(item.localFileUri, item.fileName)
+        } else {
+            null
+        }
+        if (fileUri != null) {
+            val usedByAnother = items.any { other ->
+                other.id != item.id &&
+                    listOfNotNull(other.localFileUri, backend.resolveLocalFileUri(other.localFileUri, other.fileName))
+                        .any { backend.isSameFile(it, fileUri) }
+            }
+            if (!usedByAnother && !backend.trashFile(fileUri)) return DownloadDeleteResult.NotMoved
+        }
+        activeTransfers.remove(downloadId)?.cancel()
+        backend.removePartialFile(item.fileName)
+
+        publish(items.filterNot { it.id == downloadId })
+        persist()
+        DownloadDeleteResult.Removed
+    }
+
+    /** Whether the files of deleted downloads go to the trash of the system, or are held for days in the downloads folder. */
+    internal val usesSystemTrash: Boolean get() = backend.usesSystemTrash
+
     private fun loadFromDisk(): Unit = synchronized(stateLock) {
         _hasUnseenCompleted.value = false
         hasLoaded = true
@@ -862,9 +897,22 @@ internal interface DownloadsBackend {
     /** Moves a file out of the downloads folder without deleting it at once. True when it is out, or was gone. */
     fun trashFile(localFileUri: String): Boolean = false
 
+    /** True when [trashFile] puts files in the trash of the system, false when it only holds them for days. */
+    val usesSystemTrash: Boolean get() = true
+
     /** Whether two addresses name the same file, however they are spelled. */
     fun isSameFile(firstFileUri: String, secondFileUri: String): Boolean =
         firstFileUri.trim().removePrefix("file:").trimStart('/') == secondFileUri.trim().removePrefix("file:").trimStart('/')
+}
+
+internal enum class DownloadDeleteResult {
+    Removed,
+
+    /** The download was already gone. */
+    Gone,
+
+    /** The file could not be moved to the trash. Nothing was removed. */
+    NotMoved,
 }
 
 internal enum class AutoDownloadRemovalResult {
@@ -913,6 +961,8 @@ private object PlatformDownloadsBackend : DownloadsBackend {
         sampleConfirmingDownloadedFrames(localFileUri, durationMs)
 
     override fun trashFile(localFileUri: String): Boolean = DownloadsTrash.moveAway(localFileUri)
+
+    override val usesSystemTrash: Boolean get() = DownloadsTrash.usesSystemTrash
 
     override fun isSameFile(firstFileUri: String, secondFileUri: String): Boolean =
         DownloadsTrash.isSameFile(firstFileUri, secondFileUri)

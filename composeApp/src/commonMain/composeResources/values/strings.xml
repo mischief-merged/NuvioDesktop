@@ -703,6 +703,13 @@
     </plurals>
     <string name="downloads_retry_all_failed">Retry all failed</string>
     <string name="downloads_clear_failed">Clear failed</string>
+    <string name="downloads_delete_title">Delete %1$s?</string>
+    <string name="downloads_delete_message_trash">It moves to the Trash. You can put it back from there.</string>
+    <string name="downloads_delete_message_held">It stays in the downloads folder for 7 days, then it is deleted for good.</string>
+    <string name="downloads_delete_message_partial">This stops the download and removes what was downloaded so far.</string>
+    <string name="downloads_delete_confirm_trash">Move to Trash</string>
+    <string name="downloads_delete_confirm_partial">Remove</string>
+    <string name="downloads_delete_not_moved_toast">Couldn't move it to the Trash. The file is still in your downloads.</string>
     <string name="episodes_cd_watched">Watched</string>
     <string name="episodes_unavailable">Unavailable</string>
     <string name="episodes_season">Season %1$d</string>

@@ -158,18 +158,35 @@ fun DownloadsScreen(
         }
     }
 
-    val pendingDeletionId = downloadPendingDeletionId
-    if (pendingDeletionId != null) {
+    val pendingDeletion = downloadPendingDeletionId?.let { id -> uiState.items.firstOrNull { it.id == id } }
+    val deleteNotMovedText = stringResource(Res.string.downloads_delete_not_moved_toast)
+    if (pendingDeletion != null) {
+        val hasFile = pendingDeletion.status == DownloadStatus.Completed
+        val usesTrash = DownloadsRepository.usesSystemTrash
         NuvioStatusModal(
-            title = stringResource(Res.string.action_delete_confirm_title),
-            message = stringResource(Res.string.action_delete_confirm_message),
+            title = stringResource(Res.string.downloads_delete_title, pendingDeletion.nameForLabels()),
+            message = stringResource(
+                when {
+                    !hasFile -> Res.string.downloads_delete_message_partial
+                    usesTrash -> Res.string.downloads_delete_message_trash
+                    else -> Res.string.downloads_delete_message_held
+                },
+            ),
             isVisible = true,
             destructive = true,
-            confirmText = stringResource(Res.string.action_yes),
-            dismissText = stringResource(Res.string.action_no),
+            confirmText = stringResource(
+                when {
+                    !hasFile -> Res.string.downloads_delete_confirm_partial
+                    usesTrash -> Res.string.downloads_delete_confirm_trash
+                    else -> Res.string.action_delete
+                },
+            ),
+            dismissText = stringResource(Res.string.action_cancel),
             onConfirm = {
-                DownloadsRepository.cancelDownload(pendingDeletionId)
                 downloadPendingDeletionId = null
+                if (DownloadsRepository.deleteDownload(pendingDeletion.id) == DownloadDeleteResult.NotMoved) {
+                    NuvioToastController.show(deleteNotMovedText)
+                }
             },
             onDismiss = { downloadPendingDeletionId = null },
         )
