@@ -3166,4 +3166,17 @@
     <string name="downloads_unit_megabytes">megabytes</string>
     <string name="downloads_unit_gigabytes">gigabytes</string>
     <string name="downloads_episode_count_size">%1$d downloaded episode(s) • %2$s</string>
+    <string name="download_folder_problem_move_in_progress">A move is in progress in another window.</string>
+    <string name="download_folder_problem_previous_move">Finish the previous move first. See Leftover copies under Storage locations in Settings.</string>
+    <string name="download_folder_reason_kept_both">a step could not be confirmed, so the copy and the original were both kept</string>
+    <string name="download_folder_reason_owned">a file of it belongs to another download</string>
+    <string name="download_folder_leftovers_title">Leftover copies</string>
+    <string name="download_folder_leftovers_note">A move that did not finish cleanly left these files in two places. Nothing is removed unless you choose it.</string>
+    <string name="download_folder_leftover_row">%1$s, %2$s. Kept at %3$s. Other copy at %4$s.</string>
+    <string name="download_folder_leftover_remove">Remove the extra copy</string>
+    <string name="download_folder_leftover_remove_description">Remove the extra copy of %1$s</string>
+    <string name="download_folder_leftover_keep">Keep both</string>
+    <string name="download_folder_leftover_keep_description">Keep both copies of %1$s</string>
+    <string name="download_folder_leftover_removed_toast">The extra copy was removed.</string>
+    <string name="download_folder_leftover_refused_toast">Nothing was removed: the copies are not the same, or the download does not point at the copy that stays.</string>
 </resources>

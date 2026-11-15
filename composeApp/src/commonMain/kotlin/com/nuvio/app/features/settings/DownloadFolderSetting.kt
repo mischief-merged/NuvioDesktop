@@ -149,6 +149,8 @@ internal fun DownloadFolderSetting(
         }
     }
 
+    LeftoverCopies(folderState.leftovers, controller, scope)
+
     request?.let { active ->
         DownloadMoveFlow(
             request = active,
@@ -226,6 +228,54 @@ private fun LocationRow(
             val awayLabel = stringResource(Res.string.settings_download_location_move_away_description, location.name)
             TextButton(onClick = onMoveAway, enabled = canMoveAway, modifier = Modifier.semantics { contentDescription = awayLabel }) {
                 Text(stringResource(Res.string.settings_download_location_move_away))
+            }
+        }
+    }
+}
+
+/** Files that a move that did not finish cleanly left in two places. Only the user's press resolves them. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LeftoverCopies(
+    leftovers: List<com.nuvio.app.features.downloads.LeftoverCopy>,
+    controller: DownloadFolderController,
+    scope: kotlinx.coroutines.CoroutineScope,
+) {
+    if (leftovers.isEmpty()) return
+    val removed = stringResource(Res.string.download_folder_leftover_removed_toast)
+    val refused = stringResource(Res.string.download_folder_leftover_refused_toast)
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            stringResource(Res.string.download_folder_leftovers_title),
+            modifier = Modifier.semantics { heading() },
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(stringResource(Res.string.download_folder_leftovers_note), style = MaterialTheme.typography.bodySmall)
+        leftovers.forEach { leftover ->
+            val row = stringResource(
+                Res.string.download_folder_leftover_row, leftover.name, formatBytes(leftover.sizeBytes), leftover.destinationPath, leftover.sourcePath,
+            )
+            Text(row, modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = row }, style = MaterialTheme.typography.bodySmall)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val removeLabel = stringResource(Res.string.download_folder_leftover_remove_description, leftover.name)
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            val outcome = withContext(Dispatchers.Default) { controller.removeExtraCopy(leftover.id) }
+                            NuvioToastController.show(if (outcome == com.nuvio.app.features.downloads.LeftoverOutcome.Removed) removed else refused)
+                        }
+                    },
+                    modifier = Modifier.semantics { contentDescription = removeLabel },
+                ) { Text(stringResource(Res.string.download_folder_leftover_remove)) }
+                val keepLabel = stringResource(Res.string.download_folder_leftover_keep_description, leftover.name)
+                TextButton(
+                    onClick = { scope.launch { withContext(Dispatchers.Default) { controller.keepBoth(leftover.id) } } },
+                    modifier = Modifier.semantics { contentDescription = keepLabel },
+                ) { Text(stringResource(Res.string.download_folder_leftover_keep)) }
             }
         }
     }

@@ -93,6 +93,8 @@ internal fun folderProblemText(problem: FolderProblem, neededBytes: Long, freeBy
     FolderProblem.InsideProgram -> stringResource(Res.string.download_folder_problem_inside_program)
     FolderProblem.IsTrash -> stringResource(Res.string.download_folder_problem_trash)
     FolderProblem.OverlapsDownloadFolder -> stringResource(Res.string.download_folder_problem_overlaps)
+    FolderProblem.MoveInProgress -> stringResource(Res.string.download_folder_problem_move_in_progress)
+    FolderProblem.PreviousMoveUnresolved -> stringResource(Res.string.download_folder_problem_previous_move)
     FolderProblem.NotEnoughSpace -> stringResource(
         Res.string.download_folder_problem_not_enough_space,
         formatBytes(neededBytes),
@@ -116,6 +118,8 @@ private fun moveFailureText(reason: MoveFailureReason): String = stringResource(
         MoveFailureReason.Busy -> Res.string.download_folder_reason_busy
         MoveFailureReason.StillWriting -> Res.string.download_folder_reason_still_writing
         MoveFailureReason.OriginalNotRemoved -> Res.string.download_folder_reason_original
+        MoveFailureReason.KeptInBothPlaces -> Res.string.download_folder_reason_kept_both
+        MoveFailureReason.OwnedByAnother -> Res.string.download_folder_reason_owned
     },
 )
 

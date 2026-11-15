@@ -3,19 +3,22 @@ package com.nuvio.app.features.downloads
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.Closeable
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
+import java.nio.channels.FileLock
+import java.nio.channels.OverlappingFileLockException
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
-import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
-import java.util.UUID
+import java.security.SecureRandom
 
 @Serializable
 internal enum class MoveKind {
@@ -25,100 +28,104 @@ internal enum class MoveKind {
     /** The partial file of a download that is not finished. */
     Partial,
 
-    /** A file that travels with a video (see [DownloadCompanions]). */
+    /** A file in the dedicated sidecar folder of the video (see [DownloadCompanions]). */
     Companion,
-
-    /** Nothing to carry: the record only changes location. */
-    RecordOnly,
 }
 
-/** How far one file got. Each step is written to the journal, and flushed, before the next one starts. */
+/** How far one file got. Each step is written to the journal before the next one starts. */
 @Serializable
 internal enum class EntryState {
     Planned,
 
-    /** The copy to its own temporary name has started. That name is this move's, and only this move's. */
-    Copying,
+    /** An empty temporary file with this move's id in its name was created, and its identity journalled. */
+    TempCreated,
 
-    /** The copy is complete and its hash of the whole file is in the journal. Not yet at its final name. */
+    /** The copy is complete and the hash of the whole file is in the journal. */
     Copied,
 
-    /** At its final name, and read back whole once: the hash matched. Only now is it this move's file. */
+    /** Written before the final name is made, so that a crash shows that a file may exist there. */
+    Publishing,
+
+    /** At the final name, read back, and the destination folder flushed. */
     Published,
 
     /** The original is gone. */
     Removed,
-}
 
-@Serializable
-internal enum class RecordState {
-    Pending,
+    /** Nothing of this move is left for this file: its temporary file is gone and nothing was made at the final name. */
+    Cleaned,
 
-    /** Written before the record is changed, so a crash after it cannot tell whether the record was. */
-    Updating,
-    Updated,
+    /** The user chose to keep both copies. */
+    Kept,
 }
 
 @Serializable
 internal data class MoveEntry(
-    /** The name in the destination, relative to its folder. */
-    val name: String,
-    /** Where the file is now. Empty for [MoveKind.RecordOnly]. */
-    val from: String,
+    val srcLocationId: String,
+    val srcRel: String,
+    val dstLocationId: String,
+    val dstRel: String,
     val kind: MoveKind,
     val size: Long = 0L,
-    /** SHA-256 of the whole file, worked out while it was copied. */
+    /** SHA-256 of the whole file, taken while it was copied. */
     val hash: String? = null,
-    /** The temporary name in the destination, unique to this move. Empty when the file is linked. */
+    /** The identity (file key) of the original when the move looked at it. */
+    val srcKey: String? = null,
     val temp: String = "",
-    /** Moved by a hard link on one volume: no bytes are copied and the file is the same one. */
+    val tempKey: String? = null,
+    /** Moved by a hard link inside one volume: no bytes are copied and both names are the same file. */
     val linked: Boolean = false,
     val state: EntryState = EntryState.Planned,
 )
 
 @Serializable
 internal data class MoveItem(
+    val profileId: Int,
     val itemId: String,
+    /** What the record said when the move was planned: the only record this move may change. */
+    val recordLocationId: String?,
+    val recordRel: String?,
     val entries: List<MoveEntry>,
-    val record: RecordState = RecordState.Pending,
-    /** Stopped before the record changed, and cleaned up. */
-    val failed: Boolean = false,
+    val recorded: Boolean = false,
 ) {
     val displayName: String
-        get() = entries.firstOrNull { it.kind != MoveKind.Companion }?.name?.removeSuffix(".part") ?: itemId
+        get() = entries.firstOrNull { it.kind != MoveKind.Companion }?.dstRel?.removeSuffix(".part") ?: itemId
 
-    val mainName: String? get() = entries.firstOrNull { it.kind == MoveKind.File || it.kind == MoveKind.Partial }?.name
+    val main: MoveEntry? get() = entries.firstOrNull { it.kind != MoveKind.Companion }
 }
 
 @Serializable
 internal data class MoveJournal(
-    val version: Int = 2,
+    val version: Int = 3,
     val txId: String,
-    val destination: String,
-    val destinationId: String,
-    val pausedIds: List<String> = emptyList(),
+    val destinationLocationId: String,
     val items: List<MoveItem>,
 )
 
 internal class MovePlan(
-    val destination: Path,
     val destinationId: String,
+    val destinationName: String,
     val items: List<MoveItem>,
-    val pausedIds: List<String> = emptyList(),
 )
 
 internal enum class RecordSide { AtDestination, AtSource, Missing }
 
+internal class RecoveryContext(
+    val profileId: Int,
+    /** The record still matches what the journal planned: same profile, same item, still at the source. */
+    val recordMatches: (MoveItem) -> Boolean,
+    val relocate: (MoveItem, java.nio.file.Path?) -> Unit,
+)
+
 internal data class RecoveryReport(
-    val finished: Int,
-    val rolledBack: Int,
-    /** Items left exactly as they were because nothing proved what this move did to them. */
-    val left: Int,
-    val pausedIds: List<String>,
-    /** Items whose record could not be told apart yet. They are settled when the list is loaded. */
-    val unresolved: List<String> = emptyList(),
-    /** Originals that could not be removed again. The journal keeps them for the next start. */
-    val originalsKept: Int = 0,
+    val tempsRemoved: Int = 0,
+    val recordsFinished: Int = 0,
+    /** Entries on a location that is away or whose marker does not match: not touched. */
+    val pending: Int = 0,
+    val unresolvedJournals: Int = 0,
+    val unreadable: Int = 0,
+    /** Another move or recovery holds the lock. Nothing was done. */
+    val busy: Boolean = false,
 )
 
 /** Thrown inside a copy when the user cancelled. */
@@ -127,50 +134,103 @@ internal class MoveCancelled : Exception()
 /** A step that ends the whole move. */
 private class StopMove(val reason: MoveFailureReason) : Exception()
 
+/** The journal could not be written. The move stops there and nothing is deleted. */
+internal class JournalFailed(cause: Throwable) : IOException(cause)
+
+/** An OS-level exclusive lock on a file, so that two windows or processes cannot move or recover at once. */
+internal class MoveLock(private val file: Path) {
+    fun tryAcquire(): Closeable? {
+        file.parent?.let { Files.createDirectories(it) }
+        val channel = FileChannel.open(file, StandardOpenOption.CREATE, StandardOpenOption.WRITE)
+        val lock: FileLock? = try {
+            channel.tryLock()
+        } catch (_: OverlappingFileLockException) {
+            null
+        } catch (_: IOException) {
+            null
+        }
+        if (lock == null) {
+            runCatching { channel.close() }
+            return null
+        }
+        return Closeable {
+            runCatching { lock.release() }
+            runCatching { channel.close() }
+        }
+    }
+}
+
 /**
- * Moves downloads to another folder. The rule it keeps: it deletes or replaces only a file it can
- * prove it made in this transaction, and deletes an original only after a copy that was hashed whole
- * has been published, read back, and the record has been saved.
- *
- * One download goes through these steps, each written to the journal (file and folder flushed)
- * before the next:
- *
- * 1. planned. Names in the destination are reserved; a name that exists, in any letter case, fails the item.
- * 2. copying to a temporary name made of this move's id. Same volume: a hard link instead, no bytes.
- * 3. copied: the hash of the whole file, taken while it was read, is in the journal.
- * 4. published: a hard link to the final name, which cannot replace a file (or a rename that does
- *    not replace, where links are not supported), then the file is read back once and its hash compared.
- * 5. record updating, the record changed and saved, record updated.
- * 6. the original is removed and its folder flushed. If it cannot be, or folders cannot be flushed
- *    here, it stays, the item counts as moved, and the journal keeps it for the next start.
- *
- * [recover] acts only on what the journal proves; anything else is left as it is.
+ * Moves downloads to another folder, keeping a duplicate before ever risking a deletion. See the design
+ * document, section 5, for the eight rules this class follows. In short: only the live move removes an
+ * original, as its last step, after a verified published copy, a successful folder flush, a durably saved
+ * record and a journal entry saying so; recovery removes only its own temporary files and finishes a
+ * record update that the journal proves; everything else is left and listed for the user.
  */
 internal class DownloadMover(
-    private val journalFile: Path,
+    private val journalDir: Path,
+    /** The folder of a location that can be used right now (marker validated), or null. */
+    private val resolve: (String) -> Path?,
     /** Called at every step that matters. Tests make it throw to simulate a crash there. */
     private val checkpoint: (String) -> Unit = {},
+    /** Writes the bytes of [from] into the existing file [to] and returns the SHA-256 of what it read. */
     private val copy: (from: Path, to: Path, onBytes: (Long) -> Unit, cancelled: () -> Boolean) -> String = ::copyFile,
     private val hashOf: (Path) -> String = ::sha256Of,
-    /** Whether a file and a folder are on one volume. */
     private val sameStore: (Path, Path) -> Boolean = ::onSameFileStore,
     /** Flushes a folder to disk. False where the platform cannot. */
     private val syncDirectory: (Path) -> Boolean = ::flushDirectory,
     private val deleteFile: (Path) -> Unit = { Files.delete(it) },
+    private val createLink: (link: Path, existing: Path) -> Unit = { link, existing -> Files.createLink(link, existing) },
+    private val fileKeyOf: (Path) -> String? = ::identityOf,
+    private val randomName: () -> String = { randomHex(8) },
+    /** Called before every journal write. Tests make it throw to see what a failed journal write leaves. */
+    private val beforeJournalWrite: (MoveJournal) -> Unit = {},
+    private val lock: MoveLock = MoveLock(journalDir.resolve("move.lock")),
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
-    fun hasJournal(): Boolean = Files.isRegularFile(journalFile)
+    private fun path(locationId: String, rel: String): Path? = resolve(locationId)?.resolve(rel)
+
+    fun journalFiles(): List<Path> = runCatching {
+        Files.list(journalDir).use { s -> s.filter { it.fileName.toString().let { n -> n.startsWith("move-") && n.endsWith(".journal") } }.sorted().toList() }
+    }.getOrDefault(emptyList())
+
+    fun hasJournals(): Boolean = journalFiles().isNotEmpty()
+
+    /** The location a journalled item is moving to. */
+    fun destinationOf(item: MoveItem): String = item.main?.dstLocationId.orEmpty()
+
+    private fun read(file: Path): MoveJournal? = runCatching { json.decodeFromString<MoveJournal>(Files.readString(file)) }.getOrNull()
+
+    private fun isSettled(item: MoveItem): Boolean =
+        item.entries.all { it.state == EntryState.Planned || it.state == EntryState.Cleaned || it.state == EntryState.Removed || it.state == EntryState.Kept } &&
+            (item.entries.isNotEmpty() || true)
+
+    /** Journals that still have something open. A new move waits for them to be resolved. */
+    fun unresolvedJournals(): List<Path> = journalFiles().filter { file ->
+        val journal = read(file) ?: return@filter false
+        !journal.items.all(::isSettled)
+    }
 
     fun run(
         plan: MovePlan,
         isCancelled: () -> Boolean,
         onProgress: (MoveProgress) -> Unit,
-        /** Asked just before the record changes: does it still exist and still point where the move found it? */
+        /** Asked just before the record changes: still the planned record, same profile, still at the source? */
         canCommit: (MoveItem) -> Boolean = { true },
-        /** The files of the item are now in the destination; [Path] is the main file (null for a record-only item). */
+        /** The files of the item are in the destination; [Path] is the main file. The record must be changed and saved durably. */
         onMoved: (MoveItem, Path?) -> Unit,
-    ): MoveReport = Transaction(plan, isCancelled, onProgress, canCommit, onMoved).run()
+    ): MoveReport {
+        val held = try {
+            lock.tryAcquire()
+        } catch (_: IOException) {
+            null
+        } ?: return MoveReport("", plan.destinationName, 0, problem = FolderProblem.MoveInProgress)
+        held.use {
+            if (unresolvedJournals().isNotEmpty()) return MoveReport("", plan.destinationName, 0, problem = FolderProblem.PreviousMoveUnresolved)
+            return Transaction(plan, isCancelled, onProgress, canCommit, onMoved).run()
+        }
+    }
 
     private inner class Transaction(
         val plan: MovePlan,
@@ -179,16 +239,22 @@ internal class DownloadMover(
         val canCommit: (MoveItem) -> Boolean,
         val onMoved: (MoveItem, Path?) -> Unit,
     ) {
-        val destination: Path = plan.destination
-        val destinationName: String = destination.fileName?.toString() ?: destination.toString()
-        val txId: String = UUID.randomUUID().toString().take(12)
+        val txId: String = randomHex(16)
+        val journalPath: Path = journalDir.resolve("move-$txId.journal")
         lateinit var journal: MoveJournal
-        var totalFiles = 0
         var totalBytes = 0L
-        var doneFiles = 0
         var doneBytes = 0L
+        var doneFiles = 0
+        val destinationRoot: Path? = resolve(plan.destinationId)
 
-        fun save() = writeJournal(journal)
+        fun save() {
+            try {
+                beforeJournalWrite(journal)
+                writeJournal(journalPath, journal, txId, create = false)
+            } catch (error: IOException) {
+                throw JournalFailed(error)
+            }
+        }
 
         fun updateItem(index: Int, change: (MoveItem) -> MoveItem) {
             journal = journal.copy(items = journal.items.mapIndexed { i, item -> if (i == index) change(item) else item })
@@ -198,78 +264,72 @@ internal class DownloadMover(
         fun updateEntry(index: Int, entry: Int, change: (MoveEntry) -> MoveEntry) =
             updateItem(index) { item -> item.copy(entries = item.entries.mapIndexed { i, e -> if (i == entry) change(e) else e }) }
 
-        fun progress(current: String?, currentBytes: Long = 0L, currentTotal: Long = 0L) = onProgress(
-            MoveProgress(destinationName, totalFiles, doneFiles, totalBytes, doneBytes + currentBytes, current, currentBytes, currentTotal, isCancelled()),
+        fun entry(index: Int, entry: Int) = journal.items[index].entries[entry]
+
+        fun progress(current: String?, bytes: Long = 0L, total: Long = 0L) = onProgress(
+            MoveProgress(plan.destinationName, journal.items.size, doneFiles, totalBytes, doneBytes + bytes, current, bytes, total, isCancelled()),
         )
 
         fun run(): MoveReport {
+            val destination = destinationRoot ?: return MoveReport("", plan.destinationName, 0, problem = FolderProblem.NotConnected)
             val failures = mutableListOf<MoveFailure>()
-            val reserved = mutableSetOf<String>()
-            var counter = 0
-            val accepted = mutableListOf<MoveItem>()
-            plan.items.forEach { item ->
-                // Two entries must never aim at one name, whatever the case, within this move.
-                val clash = item.entries.filter { it.kind != MoveKind.RecordOnly }.any { !reserved.add(it.name.lowercase()) }
-                if (clash) {
-                    failures += MoveFailure(item.displayName, MoveFailureReason.NameTaken)
-                } else {
-                    accepted += item.copy(
-                        entries = item.entries.map { e ->
-                            if (e.kind == MoveKind.RecordOnly) e else e.copy(temp = ".nuvio-$txId-${counter++}.tmp")
-                        },
-                    )
-                }
+            journal = MoveJournal(txId = txId, destinationLocationId = plan.destinationId, items = plan.items)
+            totalBytes = plan.items.sumOf { item -> item.entries.sumOf { it.size } }
+            // The journal is created whole, without replacing anything, before the first file is touched.
+            try {
+                beforeJournalWrite(journal)
+                writeJournal(journalPath, journal, txId, create = true)
+            } catch (error: IOException) {
+                return MoveReport(destination.toString(), plan.destinationName, 0, problem = FolderProblem.PreviousMoveUnresolved)
             }
-            journal = MoveJournal(txId = txId, destination = destination.toString(), destinationId = plan.destinationId, pausedIds = plan.pausedIds, items = accepted)
-            totalFiles = accepted.size
-            totalBytes = accepted.sumOf { item -> item.entries.sumOf { it.size } }
-            save()
             checkpoint("journal-written")
             var moved = 0
             var notReached = 0
             var cancelled = false
             val kept = mutableListOf<MoveFailure>()
             progress(null)
-            for (index in accepted.indices) {
+            for (index in journal.items.indices) {
                 if (isCancelled()) {
                     cancelled = true
-                    notReached = accepted.size - index
+                    notReached = journal.items.size - index
                     break
                 }
                 val item = journal.items[index]
                 progress(item.displayName, 0L, item.entries.sumOf { it.size })
                 try {
-                    val result = processItem(index)
-                    if (result == null) {
-                        moved++
-                        kept += keptOriginals(index)
-                    } else {
-                        failures += MoveFailure(item.displayName, result)
-                    }
+                    val outcome = processItem(index)
+                    if (outcome.moved) moved++
+                    outcome.reason?.let { failures += MoveFailure(item.displayName, it) }
+                    kept += outcome.originalsKept
+                } catch (failure: ItemFailure) {
+                    cleanTemps(index)
+                    failures += MoveFailure(item.displayName, failure.reason)
                 } catch (_: MoveCancelled) {
                     cleanTemps(index)
-                    updateItem(index) { it.copy(failed = true) }
                     cancelled = true
-                    notReached = accepted.size - index
+                    notReached = journal.items.size - index
                     break
                 } catch (stop: StopMove) {
                     cleanTemps(index)
-                    updateItem(index) { it.copy(failed = true) }
                     failures += MoveFailure(item.displayName, stop.reason)
-                    notReached = accepted.size - index - 1
+                    notReached = journal.items.size - index - 1
+                    break
+                } catch (_: JournalFailed) {
+                    // The journal cannot be written: stop here. Nothing is deleted; what exists is left and listed.
+                    failures += MoveFailure(item.displayName, MoveFailureReason.KeptInBothPlaces)
+                    notReached = journal.items.size - index - 1
                     break
                 }
                 doneBytes += item.entries.sumOf { it.size }
                 doneFiles++
                 progress(null)
             }
-            if (journal.items.all(::isSettled)) {
-                Files.deleteIfExists(journalFile)
-                syncDirectory(journalFile.parent ?: journalFile)
+            runCatching {
+                if (journal.items.all(::isSettled)) deleteJournal(journalPath)
             }
             return MoveReport(
                 destinationPath = destination.toString(),
-                destinationName = destinationName,
+                destinationName = plan.destinationName,
                 moved = moved,
                 failures = failures,
                 cancelled = cancelled,
@@ -278,210 +338,223 @@ internal class DownloadMover(
             )
         }
 
-        private fun keptOriginals(index: Int): List<MoveFailure> {
-            val item = journal.items[index]
-            return item.entries.filter { it.kind != MoveKind.RecordOnly && it.state != EntryState.Removed }
-                .map { MoveFailure(it.name, MoveFailureReason.OriginalNotRemoved, lastRemovalError[it.from]) }
+        private fun deleteJournal(path: Path) {
+            Files.deleteIfExists(path)
+            syncDirectory(path.parent ?: path)
         }
 
-        private val lastRemovalError = mutableMapOf<String, String?>()
+        private inner class Outcome(val moved: Boolean, val reason: MoveFailureReason? = null, val originalsKept: List<MoveFailure> = emptyList())
 
-        /** Null when moved. Otherwise why not, with everything this move made removed again. */
-        private fun processItem(index: Int): MoveFailureReason? {
+        private fun fail(reason: MoveFailureReason) = Outcome(false, reason)
+
+        private fun processItem(index: Int): Outcome {
+            val destination = destinationRoot ?: return fail(MoveFailureReason.CouldNotWrite)
             val item = journal.items[index]
-            val files = item.entries.withIndex().filter { it.value.kind != MoveKind.RecordOnly }
             // Look before touching anything.
-            for ((_, e) in files) {
-                val source = Paths.get(e.from)
-                if (Files.isSymbolicLink(source)) return MoveFailureReason.Symlink
-                if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) return MoveFailureReason.CouldNotRead
-                if (existsIgnoringCase(destination.resolve(e.name))) return MoveFailureReason.NameTaken
+            for (entry in item.entries) {
+                val source = path(entry.srcLocationId, entry.srcRel) ?: return fail(MoveFailureReason.CouldNotRead)
+                if (Files.isSymbolicLink(source)) return fail(MoveFailureReason.Symlink)
+                if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) return fail(MoveFailureReason.CouldNotRead)
+                if (existsIgnoringCase(destination.resolve(entry.dstRel))) return fail(MoveFailureReason.NameTaken)
             }
-            val published = mutableListOf<Int>()
-            var durable = true
+            if (item.entries.isNotEmpty()) {
+                val sourceRoot = item.entries.first().let { path(it.srcLocationId, it.srcRel) }!!
+                val linked = item.entries.all { sameStore(path(it.srcLocationId, it.srcRel)!!, destination) } && canLink(sourceRoot, destination)
+                updateItem(index) { it.copy(entries = it.entries.map { e -> e.copy(srcKey = fileKeyOf(path(e.srcLocationId, e.srcRel)!!), linked = linked) }) }
+                if (!linked) item.entries.indices.forEach { copyOne(index, it) }
+                for (ei in item.entries.indices) publishOne(index, ei)?.let { return it }
+            }
+            if (!canCommit(journal.items[index])) return fail(MoveFailureReason.RecordChanged)
             try {
-                if (files.isNotEmpty()) {
-                    val linked = files.all { (_, e) -> sameStore(Paths.get(e.from), destination) } && canLink(Paths.get(files.first().value.from))
-                    if (linked) {
-                        updateItem(index) { it.copy(entries = it.entries.map { e -> if (e.kind == MoveKind.RecordOnly) e else e.copy(linked = true, temp = "") }) }
-                    }
-                    if (!linked) {
-                        for ((ei, e) in files) copyOne(index, ei, e)
-                    }
-                    for ((ei, _) in files) {
-                        val entry = journal.items[index].entries[ei]
-                        publishOne(index, ei, entry)?.let { reason ->
-                            rollback(index, published)
-                            return reason
-                        }
-                        durable = durable && syncDirectory(destination.resolve(entry.name).parent ?: destination)
-                        updateEntry(index, ei) { it.copy(state = EntryState.Published) }
-                        published += ei
-                        checkpoint("published")
-                        val temp = journal.items[index].entries[ei].temp
-                        if (temp.isNotEmpty()) Files.deleteIfExists(destination.resolve(temp))
-                    }
-                }
-                if (!canCommit(journal.items[index])) {
-                    rollback(index, published)
-                    return MoveFailureReason.RecordChanged
-                }
-                updateItem(index) { it.copy(record = RecordState.Updating) }
-                checkpoint("record-updating")
-                onMoved(journal.items[index], item.mainName?.let { destination.resolve(it) })
-                checkpoint("record-updated")
-                updateItem(index) { it.copy(record = RecordState.Updated) }
-            } catch (error: MoveCancelled) {
-                rollback(index, published)
-                throw error
-            } catch (error: StopMove) {
-                rollback(index, published)
-                throw error
-            } catch (failure: ItemFailure) {
-                rollback(index, published)
-                return failure.reason
+                onMoved(journal.items[index], journal.items[index].main?.let { destination.resolve(it.dstRel) })
             } catch (error: IOException) {
-                rollback(index, published)
-                return if (error.message.orEmpty().contains("space", ignoreCase = true)) throw StopMove(MoveFailureReason.NoSpace) else MoveFailureReason.CouldNotWrite
+                return fail(MoveFailureReason.CouldNotWrite)
             }
-            removeOriginals(index, durable)
-            return null
+            checkpoint("record-saved")
+            val recorded = try {
+                updateItem(index) { it.copy(recorded = true) }
+                true
+            } catch (_: JournalFailed) {
+                false
+            }
+            if (!recorded) {
+                // The record points at the new place and the journal does not know. Nothing is deleted.
+                return Outcome(true, null, journal.items[index].entries.map { MoveFailure(it.dstRel, MoveFailureReason.KeptInBothPlaces) })
+            }
+            checkpoint("recorded")
+            return Outcome(true, null, removeOriginals(index))
         }
 
-        private fun copyOne(index: Int, ei: Int, e: MoveEntry) {
-            val source = Paths.get(e.from)
-            val temp = destination.resolve(e.temp)
-            updateEntry(index, ei) { it.copy(state = EntryState.Copying) }
-            checkpoint("copying")
+        private fun copyOne(index: Int, ei: Int) {
+            val destination = destinationRoot!!
+            val e = entry(index, ei)
+            val source = path(e.srcLocationId, e.srcRel)!!
+            // An empty temporary file, created without replacing anything, with this move's id in its name.
+            var tempName: String? = null
+            var temp: Path? = null
+            repeat(5) {
+                if (tempName == null) {
+                    val candidate = ".nuvio-$txId-${randomName()}.tmp"
+                    try {
+                        Files.newByteChannel(destination.resolve(candidate), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).close()
+                        tempName = candidate
+                        temp = destination.resolve(candidate)
+                    } catch (_: FileAlreadyExistsException) {
+                        // Someone else's file has that name: it is left alone and another is chosen.
+                    }
+                }
+            }
+            val created = temp ?: throw StopMove(MoveFailureReason.CouldNotWrite)
+            val key = fileKeyOf(created)
+            try {
+                updateEntry(index, ei) { it.copy(state = EntryState.TempCreated, temp = tempName!!, tempKey = key) }
+            } catch (failed: JournalFailed) {
+                removeTemp(created, key)
+                throw failed
+            }
+            checkpoint("temp-created")
             val before = Files.size(source) to Files.getLastModifiedTime(source)
             val hash = try {
-                copy(source, temp, { bytes -> progress(journal.items[index].displayName, bytes, before.first) }, isCancelled)
+                copy(source, created, { bytes -> progress(journal.items[index].displayName, bytes, before.first) }, isCancelled)
             } catch (error: IOException) {
-                Files.deleteIfExists(temp)
+                removeTemp(created, key)
                 if (error.message.orEmpty().contains("space", ignoreCase = true)) throw StopMove(MoveFailureReason.NoSpace)
-                throw error
+                throw ItemFailure(MoveFailureReason.CouldNotWrite)
+            } catch (cancel: MoveCancelled) {
+                removeTemp(created, key)
+                throw cancel
             }
             checkpoint("copied")
-            if (Files.size(source) != before.first || Files.getLastModifiedTime(source) != before.second) {
-                Files.deleteIfExists(temp)
+            if (Files.size(source) != before.first || Files.getLastModifiedTime(source) != before.second || fileKeyOf(source) != e.srcKey) {
+                removeTemp(created, key)
                 throw ItemFailure(MoveFailureReason.ChangedWhileCopying)
             }
-            if (Files.size(temp) != before.first) {
-                Files.deleteIfExists(temp)
+            if (Files.size(created) != before.first) {
+                removeTemp(created, key)
                 throw ItemFailure(MoveFailureReason.CopyDidNotMatch)
             }
             updateEntry(index, ei) { it.copy(state = EntryState.Copied, hash = hash, size = before.first) }
             checkpoint("copy-recorded")
         }
 
-        /** Null when the file is now at its final name and has been read back; otherwise the reason it is not. */
-        private fun publishOne(index: Int, ei: Int, e: MoveEntry): MoveFailureReason? {
-            val source = Paths.get(e.from)
-            val target = destination.resolve(e.name)
+        private fun publishOne(index: Int, ei: Int): Outcome? {
+            val destination = destinationRoot!!
+            val e = entry(index, ei)
+            val source = path(e.srcLocationId, e.srcRel)!!
+            val target = destination.resolve(e.dstRel)
             val temp = if (e.temp.isEmpty()) null else destination.resolve(e.temp)
+            updateEntry(index, ei) { it.copy(state = EntryState.Publishing) }
             target.parent?.let { Files.createDirectories(it) }
-            var moved = false
+            var createdAtFinal = false
             try {
-                Files.createLink(target, temp ?: source)
+                createLink(target, temp ?: source)
+                createdAtFinal = true
             } catch (_: FileAlreadyExistsException) {
-                return MoveFailureReason.NameTaken
-            } catch (error: IOException) {
-                // The volume has no hard links. The temporary file is renamed instead, and a rename that
-                // would replace a file is refused.
-                if (temp == null) return MoveFailureReason.CouldNotWrite
+                cleanEntry(index, ei)
+                return fail(MoveFailureReason.NameTaken)
+            } catch (_: IOException) {
+                createdAtFinal = false
+            } catch (_: UnsupportedOperationException) {
+                createdAtFinal = false
+            }
+            if (!createdAtFinal) {
+                // No hard links here. The final name is created without replacing, and the bytes are copied into it.
+                if (e.linked) return fail(MoveFailureReason.CouldNotWrite).also { cleanEntry(index, ei) }
                 try {
-                    Files.move(temp, target)
-                    moved = true
+                    Files.newByteChannel(target, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).close()
                 } catch (_: FileAlreadyExistsException) {
-                    return MoveFailureReason.NameTaken
+                    cleanEntry(index, ei)
+                    return fail(MoveFailureReason.NameTaken)
                 }
-            } catch (error: UnsupportedOperationException) {
-                if (temp == null) return MoveFailureReason.CouldNotWrite
                 try {
-                    Files.move(temp, target)
-                    moved = true
-                } catch (_: FileAlreadyExistsException) {
-                    return MoveFailureReason.NameTaken
+                    copy(source, target, { }, isCancelled)
+                } catch (error: IOException) {
+                    // Something is at the final name now, made by this move. It is kept and listed, never deleted.
+                    removeTempOf(index, ei)
+                    return fail(MoveFailureReason.KeptInBothPlaces)
                 }
             }
             checkpoint("linked")
-            if (temp != null) {
-                // Read back once, whole, before anything of the original is touched.
-                val expected = journal.items[index].entries[ei].hash
-                if (hashOf(target) != expected || Files.size(target) != journal.items[index].entries[ei].size) {
-                    runCatching { Files.delete(target) }
-                    if (!moved) runCatching { Files.deleteIfExists(temp) }
-                    return MoveFailureReason.CopyDidNotMatch
-                }
+            val verified = if (e.linked) {
+                runCatching { Files.isSameFile(source, target) }.getOrDefault(false)
+            } else {
+                runCatching { Files.size(target) == e.size && hashOf(target) == e.hash }.getOrDefault(false)
             }
+            removeTempOf(index, ei)
+            if (!verified) return fail(MoveFailureReason.CopyDidNotMatch)
+            // The destination folder must be known to be on disk before anything else depends on it.
+            if (!syncDirectory(target.parent ?: destination)) return fail(MoveFailureReason.KeptInBothPlaces)
+            updateEntry(index, ei) { it.copy(state = EntryState.Published) }
+            checkpoint("published")
             return null
         }
 
-        /** Removes what this move made, and nothing else, and marks the item failed. */
-        private fun rollback(index: Int, published: List<Int>) {
-            val item = journal.items[index]
-            published.forEach { ei ->
-                val e = item.entries[ei]
-                val target = destination.resolve(e.name)
-                // Ours: the move published it and read it back. The original is still there.
-                if (Files.isRegularFile(Paths.get(e.from), LinkOption.NOFOLLOW_LINKS)) runCatching { Files.deleteIfExists(target) }
-            }
-            cleanTemps(index)
-            updateItem(index) { it.copy(failed = true) }
+        /** Removes this entry's temporary file (ours, by identity) and, when nothing was made at the final name, marks it cleaned. */
+        private fun cleanEntry(index: Int, ei: Int) {
+            removeTempOf(index, ei)
+            runCatching { updateEntry(index, ei) { it.copy(state = EntryState.Cleaned) } }
+        }
+
+        private fun removeTempOf(index: Int, ei: Int) {
+            val e = entry(index, ei)
+            if (e.temp.isEmpty()) return
+            removeTemp(destinationRoot!!.resolve(e.temp), e.tempKey)
         }
 
         private fun cleanTemps(index: Int) {
-            journal.items[index].entries.filter { it.temp.isNotEmpty() }.forEach { runCatching { Files.deleteIfExists(destination.resolve(it.temp)) } }
+            journal.items[index].entries.indices.forEach { ei ->
+                val e = entry(index, ei)
+                if (e.state == EntryState.TempCreated || e.state == EntryState.Copied) cleanEntry(index, ei) else removeTempOf(index, ei)
+            }
         }
 
-        private fun removeOriginals(index: Int, durable: Boolean) {
-            var canRemove = durable
+        private fun removeOriginals(index: Int): List<MoveFailure> {
+            val kept = mutableListOf<MoveFailure>()
             val item = journal.items[index]
             item.entries.forEachIndexed { ei, e ->
-                if (e.kind == MoveKind.RecordOnly) return@forEachIndexed
-                if (!canRemove) return@forEachIndexed
-                val source = Paths.get(e.from)
+                val source = path(e.srcLocationId, e.srcRel)
+                if (source == null || !Files.exists(source, LinkOption.NOFOLLOW_LINKS)) return@forEachIndexed
+                // Only the file that was copied: if another one stands there now, it is not ours to delete.
+                if (e.srcKey == null || fileKeyOf(source) != e.srcKey) {
+                    kept += MoveFailure(e.dstRel, MoveFailureReason.OriginalNotRemoved, "the original is not the file that was copied")
+                    return@forEachIndexed
+                }
                 try {
                     deleteFile(source)
-                    if (!syncDirectory(source.parent ?: source)) canRemove = false
-                    updateEntry(index, ei) { it.copy(state = EntryState.Removed) }
+                    syncDirectory(source.parent ?: source)
+                    runCatching { updateEntry(index, ei) { it.copy(state = EntryState.Removed) } }
                 } catch (error: IOException) {
-                    lastRemovalError[e.from] = error.message ?: error.javaClass.simpleName
+                    kept += MoveFailure(e.dstRel, MoveFailureReason.OriginalNotRemoved, error.message ?: error.javaClass.simpleName)
                 } catch (error: SecurityException) {
-                    lastRemovalError[e.from] = error.message ?: "not allowed"
+                    kept += MoveFailure(e.dstRel, MoveFailureReason.OriginalNotRemoved, error.message ?: "not allowed")
                 }
             }
-            // Sidecar folders that are now empty go too; one that still holds something stays.
-            val base = item.entries.firstOrNull { it.kind != MoveKind.RecordOnly }?.let { Paths.get(it.from).parent }
-            item.entries.filter { it.kind != MoveKind.RecordOnly }
-                .flatMap { generateSequence(Paths.get(it.from).parent) { dir -> dir.parent }.takeWhile { dir -> base != null && dir != base && dir.startsWith(base) }.toList() }
-                .distinct().sortedByDescending { it.nameCount }
-                .forEach { folder -> runCatching { Files.delete(folder) } }
+            // Folders left empty by the removal go; one that still holds something stays.
+            item.main?.let { main ->
+                val base = path(main.srcLocationId, main.srcRel)?.parent
+                item.entries.mapNotNull { path(it.srcLocationId, it.srcRel) }
+                    .flatMap { generateSequence(it.parent) { dir -> dir.parent }.takeWhile { dir -> base != null && dir != base && dir.startsWith(base) }.toList() }
+                    .distinct().sortedByDescending { it.nameCount }
+                    .forEach { folder -> runCatching { Files.delete(folder) } }
+            }
             checkpoint("original-removed")
+            return kept
         }
 
-        private fun canLink(source: Path): Boolean {
-            val probe = destination.resolve(".nuvio-$txId-probe")
+        private fun canLink(source: Path, destination: Path): Boolean {
+            val probe = destination.resolve(".nuvio-$txId-probe-${randomName()}")
             return try {
-                Files.createLink(probe, source)
+                createLink(probe, source)
+                runCatching { Files.deleteIfExists(probe) }
                 true
             } catch (_: Exception) {
+                // Created by nobody (the link failed) or already someone's: nothing to remove.
                 false
-            } finally {
-                runCatching { Files.deleteIfExists(probe) }
             }
         }
     }
 
     private class ItemFailure(val reason: MoveFailureReason) : IOException()
-
-    /** An item is settled when nothing of it is left for a recovery to do. */
-    private fun isSettled(item: MoveItem): Boolean = when {
-        item.failed -> true
-        item.record == RecordState.Pending -> item.entries.all { it.state == EntryState.Planned && !it.linked }
-        item.record == RecordState.Updated -> item.entries.all { it.kind == MoveKind.RecordOnly || it.state == EntryState.Removed }
-        else -> false
-    }
 
     private fun existsIgnoringCase(path: Path): Boolean {
         if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return true
@@ -491,160 +564,218 @@ internal class DownloadMover(
         return Files.list(parent).use { stream -> stream.anyMatch { it.fileName.toString().equals(name, ignoreCase = true) } }
     }
 
-    /**
-     * Settles a move that was cut short, by what the journal proves. A temporary file with this move's
-     * own name may go. A file at a final name is this move's only if the journal says it was published
-     * and it matches the journal (same file as the original for a link, same hash for a copy); anything
-     * else there is left alone. An original is removed only beside such a file.
-     *
-     * An item whose journal says "record updating" cannot be told from before or after the record
-     * changed. [recordSide] says where the record is now; without it such items are left for later.
-     * When the record is still at the original, [repoint] points it to the published file, from the
-     * journal and not from a search, and the move is finished.
-     */
-    fun recover(
-        recordSide: ((itemId: String, destinationId: String, destination: Path) -> RecordSide)? = null,
-        repoint: (MoveItem, String, Path?) -> Unit = { _, _, _ -> },
-    ): RecoveryReport? {
-        if (!Files.isRegularFile(journalFile)) return null
-        val journal = runCatching { json.decodeFromString<MoveJournal>(Files.readString(journalFile)) }.getOrNull()
-        if (journal == null) {
-            runCatching { Files.move(journalFile, journalFile.resolveSibling(journalFile.fileName.toString() + ".unreadable"), StandardCopyOption.REPLACE_EXISTING) }
-            return null
+    /** Removes a temporary file this move created, if it is still that file. */
+    private fun removeTemp(temp: Path, key: String?) {
+        if (key == null) return
+        runCatching {
+            if (Files.isRegularFile(temp, LinkOption.NOFOLLOW_LINKS) && fileKeyOf(temp) == key) Files.delete(temp)
         }
-        val destination = Paths.get(journal.destination)
-        var finished = 0
-        var rolledBack = 0
-        var left = 0
-        var kept = 0
-        val unresolved = mutableListOf<String>()
-        val items = journal.items.map { item ->
-            if (isSettled(item)) return@map item
-            when (item.record) {
-                RecordState.Pending -> {
-                    val result = rollBackItem(item, destination)
-                    if (result.second) left++ else rolledBack++
-                    result.first
+    }
+
+    /**
+     * After a crash. It removes temporary files this transaction created (the journal names them, the
+     * transaction's id is in the name, and the identity recorded at creation still matches), and finishes
+     * a record update that the journal proves. It never deletes an original or a file at a final name.
+     * A location that is away, or whose marker does not match, is not touched; its entries stay pending.
+     */
+    fun recover(context: RecoveryContext?): RecoveryReport {
+        val held = try {
+            lock.tryAcquire()
+        } catch (_: IOException) {
+            null
+        } ?: return RecoveryReport(busy = true)
+        held.use {
+            var temps = 0
+            var finished = 0
+            var pending = 0
+            var unresolved = 0
+            var unreadable = 0
+            journalFiles().forEach { file ->
+                val journal = read(file)
+                if (journal == null) {
+                    unreadable++
+                    runCatching { Files.move(file, file.resolveSibling(file.fileName.toString() + ".unreadable"), StandardCopyOption.REPLACE_EXISTING) }
+                    return@forEach
                 }
-                RecordState.Updating -> {
-                    val side = recordSide?.invoke(item.itemId, journal.destinationId, destination)
-                    when {
-                        side == null -> {
-                            unresolved += item.itemId
-                            item
+                val destinationRoot = resolve(journal.destinationLocationId)
+                var items = journal.items.map { item ->
+                    var entries = item.entries.map { e ->
+                        if (e.temp.isEmpty() || destinationRoot == null) {
+                            if (e.temp.isNotEmpty()) pending++
+                            return@map e
                         }
-                        side == RecordSide.AtDestination || (side == RecordSide.AtSource && allProven(item, destination)) -> {
-                            if (side == RecordSide.AtSource) repoint(item, journal.destinationId, item.mainName?.let { destination.resolve(it) })
-                            val result = finishItem(item, destination)
-                            if (result.second) kept++ else finished++
-                            result.first.copy(record = RecordState.Updated)
+                        val temp = destinationRoot.resolve(e.temp)
+                        if (!e.temp.contains(journal.txId)) return@map e
+                        val there = Files.isRegularFile(temp, LinkOption.NOFOLLOW_LINKS)
+                        if (there && e.tempKey != null && identityOf(temp) == e.tempKey) {
+                            runCatching { Files.delete(temp) }.onSuccess { temps++ }
                         }
-                        else -> {
-                            left++
-                            item
+                        if (!Files.exists(temp, LinkOption.NOFOLLOW_LINKS) && (e.state == EntryState.TempCreated || e.state == EntryState.Copied)) {
+                            e.copy(state = EntryState.Cleaned)
+                        } else {
+                            e
                         }
                     }
+                    var current = item.copy(entries = entries)
+                    if (context != null && destinationRoot != null && !current.recorded && current.entries.isNotEmpty() &&
+                        context.profileId == current.profileId && current.entries.all { it.state == EntryState.Published } &&
+                        provenPublished(current, destinationRoot) && context.recordMatches(current)
+                    ) {
+                        val done = runCatching { context.relocate(current, current.main?.let { destinationRoot.resolve(it.dstRel) }) }.isSuccess
+                        if (done) {
+                            current = current.copy(recorded = true)
+                            finished++
+                        }
+                    }
+                    current
                 }
-                RecordState.Updated -> {
-                    val result = finishItem(item, destination)
-                    if (result.second) kept++ else finished++
-                    result.first
+                val updated = journal.copy(items = items)
+                if (updated != journal) runCatching { writeJournal(file, updated, journal.txId, create = false) }
+                if (updated.items.all(::isSettled)) {
+                    runCatching { Files.deleteIfExists(file); syncDirectory(file.parent ?: file) }
+                } else {
+                    unresolved++
                 }
             }
+            return RecoveryReport(temps, finished, pending, unresolved, unreadable)
         }
-        val updated = journal.copy(items = items)
-        if (updated.items.all(::isSettled)) {
-            Files.deleteIfExists(journalFile)
-            syncDirectory(journalFile.parent ?: journalFile)
+    }
+
+    /** The journal proves the destination is this move's: published, same file as the original or the same hash. */
+    private fun provenPublished(item: MoveItem, destinationRoot: Path): Boolean = item.entries.all { e ->
+        val target = destinationRoot.resolve(e.dstRel)
+        if (!Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) return@all false
+        if (e.linked) {
+            val source = path(e.srcLocationId, e.srcRel) ?: return@all false
+            runCatching { Files.isSameFile(source, target) }.getOrDefault(false)
         } else {
-            writeJournal(updated)
+            runCatching { Files.size(target) == e.size && hashOf(target) == e.hash }.getOrDefault(false)
         }
-        return RecoveryReport(finished, rolledBack, left, journal.pausedIds, unresolved, kept)
     }
 
-    /** Whether the file of [entry] is at its final name and the journal proves it is this move's. */
-    private fun provenOurs(entry: MoveEntry, destination: Path): Boolean {
-        if (entry.state != EntryState.Published && entry.state != EntryState.Removed) return false
-        val target = destination.resolve(entry.name)
-        if (!Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) return false
-        val source = Paths.get(entry.from)
-        if (entry.linked) {
-            return !Files.exists(source, LinkOption.NOFOLLOW_LINKS) || runCatching { Files.isSameFile(source, target) }.getOrDefault(false)
-        }
-        return runCatching { Files.size(target) == entry.size && hashOf(target) == entry.hash }.getOrDefault(false)
-    }
-
-    private fun allProven(item: MoveItem, destination: Path): Boolean =
-        item.entries.filter { it.kind != MoveKind.RecordOnly }.all { provenOurs(it, destination) }
-
-    /** Rolls back an item whose record was never changed. Second value: something was left because it was not proven ours. */
-    private fun rollBackItem(item: MoveItem, destination: Path): Pair<MoveItem, Boolean> {
-        var left = false
-        item.entries.filter { it.kind != MoveKind.RecordOnly }.forEach { entry ->
-            val source = Paths.get(entry.from)
-            val target = destination.resolve(entry.name)
-            val temp = if (entry.temp.isEmpty()) null else destination.resolve(entry.temp)
-            val sourceThere = Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)
-            val targetThere = Files.exists(target, LinkOption.NOFOLLOW_LINKS)
-            val ours = targetThere && sourceThere && when {
-                entry.state == EntryState.Published && !entry.linked ->
-                    runCatching { Files.size(target) == entry.size && hashOf(target) == entry.hash }.getOrDefault(false)
-                // Linked to the original, or linked to this move's temporary file: the same file, so it is ours.
-                entry.linked -> runCatching { Files.isSameFile(source, target) }.getOrDefault(false)
-                temp != null && Files.exists(temp) -> runCatching { Files.isSameFile(temp, target) }.getOrDefault(false)
-                else -> false
+    /** Files that exist in two places, or at a final name this move may have made, with the original still there. */
+    fun leftovers(): List<LeftoverCopy> = journalFiles().flatMap { file ->
+        val journal = read(file) ?: return@flatMap emptyList()
+        journal.items.flatMapIndexed { ii, item ->
+            item.entries.mapIndexedNotNull { ei, e ->
+                if (e.state != EntryState.Publishing && e.state != EntryState.Published) return@mapIndexedNotNull null
+                val source = path(e.srcLocationId, e.srcRel) ?: return@mapIndexedNotNull null
+                val target = path(e.dstLocationId, e.dstRel) ?: return@mapIndexedNotNull null
+                if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS) || !Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) return@mapIndexedNotNull null
+                LeftoverCopy("${journal.txId}:$ii:$ei", e.dstRel.removeSuffix(".part"), runCatching { Files.size(target) }.getOrDefault(0L), source.toString(), target.toString())
             }
-            if (ours) runCatching { Files.delete(target) } else if (targetThere && entry.state != EntryState.Planned) left = true
-            if (targetThere && !ours && entry.state == EntryState.Planned) left = true
-            if (temp != null) runCatching { Files.deleteIfExists(temp) }
         }
-        return item.copy(failed = true) to left
     }
 
-    /** Removes the originals of an item whose record is at the published files. Second value: some could not be removed. */
-    private fun finishItem(item: MoveItem, destination: Path): Pair<MoveItem, Boolean> {
-        var keptSome = false
-        val entries = item.entries.map { entry ->
-            if (entry.kind == MoveKind.RecordOnly || entry.state == EntryState.Removed) return@map entry
-            val source = Paths.get(entry.from)
-            if (!provenOurs(entry, destination)) {
-                keptSome = true
-                return@map entry
+    private fun findEntry(id: String): Triple<Path, MoveJournal, Pair<Int, Int>>? {
+        val parts = id.split(':')
+        if (parts.size != 3) return null
+        val file = journalFiles().firstOrNull { it.fileName.toString() == "move-${parts[0]}.journal" } ?: return null
+        val journal = read(file) ?: return null
+        val ii = parts[1].toIntOrNull() ?: return null
+        val ei = parts[2].toIntOrNull() ?: return null
+        if (journal.items.getOrNull(ii)?.entries?.getOrNull(ei) == null) return null
+        return Triple(file, journal, ii to ei)
+    }
+
+    private fun settleEntry(file: Path, journal: MoveJournal, at: Pair<Int, Int>, state: EntryState) {
+        val updated = journal.copy(items = journal.items.mapIndexed { i, item ->
+            if (i != at.first) item else item.copy(entries = item.entries.mapIndexed { j, e -> if (j == at.second) e.copy(state = state) else e })
+        })
+        if (updated.items.all(::isSettled)) {
+            runCatching { Files.deleteIfExists(file); syncDirectory(file.parent ?: file) }
+        } else {
+            runCatching { writeJournal(file, updated, journal.txId, create = false) }
+        }
+    }
+
+    fun keepBoth(id: String) {
+        val (file, journal, at) = findEntry(id) ?: return
+        val held = lock.tryAcquire() ?: return
+        held.use { settleEntry(file, journal, at, EntryState.Kept) }
+    }
+
+    /**
+     * Removes the extra copy of a leftover, if and only if the two copies are the same content (or the
+     * same file), the record belongs to the active profile and points at the copy that is kept. All of it
+     * is checked again immediately before the deletion.
+     */
+    fun removeExtraCopy(id: String, activeProfileId: Int, recordSide: (MoveItem) -> RecordSide): LeftoverOutcome {
+        val (file, journal, at) = findEntry(id) ?: return LeftoverOutcome.Refused
+        val held = lock.tryAcquire() ?: return LeftoverOutcome.Refused
+        held.use {
+            val item = journal.items[at.first]
+            val e = item.entries[at.second]
+            if (item.profileId != activeProfileId) return LeftoverOutcome.Refused
+            val source = path(e.srcLocationId, e.srcRel) ?: return LeftoverOutcome.Refused
+            val target = path(e.dstLocationId, e.dstRel) ?: return LeftoverOutcome.Refused
+            if (Files.isSymbolicLink(source) || Files.isSymbolicLink(target)) return LeftoverOutcome.Refused
+            if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS) || !Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) return LeftoverOutcome.Refused
+            val extra = when (recordSide(item)) {
+                RecordSide.AtSource -> target
+                RecordSide.AtDestination -> source
+                RecordSide.Missing -> return LeftoverOutcome.Refused
             }
-            try {
-                if (Files.exists(source, LinkOption.NOFOLLOW_LINKS)) deleteFile(source)
-                syncDirectory(source.parent ?: source)
-                entry.copy(state = EntryState.Removed)
+            val same = runCatching {
+                if (e.linked || Files.isSameFile(source, target)) Files.isSameFile(source, target) else hashOf(source) == hashOf(target)
+            }.getOrDefault(false)
+            if (!same) return LeftoverOutcome.Refused
+            // The record again, immediately before the deletion.
+            val again = when (recordSide(item)) {
+                RecordSide.AtSource -> target
+                RecordSide.AtDestination -> source
+                RecordSide.Missing -> return LeftoverOutcome.Refused
+            }
+            if (again != extra) return LeftoverOutcome.Refused
+            return try {
+                deleteFile(extra)
+                syncDirectory(extra.parent ?: extra)
+                settleEntry(file, journal, at, EntryState.Removed)
+                LeftoverOutcome.Removed
             } catch (_: IOException) {
-                keptSome = true
-                entry
+                LeftoverOutcome.Refused
             }
         }
-        return item.copy(entries = entries) to keptSome
     }
 
-    private fun writeJournal(journal: MoveJournal) {
-        journalFile.parent?.let { Files.createDirectories(it) }
-        val temporary = journalFile.resolveSibling(journalFile.fileName.toString() + ".tmp")
-        FileChannel.open(temporary, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING).use { channel ->
+    private fun writeJournal(file: Path, journal: MoveJournal, txId: String, create: Boolean) {
+        journalDir.let { Files.createDirectories(it) }
+        val temporary = journalDir.resolve("move-$txId.${randomHex(8)}.tmp")
+        FileChannel.open(temporary, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { channel ->
             channel.write(ByteBuffer.wrap(json.encodeToString(journal).toByteArray(Charsets.UTF_8)))
             channel.force(true)
         }
         try {
-            Files.move(temporary, journalFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-        } catch (_: AtomicMoveNotSupportedException) {
-            Files.move(temporary, journalFile, StandardCopyOption.REPLACE_EXISTING)
+            if (create) {
+                // A journal is never overwritten: a name that exists fails the move before it starts.
+                Files.move(temporary, file)
+            } else {
+                try {
+                    Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                } catch (_: AtomicMoveNotSupportedException) {
+                    Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING)
+                }
+            }
+        } catch (error: IOException) {
+            runCatching { Files.deleteIfExists(temporary) }
+            throw error
         }
-        syncDirectory(journalFile.parent ?: journalFile)
+        if (!syncDirectory(journalDir)) {
+            // Folders cannot be flushed here: the journal is as durable as the platform allows.
+        }
     }
 
     companion object {
-        /** Copies [from] to a new file [to] (never replacing one), flushes it, and returns the SHA-256 of the bytes read. */
+        private val random = SecureRandom()
+
+        fun randomHex(bytes: Int): String = ByteArray(bytes).also(random::nextBytes).joinToString("") { "%02x".format(it) }
+
+        /** Writes [from] into the existing file [to], flushes it, and returns the SHA-256 of the bytes read. */
         fun copyFile(from: Path, to: Path, onBytes: (Long) -> Unit, cancelled: () -> Boolean): String {
             val digest = MessageDigest.getInstance("SHA-256")
             var written = 0L
             Files.newInputStream(from).use { input ->
-                FileChannel.open(to, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { output ->
+                FileChannel.open(to, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING).use { output ->
                     val buffer = ByteArray(1024 * 1024)
                     while (true) {
                         if (cancelled()) throw MoveCancelled()
@@ -681,6 +812,12 @@ internal class DownloadMover(
         } catch (_: Exception) {
             false
         }
+
+        /** The identity of a file: its file key where the platform has one, otherwise its size and time. */
+        fun identityOf(path: Path): String? = runCatching {
+            val attributes = Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+            attributes.fileKey()?.toString() ?: "${attributes.size()}:${attributes.creationTime().toMillis()}"
+        }.getOrNull()
     }
 }
 

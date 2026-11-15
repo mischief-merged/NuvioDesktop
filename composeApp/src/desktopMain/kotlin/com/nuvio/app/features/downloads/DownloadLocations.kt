@@ -334,15 +334,25 @@ internal class DownloadFolderValidator(
     }
 
     private fun canWrite(directory: Path): Boolean {
-        val probe = directory.resolve(".nuvio-write-test-${System.nanoTime()}")
-        return try {
-            Files.write(probe, ByteArray(16) { it.toByte() })
-            true
-        } catch (_: Exception) {
-            false
-        } finally {
-            runCatching { Files.deleteIfExists(probe) }
+        // A probe with a random name, created without replacing anything. If the name is taken it is left alone.
+        repeat(5) {
+            val probe = directory.resolve(".nuvio-write-test-${DownloadMover.randomHex(8)}")
+            val created = try {
+                Files.newByteChannel(probe, java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE).use {
+                    it.write(java.nio.ByteBuffer.wrap(ByteArray(16) { b -> b.toByte() }))
+                }
+                true
+            } catch (_: java.nio.file.FileAlreadyExistsException) {
+                return@repeat
+            } catch (_: Exception) {
+                return false
+            }
+            if (created) {
+                runCatching { Files.deleteIfExists(probe) }
+                return true
+            }
         }
+        return false
     }
 
     private fun inside(path: Path, parent: Path): Boolean = path.startsWith(parent)

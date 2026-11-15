@@ -96,7 +96,7 @@ internal class DownloadStorageUsage(
             val own = if (item.status == DownloadStatus.Completed) video else item.fileName + ".part"
             var total = sizeOf(listing[own])
             if (item.status == DownloadStatus.Completed) {
-                listing.forEach { (name, path) -> if (DownloadCompanions.isCompanionName(video, name)) total += sizeOf(path) }
+                total += sizeOf(listing[DownloadCompanions.sidecarFolderName(video)])
             }
             item.id to total
         }

@@ -362,17 +362,20 @@ object DownloadsRepository {
     fun clearFailed(): Int = synchronized(stateLock) {
         ensureLoaded()
         // A failed download on a location that is away is left alone: its partial file cannot be cleaned up now.
-        val failed = _uiState.value.items.filter {
-            it.status == DownloadStatus.Failed && backend.isConnected(it) && !ItemLocks.isHeld(it.id)
-        }
+        val failed = _uiState.value.items.filter { it.status == DownloadStatus.Failed && backend.isConnected(it) }
+            .filter { ItemLocks.tryAcquire(it.id) }
         if (failed.isEmpty()) return 0
-        failed.forEach { item ->
-            activeTransfers.remove(item.id)?.cancel()
-            backend.removePartialOf(item)
+        try {
+            failed.forEach { item ->
+                activeTransfers.remove(item.id)?.cancel()
+                backend.removePartialOf(item)
+            }
+            val ids = failed.mapTo(mutableSetOf()) { it.id }
+            publish(_uiState.value.items.filterNot { it.id in ids })
+            persist()
+        } finally {
+            failed.forEach { ItemLocks.release(it.id) }
         }
-        val ids = failed.mapTo(mutableSetOf()) { it.id }
-        publish(_uiState.value.items.filterNot { it.id in ids })
-        persist()
         failed.size
     }
 
@@ -390,14 +393,17 @@ object DownloadsRepository {
         ensureLoaded()
         val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return
         // On a location that is away, or while a move has the item, nothing is cancelled or removed.
-        if (!backend.isConnected(item) || ItemLocks.isHeld(downloadId)) return
+        if (!backend.isConnected(item) || !ItemLocks.tryAcquire(downloadId)) return
+        try {
+            activeTransfers.remove(downloadId)?.cancel()
+            backend.removeFile(playableLocalFileUri(item) ?: item.localFileUri)
+            backend.removePartialOf(item)
 
-        activeTransfers.remove(downloadId)?.cancel()
-        backend.removeFile(playableLocalFileUri(item) ?: item.localFileUri)
-        backend.removePartialOf(item)
-
-        publish(_uiState.value.items.filterNot { it.id == downloadId })
-        persist()
+            publish(_uiState.value.items.filterNot { it.id == downloadId })
+            persist()
+        } finally {
+            ItemLocks.release(downloadId)
+        }
     }
 
     /**
@@ -675,11 +681,15 @@ object DownloadsRepository {
         val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return false
         if (item.status != DownloadStatus.Completed) return false
         // A move has the item: its file is in the middle of changing places, which is not a file that is lost.
-        if (ItemLocks.isHeld(downloadId)) return true
-        val checked = item.withoutLostFile()
-        if (checked.status == DownloadStatus.Completed) return true
-        mutateItem(downloadId) { checked }
-        false
+        if (!ItemLocks.tryAcquire(downloadId)) return true
+        try {
+            val checked = item.withoutLostFile()
+            if (checked.status == DownloadStatus.Completed) return true
+            mutateItem(downloadId) { checked }
+            return false
+        } finally {
+            ItemLocks.release(downloadId)
+        }
     }
 
     /** This finished download, or the failed download it has become because its file is lost. */

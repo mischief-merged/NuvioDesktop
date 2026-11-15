@@ -37,6 +37,12 @@ internal enum class FolderProblem {
     IsTrash,
     OverlapsDownloadFolder,
     NotEnoughSpace,
+
+    /** Another move, in this window or another, holds the lock. */
+    MoveInProgress,
+
+    /** An earlier move left something unresolved. */
+    PreviousMoveUnresolved,
 }
 
 internal sealed interface FolderCheck {
@@ -82,6 +88,8 @@ internal data class DownloadFolderState(
     val totalFreeBytes: Long? = null,
     /** False until the first measurement of what is on disk has finished. */
     val usageMeasured: Boolean = false,
+    /** Files that exist in two places after an interrupted or imperfect move. Only the user resolves them. */
+    val leftovers: List<LeftoverCopy> = emptyList(),
 ) {
     /** What downloads take on disk in the locations that can be reached. */
     val totalUsedBytes: Long
@@ -124,9 +132,24 @@ internal enum class MoveFailureReason {
     /** Its download did not stop in time, so its size could not be trusted. */
     StillWriting,
 
-    /** Moved, but the original could not be removed. It stays, and removal is tried again at the next start. */
+    /** Moved, but the original could not be removed. It stays, and a leftover copy is listed. */
     OriginalNotRemoved,
+
+    /** A barrier failed: the copy is where it is, the original stays, and the leftover is listed. */
+    KeptInBothPlaces,
+
+    /** A file of this download belongs to another record. */
+    OwnedByAnother,
 }
+
+/** A file that exists in two places, or is untracked, after a move that did not finish cleanly. */
+internal data class LeftoverCopy(
+    val id: String,
+    val name: String,
+    val sizeBytes: Long,
+    val sourcePath: String,
+    val destinationPath: String,
+)
 
 internal data class MoveFailure(val name: String, val reason: MoveFailureReason, val detail: String? = null)
 
@@ -217,6 +240,53 @@ internal interface DownloadFolderController {
 
     /** Removes the partial file of [item] from its own location only. Null where locations are not handled. */
     fun removePartialOf(item: DownloadItem): Boolean? = null
+
+    /** Removes the extra copy of a leftover after checking it is equal and the record points at the other. Null text means done. */
+    fun removeExtraCopy(leftoverId: String): LeftoverOutcome = LeftoverOutcome.Refused
+    fun keepBoth(leftoverId: String) = Unit
+}
+
+internal enum class LeftoverOutcome {
+    Removed,
+
+    /** The two copies are not the same, or the record does not point at the one being kept, or it is not this profile. */
+    Refused,
+}
+
+/**
+ * The exclusive right to write the files of one download. A transfer takes it when it starts and gives
+ * it back only after it closed its file; pause and cancel only ask it to stop. A move takes it for the
+ * whole of its transaction. Nobody else can have it meanwhile.
+ */
+internal object WriterTokens {
+    enum class Kind { Writer, Mover }
+
+    private val lock = kotlinx.atomicfu.locks.SynchronizedObject()
+    private val owners = mutableMapOf<String, Kind>()
+
+    fun tryAcquire(id: String, kind: Kind): Boolean =
+        kotlinx.atomicfu.locks.synchronized(lock) { if (id in owners) false else { owners[id] = kind; true } }
+
+    fun release(id: String) {
+        kotlinx.atomicfu.locks.synchronized(lock) { owners.remove(id) }
+    }
+
+    fun kindOf(id: String): Kind? = kotlinx.atomicfu.locks.synchronized(lock) { owners[id] }
+
+    /**
+     * Waits up to [timeoutMs] for the token. A writer that is still exiting after a pause is waited for;
+     * a move holding it is not (false at once), the download then waits to be resumed.
+     */
+    suspend fun acquire(id: String, kind: Kind, timeoutMs: Long): Boolean {
+        var waited = 0L
+        while (true) {
+            if (tryAcquire(id, kind)) return true
+            if (kindOf(id) == Kind.Mover && kind == Kind.Writer) return false
+            if (waited >= timeoutMs) return false
+            kotlinx.coroutines.delay(10)
+            waited += 10
+        }
+    }
 }
 
 /**

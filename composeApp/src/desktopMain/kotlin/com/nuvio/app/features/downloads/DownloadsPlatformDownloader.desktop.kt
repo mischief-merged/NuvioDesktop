@@ -75,19 +75,8 @@ internal actual object DownloadsPlatformDownloader {
      * An item whose file or partial file is in another location than its record says, after a move
      * that was cut short, follows the file.
      */
-    actual fun restoreItem(item: DownloadItem): DownloadItem {
-        val folders = DesktopDownloads.folders
-        if (item.status == DownloadStatus.Completed) return item
-        val owner = folders.locations.locationOfRecord(item.locationId, item.localFileUri)
-        val partialName = "${item.fileName}.part"
-        if (Files.isRegularFile(owner.path.resolve(partialName))) return item
-        val elsewhere = folders.locations.all().firstOrNull { location ->
-            location.id != owner.id &&
-                folders.locations.availability(location) == FolderAvailability.Available &&
-                Files.isRegularFile(location.path.resolve(partialName))
-        } ?: return item
-        return item.copy(locationId = elsewhere.id)
-    }
+    /** A file is found only where its record says. Nothing is adopted from another location by name. */
+    actual fun restoreItem(item: DownloadItem): DownloadItem = item
 
     actual fun start(
         request: DownloadPlatformRequest,
@@ -108,6 +97,12 @@ internal actual object DownloadsPlatformDownloader {
                 onPaused()
                 return@launch
             }
+            // One writer per download. One that was paused may still be closing its file: it is waited for.
+            if (!WriterTokens.acquire(request.item.id, WriterTokens.Kind.Writer, WriterWaitMs)) {
+                onPaused()
+                return@launch
+            }
+            try {
             val location = folders.locations.locationOfRecord(request.item.locationId, null)
             val downloadsDir = File(location.path.also { if (location.id == DownloadLocations.AppId) it.createDirectories() }.toUri())
             val destination = File(downloadsDir, request.destinationFileName)
@@ -162,6 +157,10 @@ internal actual object DownloadsPlatformDownloader {
                     return@launch
                 }
             }
+            } finally {
+                // Only now, with the file closed, can anything else write or move it.
+                WriterTokens.release(request.item.id)
+            }
         }
 
         return handle
@@ -174,11 +173,9 @@ internal actual object DownloadsPlatformDownloader {
     }
 
     actual fun removePartialFile(destinationFileName: String): Boolean {
-        val folders = DesktopDownloads.folders
-        return folders.locations.all()
-            .filter { folders.locations.availability(it) == FolderAvailability.Available }
-            .map { File(it.path.toFile(), "$destinationFileName.part") }
-            .all { tempFile -> !tempFile.exists() || runCatching { tempFile.delete() }.getOrDefault(false) }
+        // Without a record to say where, only the app's own folder: never a file of that name elsewhere.
+        val tempFile = File(appDownloadsDir, "$destinationFileName.part")
+        return !tempFile.exists() || runCatching { tempFile.delete() }.getOrDefault(false)
     }
 
     actual fun resolveLocalFileUri(localFileUri: String?, destinationFileName: String): String? {
@@ -437,6 +434,9 @@ private class DesktopDownloadsTaskHandle(
         return runBlocking { withTimeoutOrNull(timeoutMs) { job.children.toList().forEach { it.join() } } } != null
     }
 }
+
+/** How long a new transfer waits for a writer that was paused and is still closing its file. */
+internal const val WriterWaitMs = 30_000L
 
 /** The bytes read from the connection at a time. */
 internal const val ReadBufferBytes = 256 * 1024
