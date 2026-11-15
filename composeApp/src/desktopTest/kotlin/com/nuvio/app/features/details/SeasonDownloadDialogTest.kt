@@ -3,7 +3,14 @@ package com.nuvio.app.features.details
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotSelected
+import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isDialog
@@ -29,6 +36,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.action_cancel
+import nuvio.composeapp.generated.resources.downloads_choices_just_this_time
+import nuvio.composeapp.generated.resources.downloads_choices_saved_note
 import nuvio.composeapp.generated.resources.downloads_season_audio_language_any
 import nuvio.composeapp.generated.resources.downloads_season_bitrate_no_limit
 import nuvio.composeapp.generated.resources.downloads_season_bitrate_value
@@ -133,6 +142,34 @@ class SeasonDownloadDialogTest {
         assertEquals("dialog-test", request.parentMetaId)
         assertEquals(1, request.seasonNumber)
         assertEquals(listOf(1 to 45, 2 to 50), request.episodes.map { it.episodeNumber to it.runtimeMinutes })
+    }
+
+    @Test
+    fun the_dialog_says_the_choices_are_saved_and_where_they_are_used() {
+        showButton()
+        openDialog()
+
+        compose.onNodeWithText(text(Res.string.downloads_choices_saved_note)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_choices_just_this_time)).assertIsDisplayed()
+        compose.onNode(hasContentDescription(text(Res.string.downloads_choices_just_this_time)))
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Checkbox))
+            .assertIsNotSelected()
+    }
+
+    @Test
+    fun just_this_time_starts_the_season_with_the_choices_and_keeps_the_saved_ones() {
+        SeasonDownloadDefaultsRepository.save(profile, saved)
+        showButton()
+        openDialog()
+
+        compose.onNodeWithText(bitrate(10)).performClick()
+        compose.onNodeWithText(bitrate(25)).performClick()
+        compose.onNodeWithText(text(Res.string.downloads_choices_just_this_time)).performClick()
+        compose.onNode(hasContentDescription(text(Res.string.downloads_choices_just_this_time))).assertIsSelected()
+        confirmButton().performClick()
+
+        assertEquals(saved, SeasonDownloadDefaultsRepository.load(profile))
+        assertEquals(25, requests.single().maxBitrateMbps)
     }
 
     @Test

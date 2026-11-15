@@ -2153,6 +2153,9 @@
     <string name="downloads_season_stop">Stop (%1$d/%2$d)</string>
     <string name="downloads_season_dialog_title">Download %1$s</string>
     <string name="downloads_season_dialog_message">Adds every released episode. Episodes you already have are skipped.</string>
+    <string name="downloads_choices_saved_note">These choices are saved. They are used for all your downloads and when Play picks the best match. Change them any time in Settings, under Playback, Quality and language preferences.</string>
+    <string name="downloads_choices_just_this_time">Just this time</string>
+    <string name="downloads_choices_just_this_time_description">Use these choices for this download only. Don't change my saved ones.</string>
     <string name="downloads_season_quality_heading">Quality</string>
     <string name="downloads_season_start">Download</string>
     <string name="downloads_season_quality_any">Best available</string>

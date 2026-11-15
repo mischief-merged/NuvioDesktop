@@ -32,6 +32,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import com.nuvio.app.core.build.AppFeaturePolicy
 import com.nuvio.app.core.ui.DialogButton
 import com.nuvio.app.core.ui.DialogButtonStyle
@@ -257,6 +259,7 @@ internal fun DownloadChoicesDialog(
             onPick = { picker = it },
         )
         content()
+        SavedChoicesNote(choices)
         DialogButtons {
             DialogButton(
                 text = stringResource(Res.string.action_cancel),
@@ -281,6 +284,37 @@ internal fun DownloadChoicesDialog(
         onAudioLanguageChange = { choices.audioLanguage = it },
         onDismiss = { picker = null },
     )
+}
+
+/**
+ * Says that the choices above are saved, where they apply and where to change them, and offers
+ * "Just this time" so that a one-off download leaves the saved choices alone.
+ */
+@Composable
+private fun SavedChoicesNote(choices: SeasonDownloadChoices) {
+    val tokens = MaterialTheme.nuvio
+    Column(
+        modifier = Modifier.padding(top = NuvioTokens.Space.s8),
+        verticalArrangement = Arrangement.spacedBy(tokens.spacing.controlGap),
+    ) {
+        Text(
+            text = stringResource(Res.string.downloads_choices_saved_note),
+            style = MaterialTheme.typography.bodySmall,
+            color = tokens.colors.textMuted,
+        )
+        val label = stringResource(Res.string.downloads_choices_just_this_time)
+        DialogOption(
+            text = label,
+            description = stringResource(Res.string.downloads_choices_just_this_time_description),
+            selected = choices.justThisTime,
+            role = Role.Checkbox,
+            modifier = Modifier.semantics {
+                contentDescription = label
+                toggleableState = ToggleableState(choices.justThisTime)
+            },
+            onClick = { choices.justThisTime = !choices.justThisTime },
+        )
+    }
 }
 
 /** The three download preferences. Each one has a row and, once picked, a picker. */
