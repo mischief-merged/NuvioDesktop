@@ -2738,6 +2738,9 @@
     <string name="settings_preferences_play_other">Play is currently set to %1$s in Stream auto-play. Choosing an option here replaces that setting.</string>
     <string name="settings_preferences_open_stream_auto_play">Open Stream auto-play settings</string>
     <string name="settings_preferences_section_storage">AUTOMATIC DOWNLOADS</string>
+    <string name="settings_preferences_setup_title">Set your preferences</string>
+    <string name="settings_preferences_setup_message">Choose the quality and language you usually want. They are used for downloads and, if you pick the best match below, to choose the source when you press Play. You can change them any time in Settings, under Playback, Quality and language preferences.</string>
+    <string name="settings_preferences_setup_skip">Not now</string>
     <string name="settings_appearance_description">Themes, app icon, and language</string>
     <string name="settings_appearance_title">Appearance</string>
     <string name="subtitle_appearance">Appearance</string>

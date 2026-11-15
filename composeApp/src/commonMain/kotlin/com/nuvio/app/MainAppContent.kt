@@ -153,6 +153,7 @@ import com.nuvio.app.features.settings.AddonsSettingsScreen
 import com.nuvio.app.features.settings.ContinueWatchingSettingsScreen
 import com.nuvio.app.features.settings.HomescreenSettingsScreen
 import com.nuvio.app.features.settings.LicensesAttributionsSettingsScreen
+import com.nuvio.app.features.settings.PreferenceSetupHost
 import com.nuvio.app.features.settings.MetaScreenSettingsScreen
 import com.nuvio.app.features.settings.PluginsSettingsScreen
 import com.nuvio.app.features.settings.SupportersContributorsSettingsScreen
@@ -2176,6 +2177,24 @@ internal fun MainAppContent(
                     .align(Alignment.BottomCenter)
                     .zIndex(15f),
             )
+
+            if (ownsAppRuntime) {
+                // Once per profile, at rest on the main tabs: not before the first home screen,
+                // during a profile switch, over a source list or the player, while a link is being
+                // opened, or while the resume prompt is up. The profile picker and sign-in are
+                // outside this content.
+                val pendingDeepLink by AppDeepLinkRepository.pendingDeepLink.collectAsStateWithLifecycle()
+                PreferenceSetupHost(
+                    profileId = activePlaybackProfileId,
+                    canInterrupt = initialHomeReady &&
+                        !profileSwitchLoading &&
+                        currentRoute is TabsRoute &&
+                        pendingDeepLink == null &&
+                        resumePromptItem == null,
+                    playMode = playerSettingsUiState.streamAutoPlayMode,
+                    onPlayModeChange = PlayerSettingsRepository::setStreamAutoPlayMode,
+                )
+            }
 
             NuvioToastHost(
                 modifier = Modifier

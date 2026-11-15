@@ -40,6 +40,10 @@ internal object SeasonDownloadDefaultsRepository {
             .getOrDefault(SeasonDownloadDefaults())
     }
 
+    /** True when [profileId] has saved choices of its own, however it saved them. */
+    fun hasSaved(profileId: Int): Boolean =
+        !SeasonDownloadDefaultsStorage.loadPayload(profileId).isNullOrBlank()
+
     fun save(profileId: Int, defaults: SeasonDownloadDefaults) {
         SeasonDownloadDefaultsStorage.savePayload(profileId, json.encodeToString(defaults.normalized()))
     }
