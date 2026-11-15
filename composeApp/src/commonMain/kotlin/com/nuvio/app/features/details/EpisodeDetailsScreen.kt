@@ -265,20 +265,25 @@ private fun EpisodePageHeader(
                 )
                 TrailSeparator()
                 val currentLabel = stringResource(Res.string.episode_page_trail_current, episodeLabel)
-                Text(
-                    text = episodeLabel,
+                // Centred in the same minimum height as the links, so every part sits on one line.
+                Box(
                     modifier = Modifier
                         .heightIn(min = 40.dp)
-                        .padding(horizontal = 6.dp)
-                        .semantics {
+                        .padding(horizontal = 6.dp),
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    Text(
+                        text = episodeLabel,
+                        modifier = Modifier.semantics {
                             heading()
                             contentDescription = currentLabel
                         },
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.nuvio.colors.textPrimary,
-                    maxLines = 1,
-                )
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.nuvio.colors.textPrimary,
+                        maxLines = 1,
+                    )
+                }
             }
         }
     }
