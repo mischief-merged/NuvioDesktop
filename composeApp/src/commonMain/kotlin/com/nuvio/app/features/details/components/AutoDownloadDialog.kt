@@ -35,7 +35,6 @@ import com.nuvio.app.core.ui.DialogButtons
 import com.nuvio.app.core.ui.DialogOption
 import com.nuvio.app.core.ui.DialogSurface
 import com.nuvio.app.core.ui.NuvioSectionLabel
-import com.nuvio.app.core.ui.NuvioToastController
 import com.nuvio.app.core.ui.NuvioTokens
 import com.nuvio.app.core.ui.nuvio
 import com.nuvio.app.features.details.MetaDetails
@@ -67,8 +66,6 @@ internal fun AutoDownloadDialog(
     var keepCount by remember { mutableStateOf(rule?.keepCount ?: AutoDownloadRule.DefaultKeepCount) }
     var scope by remember { mutableStateOf(rule?.scope ?: AutoDownloadScope.NextUnwatched) }
     var deleteAfterWatching by remember { mutableStateOf(rule?.deleteAfterWatching ?: false) }
-    val turnedOnText = stringResource(Res.string.downloads_auto_toast_on)
-    val turnedOffText = stringResource(Res.string.downloads_auto_toast_off)
 
     DialogSurface(
         onDismissRequest = onDismiss,
@@ -187,7 +184,6 @@ internal fun AutoDownloadDialog(
                     onClick = {
                         onDismiss()
                         controller.turnOff(profileId, rule.key)
-                        NuvioToastController.show(turnedOffText)
                     },
                 )
             }
@@ -201,7 +197,6 @@ internal fun AutoDownloadDialog(
                 onClick = {
                     onDismiss()
                     controller.save(profileId, meta, keepCount, scope, deleteAfterWatching)
-                    if (rule == null) NuvioToastController.show(turnedOnText)
                 },
             )
         }

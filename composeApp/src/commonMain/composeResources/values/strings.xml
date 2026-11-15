@@ -2237,6 +2237,9 @@
     <string name="downloads_auto_turn_off">Turn off</string>
     <string name="downloads_auto_toast_on">Auto-download on for this show</string>
     <string name="downloads_auto_toast_off">Auto-download off for this show</string>
+    <string name="downloads_auto_toast_save_failed">Couldn't save auto-download for this show. Try again.</string>
+    <string name="downloads_auto_toast_off_failed">Couldn't turn off auto-download for this show. Try again.</string>
+    <string name="downloads_auto_toast_limit_failed">Couldn't change the storage limit. Try again.</string>
     <string name="downloads_auto_section_title">Auto-download</string>
     <string name="downloads_auto_check_now">Check now</string>
     <string name="downloads_auto_checking_toast">Checking for new episodes</string>

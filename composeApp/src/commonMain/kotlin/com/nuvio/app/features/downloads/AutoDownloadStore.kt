@@ -199,12 +199,13 @@ internal class AutoDownloadStore(
     private fun save(profileId: Int, changed: StoredAutoDownloads) {
         val updated = changed.normalized()
         if (updated == state) return
+        // Written first: when that fails, nothing in memory has changed, so what is shown is what is stored.
+        payloads.save(profileId, json.encodeToString(updated))
         state = updated
         _rules.value = updated.rules
         _storageLimitGb.value = updated.storageLimitGb
         _removals.value = updated.removals
         _recentlyDeleted.value = updated.recentlyDeleted
-        payloads.save(profileId, json.encodeToString(updated))
     }
 
     private fun ensureLoaded(): Int {

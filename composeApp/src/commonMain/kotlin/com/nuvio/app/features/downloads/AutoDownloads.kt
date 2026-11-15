@@ -32,6 +32,11 @@ import nuvio.composeapp.generated.resources.downloads_auto_delete_failed_toast
 import nuvio.composeapp.generated.resources.downloads_auto_delete_playing_toast
 import nuvio.composeapp.generated.resources.downloads_auto_deleted_toast
 import nuvio.composeapp.generated.resources.downloads_auto_keep
+import nuvio.composeapp.generated.resources.downloads_auto_toast_limit_failed
+import nuvio.composeapp.generated.resources.downloads_auto_toast_off
+import nuvio.composeapp.generated.resources.downloads_auto_toast_off_failed
+import nuvio.composeapp.generated.resources.downloads_auto_toast_on
+import nuvio.composeapp.generated.resources.downloads_auto_toast_save_failed
 import nuvio.composeapp.generated.resources.downloads_auto_scheduled_toast
 import nuvio.composeapp.generated.resources.downloads_auto_scheduled_toast_soon
 import org.jetbrains.compose.resources.getPluralString
@@ -73,7 +78,8 @@ internal interface AutoDownloadController {
 
     /**
      * Turns automatic downloads on for [meta], or changes its rule, and checks the show. Nothing
-     * happens when [profileId] is no longer the active profile.
+     * is saved when [profileId] is no longer the active profile. The controller says "on" or that
+     * saving failed once it knows; the caller says nothing.
      */
     fun save(profileId: Int, meta: MetaDetails, keepCount: Int, scope: AutoDownloadScope, deleteAfterWatching: Boolean)
 
@@ -242,23 +248,36 @@ internal object AutoDownloads : AutoDownloadController {
             deleteAfterWatching = deleteAfterWatching,
         )
         this.scope.launch {
-            val saved = runCatching { store.upsert(profileId, rule) }.getOrDefault(false)
-            if (saved) checkSafely(rule.key, ignoreWaiting = true)
+            // What is said is what happened: "on" only once the rule is saved, an error when it is not.
+            val result = saveAutoDownloadRule(store, profileId, rule)
+            when (result) {
+                AutoDownloadSaveResult.TurnedOn -> NuvioToastController.show(getString(Res.string.downloads_auto_toast_on))
+                AutoDownloadSaveResult.Changed -> Unit
+                AutoDownloadSaveResult.NotSaved -> NuvioToastController.show(getString(Res.string.downloads_auto_toast_save_failed))
+            }
+            if (result != AutoDownloadSaveResult.NotSaved) checkSafely(rule.key, ignoreWaiting = true)
         }
     }
 
     override fun turnOff(profileId: Int, ruleKey: String) {
         scope.launch {
-            val removed = runCatching { store.remove(profileId, ruleKey) }.getOrDefault(false)
-            if (removed) engine.forget(ruleKey)
+            if (removeAutoDownloadRule(store, profileId, ruleKey)) {
+                engine.forget(ruleKey)
+                NuvioToastController.show(getString(Res.string.downloads_auto_toast_off))
+            } else {
+                NuvioToastController.show(getString(Res.string.downloads_auto_toast_off_failed))
+            }
         }
     }
 
     /** A higher limit may make room for what the old one held back, so the rules are checked. */
     override fun setStorageLimit(profileId: Int, limitGb: Int?) {
         scope.launch {
-            val saved = runCatching { store.setStorageLimit(profileId, limitGb) }.getOrDefault(false)
-            if (saved) checkSafely()
+            if (changeAutoDownloadStorageLimit(store, profileId, limitGb)) {
+                checkSafely()
+            } else {
+                NuvioToastController.show(getString(Res.string.downloads_auto_toast_limit_failed))
+            }
         }
     }
 
