@@ -22,7 +22,7 @@
 
 > **NuvioRoid is a fork of [NuvioMedia/NuvioDesktop](https://github.com/NuvioMedia/NuvioDesktop).** It adds offline downloads, auto-download, download file checks, play-by-preferences and Plex-style episode pages to the desktop app. **[FORK.md](FORK.md) lists what is different**, change by change, with what was tested. A macOS download of NuvioRoid is being prepared; the links below are the official Nuvio builds.
 
-## ⚠️ Alpha Software - Slow Development - Testers Only
+## ⚠️ Alpha Software - Fast Development - Testers Only
 
 Nuvio Desktop is currently in alpha and is intended only for testers. It is under development and is not suitable for daily use.
 
