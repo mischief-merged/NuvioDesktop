@@ -142,32 +142,44 @@ internal fun DetailsDestination(
 }
 
 /**
- * Opens the show page from an episode page, replacing the pages above it so Back from the show
- * does not walk through the episodes again. A show page of the same show right below is reused.
+ * Opens the show page, dropping the episode pages of the same show above it so that Back from the
+ * show does not walk through the episodes again. A show page of the same show right below is reused.
  */
-internal fun NuvioNavigator.openShowFromEpisode(
-    route: EpisodeDetailRoute,
-    showTitle: String?,
+internal fun NuvioNavigator.openShowPage(
+    type: String,
+    id: String,
+    title: String?,
     season: Int? = null,
 ) {
     var pops = 0
-    while (currentRoute is EpisodeDetailRoute && routes.size > 1 && pops < 64) {
+    while (pops < 64 && routes.size > 1) {
+        val top = currentRoute
+        if (top !is EpisodeDetailRoute || top.type != type || top.id != id) break
         popBackStack()
         pops++
     }
     val top = currentRoute
-    if (top is DetailRoute && top.type == route.type && top.id == route.id) {
+    if (top is DetailRoute && top.type == type && top.id == id) {
         if (top.season == season && top.focusVideoId == null) return
         popBackStack(expectedRoute = top)
     }
-    navigate(
-        DetailRoute(
-            type = route.type,
-            id = route.id,
-            title = showTitle ?: route.title,
-            season = season,
-        ),
-    )
+    navigate(DetailRoute(type = type, id = id, title = title, season = season))
+}
+
+internal fun NuvioNavigator.openShowFromEpisode(
+    route: EpisodeDetailRoute,
+    showTitle: String?,
+    season: Int? = null,
+) = openShowPage(route.type, route.id, showTitle ?: route.title, season)
+
+/** Opens an episode page in place of an episode page of the same show on top, or on top of anything else. */
+internal fun NuvioNavigator.openEpisodePage(route: EpisodeDetailRoute) {
+    val top = currentRoute
+    if (top is EpisodeDetailRoute && top.type == route.type && top.id == route.id) {
+        replaceWithEpisode(route)
+    } else {
+        navigate(route)
+    }
 }
 
 /** Opens another episode page in place of the current one, so pages do not pile up. */
