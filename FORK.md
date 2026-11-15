@@ -28,6 +28,12 @@ This is a fork of [NuvioMedia/NuvioDesktop](https://github.com/NuvioMedia/NuvioD
 | Play by preferences | A new auto-play mode, "Best match for my preferences", picks the source using the same saved quality, bitrate and language as downloads. If nothing fits, the source list opens and says so; when a source is picked, the loading screen names it. Manual stays the default. | `pr/i-auto-play-preferred` |
 | Preferences in Settings | Settings, Playback, "Quality and language preferences" edits the saved values and the "When I press Play" choice. A one-time prompt offers the same choices to a new profile. | `pr/j-preferences-settings` |
 
+## Navigation
+
+| Change | What it does | Branch |
+|---|---|---|
+| Episode page and trail | Each episode has its own page: still, title, air date, runtime, rating, summary, Play or Resume, mark watched, previous and next episode, and the rest of the season. A `Show > Season > Episode` trail leads back. On desktop, clicking an episode opens its page and a Play button on the thumbnail plays it; the show page can open on a given season and episode. Episode downloads, Continue Watching entries and the player title link to the episode, season and show. | `pr/k-episode-navigation` |
+
 ## Trakt
 
 | Change | What it does | Branch |
@@ -42,7 +48,7 @@ User-facing English text uses one set of terms ("source", "Auto-download") and p
 
 ## Testing
 
-The desktop test suite on `downloads-suite` runs 2,834 tests. Three fail, and the same three fail on upstream `Dev` at `c8ee7621` without any of these changes:
+The desktop test suite on `downloads-suite` runs 2,887 tests. Three fail, and the same three fail on upstream `Dev` at `c8ee7621` without any of these changes:
 
 - `DesktopWindowInsetsTest` (title bar clearance)
 - `SettingsNavigationTest` (buffer options by platform and playback engine)
