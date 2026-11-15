@@ -1,5 +1,6 @@
 package com.nuvio.app.features.downloads
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -17,6 +18,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -25,6 +27,8 @@ import com.nuvio.app.core.ui.NuvioStatusModal
 import com.nuvio.app.core.ui.NuvioToastController
 import com.nuvio.app.core.ui.NuvioTokens
 import com.nuvio.app.core.ui.nuvio
+import com.nuvio.app.features.details.MetaDetails
+import com.nuvio.app.features.details.components.AutoDownloadDialog
 import com.nuvio.app.features.details.components.DownloadChoiceDialog
 import com.nuvio.app.features.details.components.SeasonDownloadChoiceRow
 import com.nuvio.app.features.profiles.ProfileRepository
@@ -46,6 +50,8 @@ internal fun AutoDownloadSection(
     profileId: Int = ProfileRepository.activeProfileId,
     downloads: StateFlow<DownloadsUiState> = DownloadsRepository.uiState,
     nowEpochMs: () -> Long = { DownloadsClock.nowEpochMs() },
+    /** Opens the page of the show of a rule. Null where that is not possible: the dialog does not offer it. */
+    onGoToShow: ((AutoDownloadRule) -> Unit)? = null,
 ) {
     val rules by controller.rules.collectAsState()
     val statuses by controller.statuses.collectAsState()
@@ -53,12 +59,23 @@ internal fun AutoDownloadSection(
     val removals by controller.removals.collectAsState()
     val recentlyDeleted by controller.recentlyDeleted.collectAsState()
     val downloadsState by downloads.collectAsState()
-    if (rules.isEmpty() && recentlyDeletedShown(recentlyDeleted, nowEpochMs()).isEmpty()) return
+    if (
+        !autoDownloadSectionShown(
+            hasRules = rules.isNotEmpty(),
+            hasAutoDownloads = downloadsState.items.any { it.autoDownloadRuleKey != null },
+            hasRecentlyDeleted = recentlyDeletedShown(recentlyDeleted, nowEpochMs()).isNotEmpty(),
+            storageLimitGb = storageLimitGb,
+        )
+    ) {
+        return
+    }
     val tokens = MaterialTheme.nuvio
     val checkingText = stringResource(Res.string.downloads_auto_checking_toast)
     val checkNowText = stringResource(Res.string.downloads_auto_check_now)
     // The profile the storage limit picker was opened for, while it is open.
     var storageLimitPickerProfileId by remember { mutableStateOf<Int?>(null) }
+    // The rule whose dialog is open, with the profile it was opened for.
+    var ruleToEdit by remember { mutableStateOf<Pair<Int, String>?>(null) }
     // The episode "Delete now" asks about, with the profile it was pressed for, until it is answered.
     var deletionToConfirm by remember { mutableStateOf<Pair<Int, DownloadItem>?>(null) }
     val pending = removals.mapNotNull { removal ->
@@ -92,13 +109,26 @@ internal fun AutoDownloadSection(
         }
         SeasonDownloadChoiceRow(
             title = stringResource(Res.string.downloads_auto_storage_limit),
-            description = stringResource(Res.string.downloads_auto_storage_limit_description),
+            description = stringResource(Res.string.downloads_auto_storage_limit_profile_description),
             value = autoDownloadStorageLimitLabel(storageLimitGb),
             onClick = { storageLimitPickerProfileId = profileId },
         )
+        if (rules.isEmpty()) {
+            Text(
+                text = stringResource(Res.string.downloads_auto_no_rules),
+                style = MaterialTheme.typography.bodySmall,
+                color = tokens.colors.textMuted,
+            )
+        }
         rules.forEach { rule ->
+            val actionLabel = stringResource(Res.string.downloads_auto_rule_action, rule.title)
             Column(
-                modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {},
+                // One button: the show, its count and what the last check found are read together,
+                // and the action says what pressing it does.
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClickLabel = actionLabel, role = Role.Button) { ruleToEdit = profileId to rule.key }
+                    .padding(vertical = NuvioTokens.Space.s6),
                 verticalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s2),
             ) {
                 Text(
@@ -199,6 +229,29 @@ internal fun AutoDownloadSection(
         }
     }
 
+    ruleToEdit?.let { (editProfileId, ruleKey) ->
+        val editedRule = rules.firstOrNull { it.key == ruleKey }
+        if (editedRule == null) {
+            ruleToEdit = null
+        } else {
+            AutoDownloadDialog(
+                meta = MetaDetails(
+                    id = editedRule.parentMetaId,
+                    type = editedRule.parentMetaType,
+                    name = editedRule.title,
+                    poster = editedRule.poster,
+                    background = editedRule.background,
+                    logo = editedRule.logo,
+                ),
+                rule = editedRule,
+                profileId = editProfileId,
+                controller = controller,
+                onDismiss = { ruleToEdit = null },
+                onGoToShow = onGoToShow?.let { goToShow -> { goToShow(editedRule) } },
+            )
+        }
+    }
+
     deletionToConfirm?.let { (confirmProfileId, item) ->
         NuvioStatusModal(
             title = stringResource(Res.string.downloads_auto_delete_now_title),
@@ -240,6 +293,18 @@ internal fun AutoDownloadSection(
 }
 
 private const val MillisPerMinute = 60_000L
+
+/**
+ * Whether the auto-download section is on the Downloads screen. It is when a rule exists, and also
+ * when automatic downloads still exist or were deleted recently, or the storage limit was changed
+ * from its default, so that the limit and the history stay reachable after the last rule is off.
+ */
+internal fun autoDownloadSectionShown(
+    hasRules: Boolean,
+    hasAutoDownloads: Boolean,
+    hasRecentlyDeleted: Boolean,
+    storageLimitGb: Int?,
+): Boolean = hasRules || hasAutoDownloads || hasRecentlyDeleted || storageLimitGb != AutoDownloadStore.DefaultStorageLimitGb
 
 @Composable
 internal fun autoDownloadStorageLimitLabel(limitGb: Int?): String =

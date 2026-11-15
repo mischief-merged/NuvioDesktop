@@ -79,6 +79,8 @@ fun DownloadsScreen(
     showSeasonHint: Boolean = showAutoDownloads,
     /** Called before a download the user deletes is removed, so that auto-download does not fetch it again. */
     rememberDeletion: suspend (DownloadItem) -> Unit = AutoDownloads::rememberUserDeletion,
+    /** Opens the page of a show, from its auto-download rule. Null where the screen cannot: the action is not offered. */
+    onOpenShowDetails: ((type: String, id: String, title: String) -> Unit)? = null,
 ) {
     DownloadsScreenContent(
         onBack = onBack,
@@ -92,6 +94,7 @@ fun DownloadsScreen(
         onBrowse = onBrowse,
         showSeasonHint = showSeasonHint,
         rememberDeletion = rememberDeletion,
+        onOpenShowDetails = onOpenShowDetails,
     )
 }
 
@@ -115,6 +118,7 @@ internal fun DownloadsScreenContent(
     showSeasonHint: Boolean = showAutoDownloads,
     /** Called before a download the user deletes is removed, so that auto-download does not fetch it again. */
     rememberDeletion: suspend (DownloadItem) -> Unit = AutoDownloads::rememberUserDeletion,
+    onOpenShowDetails: ((type: String, id: String, title: String) -> Unit)? = null,
     /** Where the episodes that are about to be deleted after watching come from. Null where there is no auto-download. */
     autoDownloads: AutoDownloadController? = if (showAutoDownloads) AutoDownloads else null,
 ) {
@@ -193,7 +197,16 @@ internal fun DownloadsScreenContent(
 
         if (selectedShowId == null) {
             if (showAutoDownloads) {
-                item { if (autoDownloads != null) AutoDownloadSection(controller = autoDownloads) else AutoDownloadSection() }
+                item {
+                    val goToShow = onOpenShowDetails?.let { open ->
+                        { rule: AutoDownloadRule -> open(rule.parentMetaType, rule.parentMetaId, rule.title) }
+                    }
+                    if (autoDownloads != null) {
+                        AutoDownloadSection(controller = autoDownloads, onGoToShow = goToShow)
+                    } else {
+                        AutoDownloadSection(onGoToShow = goToShow)
+                    }
+                }
             }
             downloadsRootContent(
                 uiState = uiState,

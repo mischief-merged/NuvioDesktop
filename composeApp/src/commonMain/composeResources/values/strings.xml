@@ -2256,6 +2256,10 @@
     <string name="downloads_auto_status_low_disk_space">Paused: not enough free disk space</string>
     <string name="downloads_auto_storage_limit">Storage limit for auto-downloads</string>
     <string name="downloads_auto_storage_limit_description">Auto-download stops adding episodes at this size. Your own downloads don't count.</string>
+    <string name="downloads_auto_storage_limit_profile_description">Auto-download stops adding episodes at this size. It counts only automatic downloads, and each profile has its own limit.</string>
+    <string name="downloads_auto_no_rules">No show uses auto-download. Open a show and choose Auto-download to turn it on.</string>
+    <string name="downloads_auto_rule_action">Change auto-download for %1$s</string>
+    <string name="downloads_auto_go_to_show">Go to show</string>
     <string name="downloads_auto_storage_limit_none">No limit</string>
     <string name="downloads_auto_storage_limit_value">%1$d GB</string>
     <string name="downloads_error_private_address">Automatic downloads can't use this address</string>

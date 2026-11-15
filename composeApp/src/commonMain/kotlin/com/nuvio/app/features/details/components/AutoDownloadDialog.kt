@@ -60,6 +60,8 @@ internal fun AutoDownloadDialog(
     profileId: Int,
     controller: AutoDownloadController,
     onDismiss: () -> Unit,
+    /** Opens the show's page. Null where the dialog is already on it: the button is not offered. */
+    onGoToShow: (() -> Unit)? = null,
 ) {
     val tokens = MaterialTheme.nuvio
     var keepCount by remember { mutableStateOf(rule?.keepCount ?: AutoDownloadRule.DefaultKeepCount) }
@@ -170,6 +172,15 @@ internal fun AutoDownloadDialog(
             }
         }
         DialogButtons {
+            if (onGoToShow != null) {
+                DialogButton(
+                    text = stringResource(Res.string.downloads_auto_go_to_show),
+                    onClick = {
+                        onDismiss()
+                        onGoToShow()
+                    },
+                )
+            }
             if (rule != null) {
                 DialogButton(
                     text = stringResource(Res.string.downloads_auto_turn_off),
