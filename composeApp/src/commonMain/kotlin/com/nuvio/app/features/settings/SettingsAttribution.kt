@@ -24,48 +24,5 @@ internal fun SettingsAttribution(
     isTablet: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = if (isTablet) 20.dp else 16.dp),
-    ) {
-        MemberBrandWordmark(
-            height = if (isTablet) 30.dp else 26.dp,
-            modifier = Modifier.align(Alignment.CenterHorizontally),
-        )
-        Spacer(
-            modifier = Modifier.height(if (isTablet) 10.dp else 8.dp),
-        )
-
-        Text(
-            text = stringResource(Res.string.compose_about_made_with),
-            modifier = Modifier.fillMaxWidth(),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
-        Text(
-            text = stringResource(
-                Res.string.compose_about_version_format,
-                AppVersionPolicy.displayVersionName,
-                AppVersionPolicy.displayVersionCode,
-            ),
-            modifier = Modifier.fillMaxWidth(),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
-        AppVersionPolicy.basedOnVersionName?.let { basedOnVersionName ->
-            Text(
-                text = stringResource(
-                    Res.string.compose_about_based_on_version_format,
-                    basedOnVersionName,
-                ),
-                modifier = Modifier.fillMaxWidth(),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
-        }
-    }
+    ForkAttribution(isTablet = isTablet, modifier = modifier)
 }
