@@ -21,6 +21,7 @@ import java.awt.Desktop
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.nio.file.Files
 import java.security.MessageDigest
 import nuvio.composeapp.generated.resources.downloads_error_file_checksum
 import java.net.Inet6Address
@@ -40,7 +41,8 @@ private val desktopDownloadHttpClient: HttpClient = HttpClient.newBuilder()
     .build()
 
 internal actual object DownloadsPlatformDownloader {
-    private val downloadsDir: File
+    /** The folder of the app's own downloads, and the one the "open" button shows when the default is away. */
+    private val appDownloadsDir: File
         get() = File(DesktopStorage.rootDir.resolve("downloads").also { it.createDirectories() }.toUri())
 
     /**
@@ -52,17 +54,34 @@ internal actual object DownloadsPlatformDownloader {
     internal var isOffline: suspend () -> Boolean = { !NetworkStatusRepository.isInternetReachable() }
 
     /** Free space on the volume of the downloads folder, or null when the system does not tell. Replaced in tests. */
-    internal var freeBytesProvider: () -> Long? = {
-        val directory = File(DesktopStorage.rootDir.resolve("downloads").also { it.createDirectories() }.toUri())
-        directory.usableSpace.takeIf { it > 0L || directory.totalSpace > 0L }
-    }
+    internal var freeBytesProvider: () -> Long? = UsePerLocationFreeSpace
+
+    /** Free space on the volume of the location the item goes to, unless a test replaced [freeBytesProvider]. */
+    private fun freeBytesFor(item: DownloadItem): Long? =
+        if (freeBytesProvider !== UsePerLocationFreeSpace) freeBytesProvider() else DesktopDownloads.folders.freeBytesOf(item)
 
     internal var waitBeforeRetry: suspend (delayMs: Long) -> Unit = { delay(it) }
 
     /** A transfer that receives nothing for this long is cut off and tried again. */
     internal var stallTimeoutMs: Long = 60_000L
 
-    actual fun restoreItem(item: DownloadItem): DownloadItem = item
+    /**
+     * An item whose file or partial file is in another location than its record says, after a move
+     * that was cut short, follows the file.
+     */
+    actual fun restoreItem(item: DownloadItem): DownloadItem {
+        val folders = DesktopDownloads.folders
+        if (item.status == DownloadStatus.Completed) return item
+        val owner = folders.locations.locationOfRecord(item.locationId, item.localFileUri)
+        val partialName = "${item.fileName}.part"
+        if (Files.isRegularFile(owner.path.resolve(partialName))) return item
+        val elsewhere = folders.locations.all().firstOrNull { location ->
+            location.id != owner.id &&
+                folders.locations.availability(location) == FolderAvailability.Available &&
+                Files.isRegularFile(location.path.resolve(partialName))
+        } ?: return item
+        return item.copy(locationId = elsewhere.id)
+    }
 
     actual fun start(
         request: DownloadPlatformRequest,
@@ -75,6 +94,15 @@ internal actual object DownloadsPlatformDownloader {
         val scope = CoroutineScope(job + Dispatchers.IO)
 
         scope.launch {
+            // A download goes to the location of its record. When that is away, or a move is
+            // carrying the item, it waits and goes on by itself when it can.
+            val folders = DesktopDownloads.folders
+            if (folders.heldByFolder(request.item)) {
+                onPaused()
+                return@launch
+            }
+            val location = folders.locations.locationOfRecord(request.item.locationId, null)
+            val downloadsDir = File(location.path.also { if (location.id == DownloadLocations.AppId) it.createDirectories() }.toUri())
             val destination = File(downloadsDir, request.destinationFileName)
             val tempFile = File(downloadsDir, "${request.destinationFileName}.part")
 
@@ -139,9 +167,11 @@ internal actual object DownloadsPlatformDownloader {
     }
 
     actual fun removePartialFile(destinationFileName: String): Boolean {
-        val tempFile = File(downloadsDir, "$destinationFileName.part")
-        if (!tempFile.exists()) return true
-        return runCatching { tempFile.delete() }.getOrDefault(false)
+        val folders = DesktopDownloads.folders
+        return folders.locations.all()
+            .filter { folders.locations.availability(it) == FolderAvailability.Available }
+            .map { File(it.path.toFile(), "$destinationFileName.part") }
+            .all { tempFile -> !tempFile.exists() || runCatching { tempFile.delete() }.getOrDefault(false) }
     }
 
     actual fun resolveLocalFileUri(localFileUri: String?, destinationFileName: String): String? {
@@ -153,11 +183,18 @@ internal actual object DownloadsPlatformDownloader {
         val fileName = destinationFileName.trim().takeIf { it.isNotBlank() }
             ?: localFileUri?.toLocalFileOrNull()?.name?.takeIf { it.isNotBlank() }
             ?: return null
-        return File(downloadsDir, fileName).takeIf { it.exists() }?.toURI()?.toString()
+        // Every location that can be reached is looked in; one that is away is not a file that is gone.
+        return (DesktopDownloads.folders.locations.locate(null, localFileUri, fileName) as? FileLookup.Found)?.uri
     }
 
     actual fun openDownloadsDirectory(): Boolean {
-        val directory = downloadsDir
+        val folders = DesktopDownloads.folders
+        val defaultLocation = folders.locations.defaultLocation()
+        val directory = if (folders.locations.availability(defaultLocation) == FolderAvailability.Available) {
+            defaultLocation.path.also { runCatching { it.createDirectories() } }.toFile()
+        } else {
+            appDownloadsDir
+        }
         val desktop = runCatching { Desktop.getDesktop() }.getOrNull()
 
         if (desktop != null && Desktop.isDesktopSupported() && desktop.isSupported(Desktop.Action.OPEN)) {
@@ -229,7 +266,7 @@ internal actual object DownloadsPlatformDownloader {
         // Checked before anything of the body is written, for every download: a file announced as
         // larger than the room on the disk fails with a plain message instead of a system error.
         if (totalBytes != null) {
-            val free = downloadsFreeBytes()
+            val free = freeBytesFor(request.item)
             if (free != null && totalBytes - startingBytes > free) {
                 response.body().close()
                 error(runBlocking { getString(Res.string.downloads_error_not_enough_space) })
@@ -238,7 +275,7 @@ internal actual object DownloadsPlatformDownloader {
         // Checked before anything of the body is written: a file that is announced as too large for
         // the limits of an automatic download is not started.
         val limits = request.limits
-        limits?.stopBeforeBody(downloadedBytes, totalBytes, downloadsFreeBytes())?.let { reason ->
+        limits?.stopBeforeBody(downloadedBytes, totalBytes, freeBytesFor(request.item))?.let { reason ->
             response.body().close()
             throw TransferStoppedByLimit(reason)
         }
@@ -287,7 +324,7 @@ internal actual object DownloadsPlatformDownloader {
                             // caught here, as is free space that other writers used up meanwhile.
                             if (limits != null && downloadedBytes >= nextLimitCheckAtBytes) {
                                 nextLimitCheckAtBytes = downloadedBytes + LimitCheckIntervalBytes
-                                limits.stopFor(downloadedBytes, totalBytes, downloadsFreeBytes())?.let { reason ->
+                                limits.stopFor(downloadedBytes, totalBytes, freeBytesFor(request.item))?.let { reason ->
                                     output.flush()
                                     throw TransferStoppedByLimit(reason)
                                 }
@@ -313,9 +350,6 @@ internal actual object DownloadsPlatformDownloader {
             digestMatched = if (digest != null && expectedDigest != null) digest.digest().contentEquals(expectedDigest.value) else null,
         )
     }
-
-    /** Free space on the volume of the downloads folder, or null when the system does not tell. */
-    private fun downloadsFreeBytes(): Long? = freeBytesProvider()
 
     private fun sendDownloadRequest(
         request: DownloadPlatformRequest,
@@ -373,6 +407,8 @@ private class DesktopDownloadsTaskHandle(
         job.cancel()
     }
 }
+
+private val UsePerLocationFreeSpace: () -> Long? = { null }
 
 private class TransferStoppedByLimit(val reason: AutoDownloadStop) : RuntimeException()
 

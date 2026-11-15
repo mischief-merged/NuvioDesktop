@@ -74,6 +74,8 @@ fun main(args: Array<String>) {
     // Load cached profile data synchronously so the profile color is available
     // on the very first Compose frame (matching Android's SharedPreferences behavior).
     ProfileRepository.loadCachedProfiles()
+    // Settles a folder move that was cut short, before the list of downloads is read.
+    runCatching { com.nuvio.app.features.downloads.DesktopDownloads.install() }
     AppIconRepository.ensureLoaded()
     AutoSyncPreferencesDesktop.initialize()
     DiscordPresenceManager.start()

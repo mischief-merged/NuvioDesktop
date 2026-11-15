@@ -18,6 +18,13 @@ internal actual object DownloadsTrash {
     private val trash = DesktopDownloadsTrash(
         downloadsDir = { DesktopStorage.rootDir.resolve("downloads").also { it.createDirectories() } },
         systemTrash = ::moveToSystemTrash.takeIf { systemTrashIsSupported() },
+        otherDirs = {
+            // Every other location that can be reached: its files are held on its own volume.
+            val folders = DesktopDownloads.folders
+            folders.locations.all()
+                .filter { it.id != DownloadLocations.AppId && folders.locations.availability(it) == FolderAvailability.Available }
+                .map { it.path }
+        },
     )
 
     actual val usesSystemTrash: Boolean get() = trash.usesSystemTrash
@@ -50,14 +57,15 @@ internal class DesktopDownloadsTrash(
     private val downloadsDir: () -> Path,
     private val systemTrash: ((File) -> Boolean)?,
     private val nowEpochMs: () -> Long = { System.currentTimeMillis() },
+    /** The other folders downloads are kept in. A file in one of them is held in that folder. */
+    private val otherDirs: () -> List<Path> = { emptyList() },
 ) {
     val usesSystemTrash: Boolean get() = systemTrash != null
 
     fun moveAway(localFileUri: String): Boolean = synchronized(this) {
-        val root = runCatching { downloadsDir().toRealPath() }.getOrNull() ?: return false
         val file = runCatching { Paths.get(URI(localFileUri)) }.getOrNull() ?: return false
         if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) return true
-        if (!file.isRegularFileInside(root)) return false
+        val root = roots().firstOrNull { file.isRegularFileInside(it) } ?: return false
         val subtitles = file.resolveSibling("${file.fileName}$SubtitlesSuffix").takeIf { it.isDirectoryInside(root) }
 
         val trash = systemTrash
@@ -82,7 +90,16 @@ internal class DesktopDownloadsTrash(
     }
 
     fun purgeHeldFiles(nowEpochMs: Long): Int = synchronized(this) {
-        val root = runCatching { downloadsDir().toRealPath() }.getOrNull() ?: return 0
+        roots().sumOf { purgeHeldFilesIn(it, nowEpochMs) }
+    }
+
+    private fun roots(): List<Path> =
+        (listOf(runCatching { downloadsDir() }.getOrNull()) + runCatching { otherDirs() }.getOrDefault(emptyList()))
+            .filterNotNull()
+            .mapNotNull { runCatching { it.toRealPath() }.getOrNull() }
+            .distinct()
+
+    private fun purgeHeldFilesIn(root: Path, nowEpochMs: Long): Int {
         val holding = root.resolve(HoldingFolderName)
         if (!holding.isDirectoryInside(root)) return 0
         val maxAgeMs = HeldFileDays * 24L * 60 * 60 * 1000
@@ -103,7 +120,7 @@ internal class DesktopDownloadsTrash(
             }
         }
         runCatching { writeIndex(holding, remaining) }
-        purged
+        return purged
     }
 
     private fun hold(root: Path, source: Path) {

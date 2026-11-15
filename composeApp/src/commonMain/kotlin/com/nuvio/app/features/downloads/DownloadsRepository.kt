@@ -248,6 +248,8 @@ object DownloadsRepository {
             sourceSubtitles = stream.externalSubtitles,
             localFileUri = null,
             fileName = fileName,
+            // A show stays where its downloaded episodes are; a movie goes to the default location.
+            locationId = backend.placementFor(currentItems, parentMetaId, seasonNumber != null && episodeNumber != null),
             status = DownloadStatus.Downloading,
             downloadedBytes = 0L,
             totalBytes = null,
@@ -280,6 +282,7 @@ object DownloadsRepository {
         mutateItem(downloadId) { current ->
             current.copy(
                 status = DownloadStatus.Paused,
+                pausedByFolder = false,
                 updatedAtEpochMs = DownloadsClock.nowEpochMs(),
                 errorMessage = null,
             )
@@ -305,6 +308,7 @@ object DownloadsRepository {
             autoDownloadStop = null,
             failureKind = null,
             localFileUri = null,
+            pausedByFolder = false,
             updatedAtEpochMs = DownloadsClock.nowEpochMs(),
         )
 
@@ -374,23 +378,25 @@ object DownloadsRepository {
      * far is removed. A file that another download also uses stays where it is. When the file cannot
      * be moved nothing is removed: the entry stays, so that the file is not lost from view.
      */
-    internal fun deleteDownload(downloadId: String): DownloadDeleteResult = synchronized(stateLock) {
+    internal fun deleteDownload(downloadId: String, permanently: Boolean = false): DownloadDeleteResult = synchronized(stateLock) {
         ensureLoaded()
         val items = _uiState.value.items
         val item = items.firstOrNull { it.id == downloadId } ?: return DownloadDeleteResult.Gone
 
-        val fileUri = if (item.status == DownloadStatus.Completed) {
-            backend.resolveLocalFileUri(item.localFileUri, item.fileName)
-        } else {
-            null
-        }
+        val lookup = if (item.status == DownloadStatus.Completed) backend.locate(item) else FileLookup.Missing
+        // A file whose location is away is not gone. Nothing is touched, and the entry stays.
+        if (lookup is FileLookup.Unreachable) return DownloadDeleteResult.NotReachable
+        val fileUri = (lookup as? FileLookup.Found)?.uri
         if (fileUri != null) {
             val usedByAnother = items.any { other ->
                 other.id != item.id &&
                     listOfNotNull(other.localFileUri, backend.resolveLocalFileUri(other.localFileUri, other.fileName))
                         .any { backend.isSameFile(it, fileUri) }
             }
-            if (!usedByAnother && !backend.trashFile(fileUri)) return DownloadDeleteResult.NotMoved
+            if (!usedByAnother) {
+                val gone = if (permanently) backend.removeFile(fileUri) else backend.trashFile(fileUri)
+                if (!gone) return DownloadDeleteResult.NotMoved
+            }
         }
         activeTransfers.remove(downloadId)?.cancel()
         backend.removePartialFile(item.fileName)
@@ -518,7 +524,9 @@ object DownloadsRepository {
                     activeTransfers.remove(item.id)
                     mutateItem(item.id) { current ->
                         if (current.status != DownloadStatus.Downloading) return@mutateItem current
-                        current.copy(status = DownloadStatus.Paused, errorMessage = null)
+                        // A transfer that could not run because its location is away or being moved
+                        // waits for it, and goes on by itself.
+                        current.copy(status = DownloadStatus.Paused, errorMessage = null, pausedByFolder = backend.heldByFolder(current))
                     }
                 }
             },
@@ -635,7 +643,10 @@ object DownloadsRepository {
     /** This finished download, or the failed download it has become because its file is lost. */
     private fun DownloadItem.withoutLostFile(): DownloadItem {
         if (status != DownloadStatus.Completed) return this
-        val fileUri = backend.resolveLocalFileUri(localFileUri, fileName) ?: localFileUri ?: return this
+        val lookup = backend.locate(this)
+        // A location that is away says nothing about its files. They are not lost, and the record is kept as it is.
+        if (lookup is FileLookup.Unreachable) return this
+        val fileUri = (lookup as? FileLookup.Found)?.uri ?: localFileUri ?: return this
         val facts = backend.inspectFile(fileUri) ?: return this
         val problem = when {
             !facts.exists -> DownloadedFileProblem.Missing
@@ -685,7 +696,8 @@ object DownloadsRepository {
      */
     internal fun autoDownloadBytes(exceptDownloadId: String? = null): Long =
         _uiState.value.items
-            .filter { it.autoDownloadRuleKey != null && it.id != exceptDownloadId }
+            // Locations that are away are not counted; nothing is ever deleted to make room because of them.
+            .filter { it.autoDownloadRuleKey != null && it.id != exceptDownloadId && backend.isConnected(it) }
             .sumOf { item ->
                 if (item.status == DownloadStatus.Downloading) {
                     maxOf(item.totalBytes ?: 0L, item.downloadedBytes)
@@ -752,7 +764,10 @@ object DownloadsRepository {
                 return AutoDownloadRemovalResult.Changed
             }
             if (!stillWanted()) return AutoDownloadRemovalResult.Changed
-            val fileUri = backend.resolveLocalFileUri(item.localFileUri, item.fileName)
+            val lookup = backend.locate(item)
+            // A file whose location is away is not gone: it is left, and the entry stays.
+            if (lookup is FileLookup.Unreachable) return AutoDownloadRemovalResult.NotReachable
+            val fileUri = (lookup as? FileLookup.Found)?.uri
             if (fileUri != null) {
                 val usedByAnother = items.any { other ->
                     other.id != item.id &&
@@ -817,6 +832,45 @@ object DownloadsRepository {
         backend.savePayload(DownloadsCodec.encode(_uiState.value.items, loadedPayload))
     }
 
+    /** The file of a download moved: its record now names its new location and address. */
+    internal fun relocateDownload(downloadId: String, locationId: String, localFileUri: String?) {
+        ensureLoaded()
+        mutateItem(downloadId) { current ->
+            current.copy(
+                locationId = locationId,
+                localFileUri = if (current.status == DownloadStatus.Completed) localFileUri ?: current.localFileUri else current.localFileUri,
+            )
+        }
+    }
+
+    /**
+     * A download that waits for a location that is not there is put in another one, at the user's
+     * request, and starts.
+     */
+    internal fun chooseLocationForWaiting(downloadId: String, locationId: String): Unit = synchronized(stateLock) {
+        ensureLoaded()
+        val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return
+        if (item.status != DownloadStatus.Paused || !item.pausedByFolder) return
+        backend.removePartialFile(item.fileName)
+        mutateItem(downloadId) { it.copy(locationId = locationId) }
+        resumeDownload(downloadId)
+    }
+
+    /** Whether the location that holds the show's downloads (or would take a new one) cannot be used now. */
+    internal fun showLocationIsAway(parentMetaId: String): Boolean {
+        ensureLoaded()
+        val locationId = backend.placementFor(_uiState.value.items, parentMetaId, true) ?: return false
+        return !backend.locationConnected(locationId)
+    }
+
+    /** Starts again the downloads that waited for a location or a move, now that they can run. */
+    internal fun resumeHeldByFolder(): Unit = synchronized(stateLock) {
+        if (!hasLoaded) return
+        _uiState.value.items
+            .filter { it.status == DownloadStatus.Paused && it.pausedByFolder && !backend.heldByFolder(it) }
+            .forEach { resumeDownload(it.id) }
+    }
+
     internal fun nextDownloadId(nowEpochMs: Long): String {
         val ordinal = synchronized(stateLock) {
             nextDownloadOrdinal += 1L
@@ -831,12 +885,11 @@ object DownloadsRepository {
 
     private fun normalizeCompletedLocalFileUri(item: DownloadItem): DownloadItem {
         if (item.status != DownloadStatus.Completed) return item
-        val resolvedUri = backend.resolveLocalFileUri(
-            localFileUri = item.localFileUri,
-            destinationFileName = item.fileName,
-        ) ?: return item
-        return if (resolvedUri != item.localFileUri) {
-            item.copy(localFileUri = resolvedUri)
+        val found = backend.locate(item) as? FileLookup.Found ?: return item
+        // The file may be where the record says it is not, after a move that was cut short: the record follows the file.
+        val locationId = found.locationId ?: item.locationId
+        return if (found.uri != item.localFileUri || locationId != item.locationId) {
+            item.copy(localFileUri = found.uri, locationId = locationId)
         } else {
             item
         }
@@ -909,6 +962,22 @@ internal interface DownloadsBackend {
     /** Whether two addresses name the same file, however they are spelled. */
     fun isSameFile(firstFileUri: String, secondFileUri: String): Boolean =
         firstFileUri.trim().removePrefix("file:").trimStart('/') == secondFileUri.trim().removePrefix("file:").trimStart('/')
+
+    /** Looks for the file of a download, telling a file that is gone from one whose location is away. */
+    fun locate(item: DownloadItem): FileLookup =
+        resolveLocalFileUri(item.localFileUri, item.fileName)?.let { FileLookup.Found(it, item.locationId) } ?: FileLookup.Missing
+
+    /** The download cannot run now: its location is away or a move is carrying it. */
+    fun heldByFolder(item: DownloadItem): Boolean = false
+
+    /** Whether the location of the item can be used now. */
+    fun isConnected(item: DownloadItem): Boolean = true
+
+    /** Whether the location can be used now. */
+    fun locationConnected(locationId: String?): Boolean = true
+
+    /** The location a new download goes to. Null where there are no locations. */
+    fun placementFor(items: List<DownloadItem>, parentMetaId: String, isEpisode: Boolean): String? = null
 }
 
 internal enum class DownloadDeleteResult {
@@ -919,6 +988,9 @@ internal enum class DownloadDeleteResult {
 
     /** The file could not be moved to the trash. Nothing was removed. */
     NotMoved,
+
+    /** The file is on a location that is not connected. Nothing was removed. */
+    NotReachable,
 }
 
 internal enum class AutoDownloadRemovalResult {
@@ -929,6 +1001,9 @@ internal enum class AutoDownloadRemovalResult {
 
     /** The file could not be moved out of the downloads folder. Nothing was removed. */
     NotMoved,
+
+    /** The file is on a location that is not connected. Nothing was touched. */
+    NotReachable,
 }
 
 private object PlatformDownloadsBackend : DownloadsBackend {
@@ -972,6 +1047,20 @@ private object PlatformDownloadsBackend : DownloadsBackend {
 
     override fun isSameFile(firstFileUri: String, secondFileUri: String): Boolean =
         DownloadsTrash.isSameFile(firstFileUri, secondFileUri)
+
+    override fun locate(item: DownloadItem): FileLookup =
+        DownloadFolders.controller.lookup(item)
+            ?: resolveLocalFileUri(item.localFileUri, item.fileName)?.let { FileLookup.Found(it, item.locationId) }
+            ?: FileLookup.Missing
+
+    override fun heldByFolder(item: DownloadItem): Boolean = DownloadFolders.controller.heldByFolder(item)
+
+    override fun isConnected(item: DownloadItem): Boolean = DownloadFolders.controller.isConnected(item)
+
+    override fun locationConnected(locationId: String?): Boolean = DownloadFolders.controller.locationConnected(locationId)
+
+    override fun placementFor(items: List<DownloadItem>, parentMetaId: String, isEpisode: Boolean): String? =
+        DownloadFolders.controller.placementFor(items, parentMetaId, isEpisode)
 }
 
 /**

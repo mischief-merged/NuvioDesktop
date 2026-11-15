@@ -5,6 +5,12 @@ import nuvio.composeapp.generated.resources.downloads_announce_checking
 import nuvio.composeapp.generated.resources.downloads_announce_completed
 import nuvio.composeapp.generated.resources.downloads_announce_downloading
 import nuvio.composeapp.generated.resources.downloads_announce_failed
+import nuvio.composeapp.generated.resources.downloads_announce_drive_not_connected
+import nuvio.composeapp.generated.resources.downloads_announce_folder_not_found
+import nuvio.composeapp.generated.resources.downloads_announce_waiting_drive
+import nuvio.composeapp.generated.resources.downloads_status_drive_not_connected
+import nuvio.composeapp.generated.resources.downloads_status_folder_not_found
+import nuvio.composeapp.generated.resources.downloads_status_waiting_drive
 import nuvio.composeapp.generated.resources.downloads_announce_paused
 import nuvio.composeapp.generated.resources.downloads_announce_paused_low_disk
 import nuvio.composeapp.generated.resources.downloads_announce_paused_storage_limit
@@ -57,6 +63,15 @@ internal enum class DownloadPhase(
     PausedLowDiskSpace(Res.string.downloads_status_paused_low_disk, showsSize = true, Res.string.downloads_announce_paused_low_disk),
     Completed(Res.string.downloads_status_completed, showsSize = true, Res.string.downloads_announce_completed),
     Failed(Res.string.downloads_status_failed, showsSize = false, Res.string.downloads_announce_failed),
+
+    /** The drive the file is on is not connected. The download is kept and plays again when it is back. */
+    DriveNotConnected(Res.string.downloads_status_drive_not_connected, showsSize = false, Res.string.downloads_announce_drive_not_connected),
+
+    /** The drive is there but the folder is not. */
+    FolderNotFound(Res.string.downloads_status_folder_not_found, showsSize = false, Res.string.downloads_announce_folder_not_found),
+
+    /** Paused because its location is away or being moved. It goes on by itself. */
+    WaitingForDrive(Res.string.downloads_status_waiting_drive, showsSize = true, Res.string.downloads_announce_waiting_drive),
 }
 
 /** What was checked about a finished file, in the words the row shows. */
@@ -100,8 +115,21 @@ internal fun downloadRowStatus(
     item: DownloadItem,
     nowEpochMs: Long,
     offline: Boolean = false,
+    /** Whether the location the item is in can be used. An item in one that cannot is neither failed nor missing. */
+    location: FolderAvailability = FolderAvailability.Available,
 ): DownloadRowStatus {
     val isAuto = item.autoDownloadRuleKey != null
+    if (location != FolderAvailability.Available && (item.status == DownloadStatus.Completed || item.pausedByFolder)) {
+        val phase = when {
+            item.status != DownloadStatus.Completed -> DownloadPhase.WaitingForDrive
+            location == FolderAvailability.NotConnected -> DownloadPhase.DriveNotConnected
+            else -> DownloadPhase.FolderNotFound
+        }
+        return DownloadRowStatus(phase, isAuto = isAuto)
+    }
+    if (item.status == DownloadStatus.Paused && item.pausedByFolder) {
+        return DownloadRowStatus(DownloadPhase.WaitingForDrive, isAuto = isAuto)
+    }
     return when (item.status) {
         DownloadStatus.Downloading -> {
             val total = item.totalBytes

@@ -45,6 +45,8 @@ internal class AutoDownloadEngine(
     /** The bytes automatic downloads take now. */
     private val autoDownloadBytes: () -> Long = { 0L },
     private val resumeDownload: (downloadId: String) -> Unit = {},
+    /** The location that holds the rule's show is not connected, so nothing is queued for it. */
+    private val locationAway: (AutoDownloadRule) -> Boolean = { false },
     private val fullCheckIntervalMs: Long = 6L * 60 * 60 * 1000,
 ) {
     private val checkMutex = Mutex()
@@ -114,6 +116,11 @@ internal class AutoDownloadEngine(
         }
         val due = plan.toDownload.filter { episode ->
             ignoreWaiting || (retryFor(ruleKey, episode)?.notBeforeEpochMs ?: 0L) <= now
+        }
+        if (due.isNotEmpty() && locationAway(current)) {
+            // The show stays together: its episodes are not put anywhere else. They wait for the location.
+            setStatus(ruleKey, AutoDownloadStatus.FolderNotConnected)
+            return
         }
         if (due.isNotEmpty() && !storageLimitReached()) {
             val choices = seasonDefaults(profileId)
@@ -284,6 +291,7 @@ internal class AutoDownloadEngine(
             when {
                 AutoDownloadStop.StorageLimit in stops -> AutoDownloadStatus.StorageLimitReached
                 AutoDownloadStop.LowDiskSpace in stops -> AutoDownloadStatus.LowDiskSpace
+                plan.toDownload.isNotEmpty() && locationAway(rule) -> AutoDownloadStatus.FolderNotConnected
                 plan.toDownload.isNotEmpty() && !batchRunning && storageLimitReached() ->
                     AutoDownloadStatus.StorageLimitReached
                 batchRunning || DownloadStatus.Downloading in windowStatuses -> AutoDownloadStatus.Downloading
