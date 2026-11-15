@@ -1422,6 +1422,48 @@
     <string name="settings_tracking_connect_first">Connect %1$s first</string>
     <string name="settings_tracking_disconnect_title">Disconnect %1$s?</string>
     <string name="settings_tracking_disconnect_description">This removes the connection from Nuvio. Your data on %1$s stays intact, and unavailable library or progress sources temporarily fall back to Nuvio.</string>
+    <string name="trakt_queue_toast_saved">Could not reach Trakt. Your watch is saved and will be sent when you are back online.</string>
+    <plurals name="settings_trakt_queue_waiting">
+        <item quantity="one">%1$d watch waiting to sync to Trakt</item>
+        <item quantity="other">%1$d watches waiting to sync to Trakt</item>
+    </plurals>
+    <string name="settings_trakt_queue_waiting_description">Nuvio sends them automatically when Trakt can be reached. Waiting watches are kept for up to 30 days.</string>
+    <string name="settings_trakt_queue_sync_now">Sync now</string>
+    <string name="settings_trakt_queue_syncing">Sending to Trakt</string>
+    <plurals name="settings_trakt_queue_result_all_sent">
+        <item quantity="one">%1$d watch sent to Trakt.</item>
+        <item quantity="other">%1$d watches sent to Trakt.</item>
+    </plurals>
+    <string name="settings_trakt_queue_result_nothing_waiting">Nothing is waiting to be sent.</string>
+    <string name="settings_trakt_queue_result_offline">You are offline. Waiting watches will be sent when you are back online.</string>
+    <string name="settings_trakt_queue_result_partial">%1$d sent, %2$d still waiting. Nuvio will try again automatically.</string>
+    <string name="settings_trakt_queue_result_not_accepted">Trakt did not take the waiting watches this time. Nuvio will try again automatically.</string>
+    <plurals name="settings_trakt_queue_result_retry_in">
+        <item quantity="one">Trakt did not take the waiting watches this time. Nuvio will try again in about %1$d minute.</item>
+        <item quantity="other">Trakt did not take the waiting watches this time. Nuvio will try again in about %1$d minutes.</item>
+    </plurals>
+    <plurals name="settings_trakt_queue_result_refused">
+        <item quantity="one">Trakt refused %1$d watch. See below.</item>
+        <item quantity="other">Trakt refused %1$d watches. See below.</item>
+    </plurals>
+    <plurals name="settings_trakt_queue_undeliverable">
+        <item quantity="one">%1$d watch could not be delivered to Trakt</item>
+        <item quantity="other">%1$d watches could not be delivered to Trakt</item>
+    </plurals>
+    <string name="settings_trakt_queue_undeliverable_description">Trakt refused them. You can try sending them again, or dismiss them to remove them from Nuvio. Dismissed watches are not sent.</string>
+    <string name="settings_trakt_queue_try_again">Try again</string>
+    <string name="settings_trakt_queue_dismiss">Dismiss</string>
+    <plurals name="settings_trakt_queue_dropped">
+        <item quantity="one">%1$d watch was not sent and has been removed</item>
+        <item quantity="other">%1$d watches were not sent and have been removed</item>
+    </plurals>
+    <string name="settings_trakt_queue_dropped_description">They could not be delivered to Trakt within 30 days, so Nuvio removed them. If you want them on Trakt, mark those titles as watched there.</string>
+    <plurals name="settings_trakt_disconnect_pending">
+        <item quantity="one">%1$d watch has not been sent to Trakt yet. If you disconnect, it will not be sent unless you reconnect the same account within 30 days of the watch being saved.</item>
+        <item quantity="other">%1$d watches have not been sent to Trakt yet. If you disconnect, they will not be sent unless you reconnect the same account within 30 days of each watch being saved.</item>
+    </plurals>
+    <string name="settings_trakt_disconnect_sync_first">Sync first</string>
+    <string name="settings_trakt_disconnect_anyway">Disconnect anyway</string>
     <string name="settings_trakt_disconnect_description">This will disconnect your Trakt account from Nuvio.</string>
     <string name="settings_simkl_disconnect_description">This removes the Simkl account and cached Simkl data from this profile.</string>
     <string name="settings_tracking_source_fallback">%1$s is unavailable. Using %2$s until it reconnects.</string>

@@ -14,9 +14,17 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import com.nuvio.app.core.ui.NuvioToastController
+import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.trakt_queue_toast_saved
+import org.jetbrains.compose.resources.getString
 
 /** App wiring for the Trakt outbox. Only active on desktop: elsewhere nothing is queued or sent from here. */
 internal object TrackerOutboxRuntime {
@@ -58,6 +66,35 @@ internal object TrackerOutboxRuntime {
         }
     }
 
+    private val queuedNotice = QueuedWatchNotice {
+        val message = runCatching { runBlocking { getString(Res.string.trakt_queue_toast_saved) } }.getOrNull()
+        if (message != null) NuvioToastController.show(message, durationMillis = 4_500L)
+    }
+
+    private fun currentIdentity(): QueueIdentity {
+        val profileId = ProfileRepository.activeProfileId
+        return QueueIdentity(profileId, TraktAuthRepository.connectedAccountKey(profileId))
+    }
+
+    /**
+     * What Settings > Tracking shows and asks for the Trakt queue, or null where the queue is not active.
+     * The queue follows the active profile and the connected Trakt account.
+     */
+    val queueController: TrackerQueueController? by lazy {
+        if (!isActive) return@lazy null
+        val identity: StateFlow<QueueIdentity> = TraktAuthRepository.uiState
+            .map { currentIdentity() }
+            .distinctUntilChanged()
+            .stateIn(scope, SharingStarted.Eagerly, currentIdentity())
+        OutboxQueueController(
+            outbox = outbox,
+            scope = scope,
+            identity = identity,
+            isOnline = { !NetworkStatusRepository.uiState.value.isOfflineLike },
+            nowEpochMs = TraktPlatformClock::nowEpochMs,
+        )
+    }
+
     /** Safe to call again, for example after the active profile changed: it then only triggers a flush. */
     fun start() {
         if (!isActive) return
@@ -90,7 +127,10 @@ internal object TrackerOutboxRuntime {
                 ),
             )
         }
-        if (held) pump.wake()
+        if (held) {
+            queuedNotice.onQueued()
+            pump.wake()
+        }
         return held
     }
 

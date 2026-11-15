@@ -4,6 +4,9 @@ import co.touchlab.kermit.Logger
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
@@ -12,7 +15,12 @@ import kotlinx.serialization.json.Json
 import kotlin.random.Random
 
 @Serializable
-private data class OutboxPayload(val version: Int, val entries: List<OutboxEntry> = emptyList())
+private data class OutboxPayload(
+    val version: Int,
+    val entries: List<OutboxEntry> = emptyList(),
+    /** Per profile: watches removed for age and not yet dismissed. */
+    val droppedForAge: Map<Int, Int> = emptyMap(),
+)
 
 /**
  * A persisted queue of finished watches that could not be delivered to a tracker, each of which is
@@ -26,6 +34,8 @@ private data class OutboxPayload(val version: Int, val entries: List<OutboxEntry
  * - A watch that is already queued, for the same title less than [SameWatchWindowMs] away, is not queued again.
  * - An entry is only sent while the account it was queued under is connected for its profile. Until then
  *   it is kept, not sent and not dropped.
+ * - What the user may need to know is readable as [snapshot] and [counts]: the watches waiting, the ones
+ *   the tracker refused, and how many were removed for age (until dismissed).
  * - Every entry is removed by the first flush or enqueue [MaxAgeMs] after it was queued, whatever its
  *   state, and the queue holds at most [MaxEntries] entries.
  *
@@ -47,14 +57,60 @@ internal class TrackerOutbox(
     private var entries: List<OutboxEntry> = emptyList()
     private var loaded = false
     private var lastSendAtEpochMs: Long? = null
+    private var droppedForAge: Map<Int, Int> = emptyMap()
+    private val snapshotState = MutableStateFlow(OutboxSnapshot())
 
     fun entries(): List<OutboxEntry> = locked { entries }
+
+    /** The queue as observable state. It already holds what is stored when it is first read. */
+    val snapshot: StateFlow<OutboxSnapshot>
+        get() {
+            locked { }
+            return snapshotState.asStateFlow()
+        }
+
+    fun counts(profileId: Int, accountKey: String?): OutboxCounts =
+        locked { OutboxSnapshot(entries, droppedForAge).countsFor(profileId, accountKey) }
+
+    /**
+     * Puts the refused watches of [profileId] and [accountKey] back in the queue for the next flush.
+     * Returns how many were put back. Their age is unchanged, so the retention period still applies.
+     */
+    fun retryUndeliverable(profileId: Int, accountKey: String): Int {
+        var retried = 0
+        update { all ->
+            all.map { entry ->
+                if (entry.profileId == profileId && entry.accountKey == accountKey && entry.canRetry) {
+                    retried++
+                    entry.copy(state = OutboxState.PENDING, attempts = 0, nextAttemptAtEpochMs = 0L)
+                } else {
+                    entry
+                }
+            }
+        }
+        return retried
+    }
+
+    /** Removes the refused watches of [profileId] and [accountKey]. Returns how many were removed. */
+    fun dismissUndeliverable(profileId: Int, accountKey: String): Int {
+        val before = locked { entries.size }
+        update { all ->
+            all.filterNot { it.profileId == profileId && it.accountKey == accountKey && it.state == OutboxState.DEAD }
+        }
+        return before - locked { entries.size }
+    }
+
+    /** Forgets the watches of [profileId] that were removed for age, so they are no longer reported. */
+    fun dismissDropped(profileId: Int) {
+        locked { replaceLocked(entries, droppedForAge - profileId) }
+    }
 
     /** Returns true when the queue holds the watch afterwards, whether it was added now or was already there. */
     fun enqueue(watch: OutboxWatch): Boolean = locked {
         if (!watch.media.isValid || watch.accountKey.isBlank() || watch.watchedAtEpochMs <= 0L) return@locked false
         val now = nowEpochMs()
-        var current = withoutExpired(now)
+        expireLocked(now)
+        var current = entries
 
         val existing = current.firstOrNull { it.isSameWatch(watch) }
         if (existing != null) {
@@ -113,7 +169,7 @@ internal class TrackerOutbox(
 
     /** Sends what is due for [profileId], oldest first. Safe to call from several places at once. */
     suspend fun flush(profileId: Int) {
-        locked { replaceLocked(withoutExpired(nowEpochMs())) }
+        locked { expireLocked(nowEpochMs()) }
         while (sendMutex.withLock { sendNext(profileId) }) Unit
     }
 
@@ -253,11 +309,19 @@ internal class TrackerOutbox(
     private fun OutboxEntry.isSendable(profileId: Int, account: String): Boolean =
         state == OutboxState.PENDING && this.profileId == profileId && accountKey == account
 
-    private fun withoutExpired(now: Long): List<OutboxEntry> {
+    /** Removes what is older than [MaxAgeMs] and remembers, per profile, how many of those were never delivered. */
+    private fun expireLocked(now: Long) {
         val (expired, kept) = entries.partition { now - it.createdAtEpochMs > MaxAgeMs }
-        val undelivered = expired.count { it.state != OutboxState.DEAD }
-        if (undelivered > 0) log.w { "Dropping $undelivered queued watch(es) that could not be delivered within the retention period" }
-        return kept
+        if (expired.isEmpty()) return
+        val undelivered = expired.filter { it.state != OutboxState.DEAD }
+        if (undelivered.isNotEmpty()) {
+            log.w { "Dropping ${undelivered.size} queued watch(es) that could not be delivered within the retention period" }
+        }
+        val dropped = droppedForAge.toMutableMap()
+        undelivered.groupingBy { it.profileId }.eachCount().forEach { (profileId, count) ->
+            dropped[profileId] = (dropped[profileId] ?: 0) + count
+        }
+        replaceLocked(kept, dropped)
     }
 
     private fun newEntryId(current: List<OutboxEntry>, now: Long): String {
@@ -277,6 +341,7 @@ internal class TrackerOutbox(
                 replaceLocked(updated)
             } finally {
                 entries = updated
+                publishLocked()
             }
         }
     }
@@ -287,10 +352,16 @@ internal class TrackerOutbox(
     }
 
     /** Written before it is adopted, so nothing is reported as queued or sent as in flight unless the disk says so. */
-    private fun replaceLocked(updated: List<OutboxEntry>) {
-        if (updated == entries) return
-        store.save(json.encodeToString(OutboxPayload(version = PayloadVersion, entries = updated)))
+    private fun replaceLocked(updated: List<OutboxEntry>, dropped: Map<Int, Int> = droppedForAge) {
+        if (updated == entries && dropped == droppedForAge) return
+        store.save(json.encodeToString(OutboxPayload(version = PayloadVersion, entries = updated, droppedForAge = dropped)))
         entries = updated
+        droppedForAge = dropped
+        publishLocked()
+    }
+
+    private fun publishLocked() {
+        snapshotState.value = OutboxSnapshot(entries, droppedForAge)
     }
 
     /**
@@ -315,7 +386,9 @@ internal class TrackerOutbox(
                 else -> entry
             }
         }
+        droppedForAge = payload?.droppedForAge.orEmpty().filterValues { it > 0 }
         loaded = true
+        publishLocked()
     }
 
     companion object {
