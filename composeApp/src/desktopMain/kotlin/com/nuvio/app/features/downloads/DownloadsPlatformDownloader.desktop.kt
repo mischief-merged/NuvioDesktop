@@ -131,10 +131,11 @@ internal actual object DownloadsPlatformDownloader {
     }
 
     /** Downloads into [tempFile], resuming from its current length when possible. Returns the total size if known. */
-    private suspend fun transferToTempFile(
+    internal suspend fun transferToTempFile(
         request: DownloadPlatformRequest,
         tempFile: File,
         onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
+        limiter: DownloadSpeedLimiter = DownloadBandwidth.limiter.also { DownloadBandwidth.applyStoredLimit() },
     ): Long? {
         var resumeFromBytes = tempFile.partialLength()
         var attemptedRangeRequest = resumeFromBytes > 0L
@@ -179,10 +180,12 @@ internal actual object DownloadsPlatformDownloader {
                 while (true) {
                     currentCoroutineContext().ensureActive()
                     val read = input.read(buffer)
-                    if (read <= 0) break
+                    if (read < 0) break
+                    if (read == 0) continue
                     output.write(buffer, 0, read)
                     downloadedBytes += read.toLong()
                     onProgress(downloadedBytes, totalBytes)
+                    limiter.throttle(read)
                 }
                 output.flush()
             }

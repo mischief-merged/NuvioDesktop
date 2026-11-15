@@ -239,6 +239,15 @@ internal fun settingsSearchEntries(
             section = pageTitles.getValue(section.page),
         )
     }
+    if (isDesktop) {
+        addRow(
+            page = SettingsPage.Playback,
+            key = "playback-download-speed-limit",
+            title = stringResource(Res.string.settings_download_speed_limit_title),
+            pageLabel = playbackPage,
+            section = playbackPage,
+        )
+    }
     addPage(
         page = SettingsPage.Advanced,
         key = "advanced",
