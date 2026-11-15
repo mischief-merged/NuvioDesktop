@@ -237,38 +237,46 @@ internal class DownloadLocations(
         ownerOf(locationId, localFileUri) ?: localFileUri?.let(::fileOfUri)?.let { locationContaining(it.toPath()) } ?: appLocation()
 
     /**
-     * Looks for the file of a record in the place the record names, and nowhere else. When that place
-     * cannot be used the answer is that it is away, and no other place is looked in: a file of the same
-     * name somewhere else is another file. A record is pointed somewhere else only by a journalled move.
+     * Looks for the file of a record at the address the record holds, in the location the record names,
+     * and nowhere else. When that location cannot be used the answer is that it is away. No address, or
+     * nothing at it, is Missing: a file of the same name is another file and is never substituted
+     * ([fileName] is not used to look). A drive that came back under another mount point keeps the path
+     * below its mount point, so an address on the old mount point is read at the same path on the new one.
      */
+    @Suppress("UNUSED_PARAMETER")
     fun locate(locationId: String?, localFileUri: String?, fileName: String): FileLookup {
         val owner = ownerOf(locationId, localFileUri) ?: return FileLookup.Unreachable(locationId, FolderAvailability.NotFound)
         val state = availability(owner)
         if (state != FolderAvailability.Available) return FileLookup.Unreachable(owner.id, state)
-        val name = fileName.trim()
-        val recorded = localFileUri?.let(::fileOfUri)
+        val recorded = localFileUri?.let(::fileOfUri)?.toPath()?.toAbsolutePath()?.normalize() ?: return FileLookup.Missing
         return FsGuard.call(timeoutMs, FileLookup.Unreachable(owner.id, FolderAvailability.NotConnected)) {
-            // The address on the record counts only inside a location that can be used, marker and all.
-            val recordedOwner = recorded?.let { locationContaining(it.toPath()) }
-            if (recorded != null && recordedOwner != null && recordedOwner.id != owner.id) {
+            // The address counts only inside a location that can be used, marker and all.
+            val recordedOwner = locationContaining(recorded)
+            if (recordedOwner != null && recordedOwner.id != owner.id) {
                 val other = availability(recordedOwner)
                 if (other != FolderAvailability.Available) return@call FileLookup.Unreachable(recordedOwner.id, other)
             }
-            val candidates = listOfNotNull(
-                recorded?.takeIf { recordedOwner != null || locationId == null }?.let { (recordedOwner ?: owner) to it },
-                name.takeIf { it.isNotEmpty() }?.let { owner to owner.path.resolve(it).toFile() },
-            )
-            candidates.firstOrNull { (_, file) -> file.isFile }?.let { (location, file) ->
-                FileLookup.Found(file.toURI().toString(), location.id)
-            } ?: run {
-                val anchor = recorded?.let { volumes.anchorOf(it.toPath()) }
-                if (anchor != null && !Files.exists(anchor)) {
-                    FileLookup.Unreachable(owner.id, FolderAvailability.NotConnected)
-                } else {
-                    FileLookup.Missing
-                }
+            val (location, file) = when {
+                recordedOwner != null -> recordedOwner to recorded
+                else -> owner to (onRemountedDrive(owner, recorded) ?: recorded)
+            }
+            val anchor = volumes.anchorOf(file)
+            when {
+                Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) -> FileLookup.Found(file.toFile().toURI().toString(), location.id)
+                // An address on a drive that is not there is not a file that is gone.
+                anchor != null && !Files.exists(anchor) -> FileLookup.Unreachable(location.id, FolderAvailability.NotConnected)
+                else -> FileLookup.Missing
             }
         }
+    }
+
+    /** [recorded], an address on the mount point the drive of [owner] had before, at the same path on its mount point now. */
+    private fun onRemountedDrive(owner: DesktopDownloadLocation, recorded: Path): Path? {
+        val anchorNow = volumes.anchorOf(owner.path) ?: return null
+        val anchorThen = volumes.anchorOf(recorded) ?: return null
+        if (anchorThen == anchorNow) return null
+        val moved = anchorNow.resolve(anchorThen.relativize(recorded).toString()).normalize()
+        return moved.takeIf { it.startsWith(owner.path) }
     }
 
     private fun writeMarker(location: DesktopDownloadLocation) {

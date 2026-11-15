@@ -75,8 +75,19 @@ internal actual object DownloadsPlatformDownloader {
      * An item whose file or partial file is in another location than its record says, after a move
      * that was cut short, follows the file.
      */
-    /** A file is found only where its record says. Nothing is adopted from another location by name. */
-    actual fun restoreItem(item: DownloadItem): DownloadItem = item
+    /**
+     * A file is found only where its record says. Nothing is adopted from another location by name. A
+     * finished record written before addresses were kept is given its address once, only when the file
+     * is verifiably its own (see [legacyAddressFor]).
+     */
+    actual fun restoreItem(item: DownloadItem): DownloadItem {
+        if (item.status != DownloadStatus.Completed || item.localFileUri != null) return item
+        val profileId = com.nuvio.app.features.profiles.ProfileRepository.activeProfileId
+        val address = runCatching {
+            legacyAddressFor(item, profileId, DesktopDownloads.folders.locations, storedRecordsOfAllProfiles(DesktopStorage.store("nuvio_downloads")))
+        }.getOrNull() ?: return item
+        return item.copy(localFileUri = address)
+    }
 
     actual fun start(
         request: DownloadPlatformRequest,
@@ -178,17 +189,13 @@ internal actual object DownloadsPlatformDownloader {
         return !tempFile.exists() || runCatching { tempFile.delete() }.getOrDefault(false)
     }
 
+    /** The recorded address when a file is there. Never a file found by its name instead. */
     actual fun resolveLocalFileUri(localFileUri: String?, destinationFileName: String): String? {
         localFileUri
             ?.toLocalFileOrNull()
-            ?.takeIf { it.exists() }
+            ?.takeIf { it.isFile }
             ?.let { return it.toURI().toString() }
-
-        val fileName = destinationFileName.trim().takeIf { it.isNotBlank() }
-            ?: localFileUri?.toLocalFileOrNull()?.name?.takeIf { it.isNotBlank() }
-            ?: return null
-        // Every location that can be reached is looked in; one that is away is not a file that is gone.
-        return (DesktopDownloads.folders.locations.locate(null, localFileUri, fileName) as? FileLookup.Found)?.uri
+        return (DesktopDownloads.folders.locations.locate(null, localFileUri, "") as? FileLookup.Found)?.uri
     }
 
     actual fun openDownloadsDirectory(): Boolean {

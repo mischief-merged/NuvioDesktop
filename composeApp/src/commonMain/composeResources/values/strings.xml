@@ -3147,7 +3147,7 @@
     <string name="download_folder_reason_playing">it is playing</string>
     <string name="download_folder_reason_busy">something else is changing it</string>
     <string name="download_folder_reason_still_writing">its download did not stop in time</string>
-    <string name="download_folder_reason_original">the original could not be removed</string>
+    <string name="download_folder_reason_original">moved; the original is still in the old folder</string>
     <string name="download_folder_result_kept">%1$d moved; the original could not be removed: %2$s. It is tried again at the next start.</string>
     <string name="downloads_storage_summary">Downloads: %1$s used · %2$s free</string>
     <string name="downloads_storage_summary_no_free">Downloads: %1$s used</string>
@@ -3171,12 +3171,15 @@
     <string name="download_folder_reason_kept_both">a step could not be confirmed, so the copy and the original were both kept</string>
     <string name="download_folder_reason_owned">a file of it belongs to another download</string>
     <string name="download_folder_leftovers_title">Leftover copies</string>
-    <string name="download_folder_leftovers_note">A move that did not finish cleanly left these files in two places. Nothing is removed unless you choose it.</string>
-    <string name="download_folder_leftover_row">%1$s, %2$s. Kept at %3$s. Other copy at %4$s.</string>
+    <string name="download_folder_leftovers_note">A move that did not finish cleanly left these files in two places. Nothing changes unless you choose it, and a removed copy goes to the Trash.</string>
+    <string name="download_folder_leftover_row">%1$s, %2$s. One copy at %3$s, another at %4$s.</string>
+    <string name="download_folder_unresolved_row">An interrupted move could not be settled by itself: its drive is not connected, or its record could not be read. The record is kept at %1$s and nothing was deleted. New moves wait until it is set aside.</string>
+    <string name="download_folder_unresolved_set_aside">Set aside</string>
+    <string name="download_folder_unresolved_set_aside_description">Set aside the interrupted move record %1$s</string>
     <string name="download_folder_leftover_remove">Remove the extra copy</string>
     <string name="download_folder_leftover_remove_description">Remove the extra copy of %1$s</string>
     <string name="download_folder_leftover_keep">Keep both</string>
     <string name="download_folder_leftover_keep_description">Keep both copies of %1$s</string>
-    <string name="download_folder_leftover_removed_toast">The extra copy was removed.</string>
+    <string name="download_folder_leftover_removed_toast">The extra copy was moved to the Trash.</string>
     <string name="download_folder_leftover_refused_toast">Nothing was removed: the copies are not the same, or the download does not point at the copy that stays.</string>
 </resources>

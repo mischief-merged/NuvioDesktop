@@ -1,0 +1,104 @@
+package com.nuvio.app.features.downloads
+
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Path
+import java.text.Normalizer
+import java.util.Locale
+
+/** What a move needs to know of one record of one profile. */
+internal data class RecordRef(
+    val profileId: Int,
+    val id: String,
+    val completed: Boolean,
+    val locationId: String?,
+    val localFileUri: String?,
+    val fileName: String,
+) {
+    val label: String get() = fileName.ifBlank { id }
+
+    companion object {
+        fun of(profileId: Int, item: DownloadItem) =
+            RecordRef(profileId, item.id, item.status == DownloadStatus.Completed, item.locationId, item.localFileUri, item.fileName)
+    }
+}
+
+/**
+ * Which record owns which path, over the records of every profile. A finished record owns its file and
+ * its sidecar folder; an unfinished one owns, in its location, its partial file, the final name it will
+ * write and its sidecar folder. Paths are compared canonically: links in the folder part resolved,
+ * Unicode NFC, letter case ignored (macOS and Windows volumes usually ignore it; on a volume that does
+ * not, this only refuses more).
+ */
+internal class DownloadOwnership(private val locations: DownloadLocations, records: List<RecordRef>) {
+    private class Claim(val owner: RecordRef, val key: String)
+
+    private val claims: List<Claim> = records.flatMap(::claimsOf)
+
+    private fun claimsOf(record: RecordRef): List<Claim> {
+        val files: List<Path> = if (record.completed) {
+            listOfNotNull(record.localFileUri?.let(DownloadLocations::fileOfUri)?.toPath())
+        } else {
+            val owner = locations.locationOfRecord(record.locationId, null).path
+            if (record.fileName.isBlank()) emptyList() else listOf(owner.resolve(record.fileName + ".part"), owner.resolve(record.fileName))
+        }
+        val videos = files.filterNot { it.fileName.toString().endsWith(".part") }
+        return files.map { Claim(record, keyOf(it)) } +
+            videos.map { Claim(record, keyOf(it.resolveSibling(DownloadCompanions.sidecarFolderName(it.fileName.toString())))) }
+    }
+
+    /** The record, other than [profileId]/[id], that owns [path], or null. */
+    fun otherOwner(profileId: Int, id: String, path: Path): RecordRef? {
+        val key = keyOf(path)
+        return claims.firstOrNull { claim ->
+            !(claim.owner.profileId == profileId && claim.owner.id == id) &&
+                // The same path, a path inside the claimed one, or a folder that holds the claimed one.
+                (claim.key == key || key.startsWith(claim.key + "/") || claim.key.startsWith("$key/"))
+        }?.owner
+    }
+
+    companion object {
+        /** A comparable form of [path]: the links of its existing folders resolved, NFC, lower case, '/' separators. */
+        fun keyOf(path: Path): String {
+            val absolute = path.toAbsolutePath().normalize()
+            val parent = absolute.parent
+            val realParent = parent?.let { dir ->
+                var existing: Path? = dir
+                val rest = ArrayDeque<String>()
+                while (existing != null && !Files.exists(existing, LinkOption.NOFOLLOW_LINKS)) {
+                    existing.fileName?.let { rest.addFirst(it.toString()) }
+                    existing = existing.parent
+                }
+                val base = existing?.let { runCatching { it.toRealPath() }.getOrDefault(it) } ?: dir
+                rest.fold(base) { acc, part -> acc.resolve(part) }
+            }
+            val full = (realParent?.resolve(absolute.fileName?.toString() ?: "") ?: absolute).toString().replace('\\', '/')
+            return Normalizer.normalize(full, Normalizer.Form.NFC).lowercase(Locale.ROOT)
+        }
+    }
+}
+
+/**
+ * The one-time migration for a finished record written before addresses were kept (design, section 5.5):
+ * the address of `<its location>/<fileName>`, only if that is a regular file, not a link, of exactly the
+ * record's size, and no other record of any profile owns it. Otherwise null: nothing is substituted.
+ */
+internal fun legacyAddressFor(
+    item: DownloadItem,
+    profileId: Int,
+    locations: DownloadLocations,
+    records: List<RecordRef>?,
+): String? {
+    if (item.status != DownloadStatus.Completed || item.localFileUri != null) return null
+    val name = item.fileName.trim()
+    if (name.isEmpty() || name.contains('/') || name.contains('\\') || name == "." || name == "..") return null
+    val known = records ?: return null
+    val size = item.totalBytes?.takeIf { it > 0L } ?: item.downloadedBytes.takeIf { it > 0L } ?: return null
+    val location = locations.location(item.locationId) ?: return null
+    if (locations.availability(location) != FolderAvailability.Available) return null
+    val file = location.path.resolve(name)
+    if (Files.isSymbolicLink(file) || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) return null
+    if (runCatching { Files.size(file) }.getOrNull() != size) return null
+    if (DownloadOwnership(locations, known).otherOwner(profileId, item.id, file) != null) return null
+    return file.toFile().toURI().toString()
+}

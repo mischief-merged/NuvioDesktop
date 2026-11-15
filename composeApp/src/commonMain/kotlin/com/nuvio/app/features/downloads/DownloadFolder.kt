@@ -132,7 +132,7 @@ internal enum class MoveFailureReason {
     /** Its download did not stop in time, so its size could not be trusted. */
     StillWriting,
 
-    /** Moved, but the original could not be removed. It stays, and a leftover copy is listed. */
+    /** Moved, but the original is still in the old folder: the Trash did not take it, or it could not be checked. Listed as a leftover. */
     OriginalNotRemoved,
 
     /** A barrier failed: the copy is where it is, the original stays, and the leftover is listed. */
@@ -142,13 +142,22 @@ internal enum class MoveFailureReason {
     OwnedByAnother,
 }
 
-/** A file that exists in two places, or is untracked, after a move that did not finish cleanly. */
+internal enum class LeftoverKind {
+    /** A download whose files exist in two places, or a copy its record does not use. */
+    Copy,
+
+    /** A move record that could not be read or settled. New moves wait until it is set aside. */
+    Unresolved,
+}
+
+/** A file that exists in two places after a move that did not finish cleanly, or a move record to resolve. */
 internal data class LeftoverCopy(
     val id: String,
     val name: String,
     val sizeBytes: Long,
     val sourcePath: String,
     val destinationPath: String,
+    val kind: LeftoverKind = LeftoverKind.Copy,
 )
 
 internal data class MoveFailure(val name: String, val reason: MoveFailureReason, val detail: String? = null)
@@ -244,6 +253,9 @@ internal interface DownloadFolderController {
     /** Removes the extra copy of a leftover after checking it is equal and the record points at the other. Null text means done. */
     fun removeExtraCopy(leftoverId: String): LeftoverOutcome = LeftoverOutcome.Refused
     fun keepBoth(leftoverId: String) = Unit
+
+    /** Keeps an unresolved move record aside, without overwriting anything, so new moves can start. */
+    fun setAside(leftoverId: String): Boolean = false
 }
 
 internal enum class LeftoverOutcome {

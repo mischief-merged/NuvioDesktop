@@ -35,6 +35,9 @@ internal actual object DownloadsTrash {
         trash.isSameFile(firstFileUri, secondFileUri)
 
     actual fun purgeHeldFiles(nowEpochMs: Long): Int = trash.purgeHeldFiles(nowEpochMs)
+
+    /** For the mover: one file or folder inside a location, to the Trash. Never deleted. */
+    fun moveToTrash(path: Path): Boolean = trash.moveToTrash(path)
 }
 
 private fun systemTrashIsSupported(): Boolean = runCatching {
@@ -79,6 +82,21 @@ internal class DesktopDownloadsTrash(
         // The file is out. Subtitles that cannot follow it stay beside where it was.
         subtitles?.let { runCatching { hold(root, it) } }
         return true
+    }
+
+    /**
+     * Sends one file or folder that is inside a downloads folder (at any depth, never the folder itself
+     * or its holding folder) to the Trash of the system, or, without one, to the holding folder of that
+     * downloads folder. A link is refused and never followed. Nothing is deleted. True when it is out.
+     */
+    fun moveToTrash(path: Path): Boolean = synchronized(this) {
+        if (Files.isSymbolicLink(path) || !Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return false
+        val real = runCatching { path.parent.toRealPath().resolve(path.fileName) }.getOrNull() ?: return false
+        val root = roots().firstOrNull { real.startsWith(it) && real != it } ?: return false
+        if (real.startsWith(root.resolve(HoldingFolderName))) return false
+        val trash = systemTrash
+        if (trash != null) return trash(real.toFile()) && !Files.exists(real, LinkOption.NOFOLLOW_LINKS)
+        return runCatching { hold(root, real) }.isSuccess
     }
 
     /** Whether two addresses lead to the same file once links and relative parts are resolved. */

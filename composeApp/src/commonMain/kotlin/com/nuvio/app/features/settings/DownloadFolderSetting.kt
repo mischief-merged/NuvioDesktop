@@ -256,8 +256,12 @@ private fun LeftoverCopies(
         )
         Text(stringResource(Res.string.download_folder_leftovers_note), style = MaterialTheme.typography.bodySmall)
         leftovers.forEach { leftover ->
+            if (leftover.kind == com.nuvio.app.features.downloads.LeftoverKind.Unresolved) {
+                UnresolvedMove(leftover, controller, scope)
+                return@forEach
+            }
             val row = stringResource(
-                Res.string.download_folder_leftover_row, leftover.name, formatBytes(leftover.sizeBytes), leftover.destinationPath, leftover.sourcePath,
+                Res.string.download_folder_leftover_row, leftover.name, formatBytes(leftover.sizeBytes), leftover.sourcePath, leftover.destinationPath,
             )
             Text(row, modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = row }, style = MaterialTheme.typography.bodySmall)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -279,4 +283,20 @@ private fun LeftoverCopies(
             }
         }
     }
+}
+
+/** A move record that could not be read or settled: it is kept, and set aside only when the user says so. */
+@Composable
+private fun UnresolvedMove(
+    leftover: com.nuvio.app.features.downloads.LeftoverCopy,
+    controller: DownloadFolderController,
+    scope: kotlinx.coroutines.CoroutineScope,
+) {
+    val row = stringResource(Res.string.download_folder_unresolved_row, leftover.sourcePath)
+    Text(row, modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = row }, style = MaterialTheme.typography.bodySmall)
+    val label = stringResource(Res.string.download_folder_unresolved_set_aside_description, leftover.name)
+    TextButton(
+        onClick = { scope.launch { withContext(Dispatchers.Default) { controller.setAside(leftover.id) } } },
+        modifier = Modifier.semantics { contentDescription = label },
+    ) { Text(stringResource(Res.string.download_folder_unresolved_set_aside)) }
 }

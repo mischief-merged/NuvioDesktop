@@ -119,12 +119,15 @@ internal object DesktopStorage {
             properties.stringPropertyNames().toSet()
         }
 
-        /** Flushes the saved file and its folder to disk. For the few writes that must survive a power cut. */
+        /**
+         * Flushes the saved file and then its folder to disk. For the few writes that must survive a power
+         * cut. True only when both flushes succeeded; a folder that cannot be flushed here is a failure.
+         */
         fun sync(): Boolean = synchronized(lock) {
             ensureLoaded()
             runCatching {
                 java.nio.channels.FileChannel.open(file, java.nio.file.StandardOpenOption.WRITE).use { it.force(true) }
-                runCatching { java.nio.channels.FileChannel.open(file.parent, java.nio.file.StandardOpenOption.READ).use { it.force(true) } }
+                java.nio.channels.FileChannel.open(file.parent, java.nio.file.StandardOpenOption.READ).use { it.force(true) }
             }.isSuccess
         }
 

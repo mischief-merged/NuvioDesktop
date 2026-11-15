@@ -61,6 +61,9 @@ object DownloadsRepository {
     // The downloads that were started again when the list was loaded, until someone asks for them.
     private var downloadsResumedAtLoad: Set<String> = emptySet()
 
+    // The profile whose list is in memory. Null until a list was loaded.
+    private var loadedProfileId: Int? = null
+
     fun ensureLoaded(): Unit = synchronized(stateLock) {
         if (hasLoaded) return
         loadFromDisk()
@@ -79,6 +82,7 @@ object DownloadsRepository {
         activeTransfers.clear()
         transfers.forEach(ActiveTransfer::cancel)
         hasLoaded = false
+        loadedProfileId = null
         _hasUnseenCompleted.value = false
         _uiState.value = DownloadsUiState()
         notifyLiveStatusPlatform()
@@ -458,6 +462,7 @@ object DownloadsRepository {
     private fun loadFromDisk(): Unit = synchronized(stateLock) {
         _hasUnseenCompleted.value = false
         hasLoaded = true
+        loadedProfileId = com.nuvio.app.features.profiles.ProfileRepository.activeProfileId
         loadedPayload = null
         savingIsUnsafe = false
         val payload = backend.loadPayload().orEmpty().trim()
@@ -898,15 +903,49 @@ object DownloadsRepository {
         backend.savePayload(DownloadsCodec.encode(_uiState.value.items, loadedPayload))
     }
 
-    /** The file of a download moved: its record now names its new location and address. */
-    internal fun relocateDownload(downloadId: String, locationId: String, localFileUri: String?) {
-        ensureLoaded()
-        mutateItem(downloadId) { current ->
-            current.copy(
-                locationId = locationId,
-                localFileUri = if (current.status == DownloadStatus.Completed) localFileUri ?: current.localFileUri else current.localFileUri,
-            )
-        }
+    /** The profile whose list is in memory, or null before one was loaded. */
+    internal fun loadedProfile(): Int? = synchronized(stateLock) { loadedProfileId.takeIf { hasLoaded } }
+
+    /**
+     * The record [downloadId] of [profileId], read from that profile's list: the one in memory when it is
+     * that profile's, otherwise the stored one. Null when there is no such record or the list cannot be read.
+     */
+    internal fun recordOf(profileId: Int, downloadId: String, lists: ProfileLists): DownloadItem? = synchronized(stateLock) {
+        listFor(profileId, lists)?.first?.firstOrNull { it.id == downloadId }
+    }
+
+    private fun listFor(profileId: Int, lists: ProfileLists): Pair<List<DownloadItem>, DownloadsCodec.Decoded?>? {
+        if (hasLoaded && loadedProfileId == profileId) return _uiState.value.items to loadedPayload
+        val payload = runCatching { lists.load(profileId) }.getOrNull()?.trim().orEmpty()
+        if (payload.isEmpty()) return emptyList<DownloadItem>() to null
+        val decoded = DownloadsCodec.decode(payload) ?: return null
+        return decoded.items to decoded
+    }
+
+    /**
+     * The only way a record is pointed at a moved file. In ONE step under the state lock: loads the list
+     * of [profileId] (the in-memory list only when it is that profile's), checks that the record
+     * [downloadId] still [matches] what the move planned, applies [relocate], saves that profile's list
+     * and flushes it to disk. Confirmed only when every part of that succeeded. Nothing else is changed.
+     */
+    internal fun compareAndRelocate(
+        profileId: Int,
+        downloadId: String,
+        lists: ProfileLists,
+        matches: (DownloadItem) -> Boolean,
+        relocate: (DownloadItem) -> DownloadItem,
+    ): RelocateResult = synchronized(stateLock) {
+        val inMemory = hasLoaded && loadedProfileId == profileId
+        if (inMemory && savingIsUnsafe) return RelocateResult.NotDurable
+        val (items, base) = listFor(profileId, lists) ?: return RelocateResult.ListUnreadable
+        val current = items.firstOrNull { it.id == downloadId } ?: return RelocateResult.RecordGone
+        if (!matches(current)) return RelocateResult.RecordChanged
+        val updated = items.map { if (it.id == downloadId) relocate(it) else it }
+        val saved = runCatching { lists.saveDurably(profileId, DownloadsCodec.encode(updated, base)) }.getOrDefault(false)
+        // Not confirmed: the in-memory list is left as it was. Nothing may depend on the new record.
+        if (!saved) return RelocateResult.NotDurable
+        if (inMemory) publish(updated)
+        RelocateResult.Confirmed
     }
 
     /**
@@ -1055,6 +1094,29 @@ internal interface DownloadsBackend {
     fun placementFor(items: List<DownloadItem>, parentMetaId: String, isEpisode: Boolean): String? = null
 }
 
+/** The stored lists of downloads, one per profile, as the move reads and saves them. */
+internal interface ProfileLists {
+    fun load(profileId: Int): String?
+
+    /** Saves the list of [profileId] and flushes the file and its folder. True only when every flush succeeded. */
+    fun saveDurably(profileId: Int, payload: String): Boolean
+}
+
+internal enum class RelocateResult {
+    /** The record points at the new place and that is on disk. */
+    Confirmed,
+    RecordGone,
+
+    /** The record no longer is the one the move planned for. */
+    RecordChanged,
+
+    /** The profile's list cannot be read. */
+    ListUnreadable,
+
+    /** The save, or one of its flushes, did not succeed or could not be confirmed. */
+    NotDurable,
+}
+
 internal enum class DownloadDeleteResult {
     Removed,
 
@@ -1157,7 +1219,14 @@ private object PlatformDownloadsBackend : DownloadsBackend {
  * that this build does not know are written back with it, and the items it could not read are
  * written back as they were.
  */
-private object DownloadsCodec {
+/** The records of a stored list, or null when the list, or any record in it, cannot be read. */
+internal fun decodeStoredDownloads(payload: String): List<DownloadItem>? {
+    if (payload.isBlank()) return emptyList()
+    val decoded = DownloadsCodec.decode(payload) ?: return null
+    return decoded.items.takeIf { decoded.unreadableItems.isEmpty() }
+}
+
+internal object DownloadsCodec {
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true

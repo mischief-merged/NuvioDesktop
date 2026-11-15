@@ -6,11 +6,6 @@ import com.nuvio.app.features.profiles.ProfileRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
 import java.awt.Desktop
 import java.io.File
 import java.nio.file.Files
@@ -27,21 +22,47 @@ internal interface DownloadsHooks {
     /** Pauses a running download and waits until it has stopped writing. False when it did not stop. */
     fun pauseAndWait(downloadId: String): Boolean
     fun resume(downloadId: String)
-
-    /** Points the record at its new place and saves it so that it survives a power cut. */
-    fun relocate(downloadId: String, locationId: String, localFileUri: String?)
     fun resumeHeld()
 
-    /** The profile whose list this is. A move belongs to the one that started it. */
+    /** The profile whose list [items] is. A move belongs to the one that started it. */
     fun profileId(): Int = 0
 
-    /** The location and address of every record in the stored list of every profile, the active one included. */
-    fun recordsOfAllProfiles(): List<Pair<String?, String?>> = items().map { it.locationId to it.localFileUri }
+    /** Every record of every profile. Null when the list of any profile cannot be read. */
+    fun allRecords(): List<RecordRef>? = items().map { RecordRef.of(profileId(), it) }
+
+    /** The record [downloadId] in the list of [profileId], whichever profile is active. */
+    fun recordOf(profileId: Int, downloadId: String): DownloadItem?
+
+    /** The one compare-and-relocate: see [DownloadsRepository.compareAndRelocate]. */
+    fun compareAndRelocate(
+        profileId: Int,
+        downloadId: String,
+        matches: (DownloadItem) -> Boolean,
+        relocate: (DownloadItem) -> DownloadItem,
+    ): RelocateResult
 }
 
-internal object RepositoryDownloadsHooks : DownloadsHooks {
-    private val lenient = Json { ignoreUnknownKeys = true }
+/** The stored lists of every profile, in the store the repository saves them in. */
+internal object DesktopProfileLists : ProfileLists {
+    private val store get() = DesktopStorage.store("nuvio_downloads")
 
+    override fun load(profileId: Int): String? = store.getString(ProfileScopedKey.of("downloads", profileId))
+
+    override fun saveDurably(profileId: Int, payload: String): Boolean {
+        store.putString(ProfileScopedKey.of("downloads", profileId), payload)
+        return store.sync()
+    }
+}
+
+/** The records of every profile's stored list. Null when one of them cannot be read. */
+internal fun storedRecordsOfAllProfiles(store: DesktopStorage.Store): List<RecordRef>? =
+    store.keys().mapNotNull { key -> key.removePrefix("downloads_").takeIf { key.startsWith("downloads_") && it.isNotEmpty() && it.all(Char::isDigit) }?.toIntOrNull()?.let { it to key } }
+        .flatMap { (profileId, key) ->
+            val items = decodeStoredDownloads(store.getString(key).orEmpty()) ?: return null
+            items.map { RecordRef.of(profileId, it) }
+        }
+
+internal object RepositoryDownloadsHooks : DownloadsHooks {
     override fun items(): List<DownloadItem> {
         DownloadsRepository.ensureLoaded()
         return DownloadsRepository.uiState.value.items
@@ -49,31 +70,31 @@ internal object RepositoryDownloadsHooks : DownloadsHooks {
 
     override fun pauseAndWait(downloadId: String): Boolean = DownloadsRepository.pauseAndWait(downloadId)
     override fun resume(downloadId: String) = DownloadsRepository.resumeDownload(downloadId)
-
-    override fun relocate(downloadId: String, locationId: String, localFileUri: String?) {
-        DownloadsRepository.relocateDownload(downloadId, locationId, localFileUri)
-        DesktopStorage.store("nuvio_downloads").sync()
-    }
-
     override fun resumeHeld() = DownloadsRepository.resumeHeldByFolder()
     override fun profileId(): Int = ProfileRepository.activeProfileId
 
-    override fun recordsOfAllProfiles(): List<Pair<String?, String?>> {
-        val active = items().map { it.locationId to it.localFileUri }
-        val store = DesktopStorage.store("nuvio_downloads")
-        val activeKey = ProfileScopedKey.of("downloads")
-        val others = store.keys().filter { it.startsWith("downloads_") && it != activeKey && it.removePrefix("downloads_").all(Char::isDigit) }
-            .flatMap { key ->
-                val payload = store.getString(key) ?: return@flatMap emptyList()
-                val array = (runCatching { lenient.parseToJsonElement(payload) }.getOrNull() as? JsonObject)?.get("items") as? JsonArray
-                array.orEmpty().mapNotNull { element ->
-                    val record = element as? JsonObject ?: return@mapNotNull null
-                    (record["locationId"] as? JsonPrimitive)?.contentOrNull to (record["localFileUri"] as? JsonPrimitive)?.contentOrNull
-                }
-            }
-        return active + others
+    override fun allRecords(): List<RecordRef>? {
+        val inMemory = items()
+        val loaded = DownloadsRepository.loadedProfile() ?: return null
+        val stored = storedRecordsOfAllProfiles(DesktopStorage.store("nuvio_downloads")) ?: return null
+        return inMemory.map { RecordRef.of(loaded, it) } + stored.filter { it.profileId != loaded }
     }
+
+    override fun recordOf(profileId: Int, downloadId: String): DownloadItem? =
+        DownloadsRepository.recordOf(profileId, downloadId, DesktopProfileLists)
+
+    override fun compareAndRelocate(
+        profileId: Int,
+        downloadId: String,
+        matches: (DownloadItem) -> Boolean,
+        relocate: (DownloadItem) -> DownloadItem,
+    ): RelocateResult = DownloadsRepository.compareAndRelocate(profileId, downloadId, DesktopProfileLists, matches, relocate)
 }
+
+/** The record is exactly the one a move planned for: same location, address, name and state. */
+internal fun DownloadItem.isAsPlanned(item: MoveItem): Boolean =
+    locationId == item.recordLocationId && localFileUri == item.recordUri && fileName == item.recordFileName &&
+        (status == DownloadStatus.Completed) == item.completed
 
 /** The desktop side of download locations: where files live, what is reachable, and moving. */
 internal class DesktopDownloadFolders(
@@ -104,7 +125,6 @@ internal class DesktopDownloadFolders(
     private val moveRunning = AtomicBoolean(false)
     private val lastAvailability = java.util.concurrent.ConcurrentHashMap<String, FolderAvailability>()
     private var monitor: Thread? = null
-    @Volatile private var resumeAfterRecovery: List<String> = emptyList()
 
     override fun pickFolder(): String? = picker()
 
@@ -225,10 +245,9 @@ internal class DesktopDownloadFolders(
     fun start() {
         if (monitor != null) return
         monitor = Thread({
-            runCatching { resumeAfterRecovery.forEach(hooks::resume) }
             while (true) {
                 // An interrupted move is settled as soon as its locations are there, and again when they come back.
-                if (mover.hasJournals() && !moveRunning.get()) runCatching { settleInterrupted(withRecords = true) }
+                if (!moveRunning.get() && mover.unresolvedJournals().isNotEmpty()) runCatching { mover.recover() }
                 runCatching { refresh() }
                 try {
                     Thread.sleep(CheckIntervalMs)
@@ -242,82 +261,80 @@ internal class DesktopDownloadFolders(
         }
     }
 
-    /** At start: removes temporary files an interrupted move left, which needs no list. The rest waits for the list. */
-    fun recoverInterrupted(): RecoveryReport? = if (mover.hasJournals()) settleInterrupted(withRecords = false) else null
-
-    /**
-     * One pass of recovery. With the list loaded it may also finish a record update the journal proves.
-     * It never deletes an original or a file at a final name.
-     */
-    fun settleInterrupted(withRecords: Boolean): RecoveryReport =
-        mover.recover(
-            if (!withRecords) {
-                null
-            } else {
-                RecoveryContext(
-                    profileId = hooks.profileId(),
-                    recordMatches = ::recordMatches,
-                    relocate = { item, path -> hooks.relocate(item.itemId, mover.destinationOf(item), path?.toFile()?.toURI()?.toString()) },
-                )
-            },
-        )
+    /** At start: settles an interrupted move. It touches no user file and changes no record. */
+    fun recoverInterrupted(): RecoveryReport? = if (mover.hasJournals()) mover.recover() else null
 
     private class Planned(val items: List<MoveItem>, val unreachable: Int, val failures: List<MoveFailure>)
 
     private fun rel(root: Path, path: Path): String = root.relativize(path).toString()
 
-    private fun plan(ready: List<DownloadItem>, destination: DesktopDownloadLocation, all: List<DownloadItem>): Planned {
+    /**
+     * What to move for each item, by its record and nothing else. With [ownership], a path of the item, or
+     * a destination path, that another record of any profile owns stops that item; without it (null) every
+     * item stops, unless [forSizeOnly].
+     */
+    private fun plan(ready: List<DownloadItem>, destination: DesktopDownloadLocation, ownership: DownloadOwnership?, forSizeOnly: Boolean = false): Planned {
         val moveItems = mutableListOf<MoveItem>()
         val failures = mutableListOf<MoveFailure>()
         val profile = hooks.profileId()
         var unreachable = 0
         ready.forEach { item ->
-            val owner = locations.locationOfRecord(item.locationId, item.localFileUri)
+            if (ownership == null && !forSizeOnly) {
+                failures += MoveFailure(item.fileName, MoveFailureReason.OwnedByAnother, "the downloads of another profile could not be read")
+                return@forEach
+            }
+            fun ownedBy(paths: List<Path>): String? = ownership?.let { o -> paths.firstNotNullOfOrNull { o.otherOwner(profile, item.id, it)?.label } }
             if (item.status == DownloadStatus.Completed) {
                 when (val found = locations.locate(item.locationId, item.localFileUri, item.fileName)) {
                     is FileLookup.Found -> if (found.locationId != destination.id) {
                         val video = DownloadLocations.fileOfUri(found.uri)?.toPath() ?: return@forEach
                         val root = locations.location(found.locationId)?.path ?: return@forEach
-                        if (Files.isSymbolicLink(video)) {
+                        val companions = DownloadCompanions.of(video)
+                        if (Files.isSymbolicLink(video) || companions.skippedLinks.isNotEmpty()) {
                             failures += MoveFailure(item.fileName, MoveFailureReason.Symlink)
                             return@forEach
                         }
-                        val sidecar = DownloadCompanions.of(video).files
-                        val ours = (listOf(video) + sidecar.map { it.path }).map { it.toAbsolutePath().normalize() }.toSet()
-                        // A path that belongs to another record stops this item.
-                        val owned = all.any { other ->
-                            other.id != item.id && (
-                                (other.fileName == item.fileName && locationIdOf(other) == locationIdOf(item)) ||
-                                    other.localFileUri?.let(DownloadLocations::fileOfUri)?.toPath()?.toAbsolutePath()?.normalize() in ours
-                                )
-                        }
-                        if (owned) {
-                            failures += MoveFailure(item.fileName, MoveFailureReason.OwnedByAnother)
+                        val sources = listOf(video) + companions.files.map { it.path }
+                        val targets = listOf(destination.path.resolve(video.fileName.toString())) + companions.files.map { destination.path.resolve(it.relativeName) }
+                        ownedBy(sources + targets)?.let { other ->
+                            failures += MoveFailure(item.fileName, MoveFailureReason.OwnedByAnother, other)
                             return@forEach
                         }
-                        val entries = mutableListOf(
+                        val entries = listOf(
                             MoveEntry(found.locationId.orEmpty(), rel(root, video), destination.id, video.fileName.toString(), MoveKind.File, Files.size(video)),
-                        )
-                        sidecar.forEach { companion ->
-                            entries += MoveEntry(found.locationId.orEmpty(), rel(root, companion.path), destination.id, companion.relativeName, MoveKind.Companion, Files.size(companion.path))
+                        ) + companions.files.map { companion ->
+                            MoveEntry(found.locationId.orEmpty(), rel(root, companion.path), destination.id, companion.relativeName, MoveKind.Companion, Files.size(companion.path))
                         }
-                        moveItems += MoveItem(profile, item.id, item.locationId, rel(root, video), entries)
+                        val newUri = destination.path.resolve(video.fileName.toString()).toFile().toURI().toString()
+                        moveItems += MoveItem(profile, item.id, item.locationId, item.localFileUri, item.fileName, true, newUri, entries)
                     }
                     is FileLookup.Unreachable -> unreachable++
-                    FileLookup.Missing -> Unit
+                    FileLookup.Missing -> failures += MoveFailure(item.fileName, MoveFailureReason.CouldNotRead)
                 }
-            } else if (owner.id != destination.id) {
-                if (locations.availability(owner) != FolderAvailability.Available) {
-                    unreachable++
-                } else {
-                    val partial = owner.path.resolve(item.fileName + ".part")
-                    when {
-                        Files.isSymbolicLink(partial) -> failures += MoveFailure(item.fileName, MoveFailureReason.Symlink)
-                        Files.isRegularFile(partial, LinkOption.NOFOLLOW_LINKS) -> moveItems += MoveItem(
-                            profile, item.id, item.locationId, item.fileName + ".part",
-                            listOf(MoveEntry(owner.id, item.fileName + ".part", destination.id, item.fileName + ".part", MoveKind.Partial, Files.size(partial))),
-                        )
-                        else -> moveItems += MoveItem(profile, item.id, item.locationId, item.fileName, emptyList())
+            } else {
+                val owner = locations.ownerOf(item.locationId, item.localFileUri)
+                when {
+                    owner == null || locations.availability(owner) != FolderAvailability.Available -> unreachable++
+                    owner.id == destination.id -> Unit
+                    else -> {
+                        val partialName = item.fileName + ".part"
+                        val partial = owner.path.resolve(partialName)
+                        val targets = listOf(destination.path.resolve(partialName), destination.path.resolve(item.fileName))
+                        val other = ownedBy(listOf(partial) + targets)
+                        when {
+                            other != null -> failures += MoveFailure(item.fileName, MoveFailureReason.OwnedByAnother, other)
+                            Files.isSymbolicLink(partial) -> failures += MoveFailure(item.fileName, MoveFailureReason.Symlink)
+                            // The download will write its final name there when it finishes: that name must be free.
+                            targets.any { Files.exists(it, LinkOption.NOFOLLOW_LINKS) } -> failures += MoveFailure(item.fileName, MoveFailureReason.NameTaken)
+                            else -> {
+                                val entries = if (Files.isRegularFile(partial, LinkOption.NOFOLLOW_LINKS)) {
+                                    listOf(MoveEntry(owner.id, partialName, destination.id, partialName, MoveKind.Partial, Files.size(partial)))
+                                } else {
+                                    emptyList()
+                                }
+                                moveItems += MoveItem(profile, item.id, item.locationId, item.localFileUri, item.fileName, false, null, entries)
+                            }
+                        }
                     }
                 }
             }
@@ -325,17 +342,12 @@ internal class DesktopDownloadFolders(
         return Planned(moveItems, unreachable, failures)
     }
 
+    /** Every byte a move copies, on every volume: there is no rename, and the originals stay in the Trash until it is emptied. */
     override fun bytesToCopy(itemIds: Set<String>, destinationPath: String): Long {
-        val destinationDir = runCatching { Paths.get(destinationPath) }.getOrNull()?.let(::existingAncestor) ?: return 0L
-        val all = hooks.items()
-        val items = all.filter { it.id in itemIds }
-        return plan(items, DesktopDownloadLocation("?", Paths.get(destinationPath)), all).items
-            .flatMap { it.entries }
-            .filterNot { entry ->
-                val source = locations.location(entry.srcLocationId)?.path?.resolve(entry.srcRel) ?: return@filterNot true
-                runCatching { Files.getFileStore(source) == Files.getFileStore(destinationDir) }.getOrDefault(false)
-            }
-            .sumOf { it.size }
+        val destination = runCatching { Paths.get(destinationPath).toAbsolutePath().normalize() }.getOrNull() ?: return 0L
+        val known = locations.all().firstOrNull { DownloadLocations.samePath(it.path, destination) } ?: DesktopDownloadLocation("?", destination)
+        val items = hooks.items().filter { it.id in itemIds }
+        return plan(items, known, null, forSizeOnly = true).items.flatMap { it.entries }.sumOf { it.size }
     }
 
     private fun acquireWriterToken(id: String): Boolean {
@@ -346,6 +358,34 @@ internal class DesktopDownloadFolders(
             waited += 10
         }
         return true
+    }
+
+    /** What the mover asks of the lists: answered from each item's own profile, never from the active one. */
+    private val records = object : MoveRecords {
+        override fun relocate(item: MoveItem, destinationId: String): RelocateResult =
+            hooks.compareAndRelocate(item.profileId, item.itemId, { it.isAsPlanned(item) }) { record ->
+                record.copy(
+                    locationId = destinationId,
+                    localFileUri = if (record.status == DownloadStatus.Completed) item.newUri else record.localFileUri,
+                )
+            }
+
+        override fun sideOf(item: MoveItem): RecordSide {
+            val record = hooks.recordOf(item.profileId, item.itemId) ?: return RecordSide.Missing
+            val main = item.main ?: return RecordSide.Missing
+            return when {
+                record.isAsPlanned(item) -> RecordSide.AtSource
+                record.locationId == main.dstLocationId && record.fileName == item.recordFileName &&
+                    (record.status == DownloadStatus.Completed) == item.completed &&
+                    (!item.completed || record.localFileUri == item.newUri) -> RecordSide.AtDestination
+                else -> RecordSide.Missing
+            }
+        }
+
+        override fun otherOwner(item: MoveItem, path: Path): String? {
+            val all = hooks.allRecords() ?: return "the downloads of another profile could not be read"
+            return DownloadOwnership(locations, all).otherOwner(item.profileId, item.itemId, path)?.label
+        }
     }
 
     override fun move(itemIds: Set<String>, destinationPath: String): MoveReport {
@@ -359,6 +399,8 @@ internal class DesktopDownloadFolders(
             FolderCheck.Ok -> Unit
         }
         if (!moveRunning.compareAndSet(false, true)) return MoveReport(destinationPath, name, 0, problem = FolderProblem.MoveInProgress)
+        // From this moment switching profile is refused.
+        _state.value = _state.value.copy(moving = true)
         cancelRequested.set(false)
         val startedProfile = hooks.profileId()
         val locked = mutableListOf<String>()
@@ -366,105 +408,75 @@ internal class DesktopDownloadFolders(
         val paused = mutableListOf<String>()
         val prefailed = mutableListOf<MoveFailure>()
         try {
+            if (mover.unresolvedJournals().isNotEmpty()) return MoveReport(destinationPath, name, 0, problem = FolderProblem.PreviousMoveUnresolved)
             val destination = locations.register(path)
             if (locations.availability(destination) != FolderAvailability.Available) {
                 return MoveReport(destinationPath, name, 0, problem = FolderProblem.NotConnected)
             }
-            val everything = hooks.items()
-            val ready = mutableListOf<DownloadItem>()
-            everything.filter { it.id in itemIds }.forEach { item ->
+            hooks.items().filter { it.id in itemIds }.forEach { item ->
                 when {
                     isPlaying(item) -> prefailed += MoveFailure(item.fileName, MoveFailureReason.Playing)
                     !ItemLocks.tryAcquire(item.id) -> prefailed += MoveFailure(item.fileName, MoveFailureReason.Busy)
                     else -> {
                         locked += item.id
-                        // Exactly one writer: a running download is asked to stop and waited for, and the
-                        // item's writer token is taken. A writer that is still closing its file is waited for.
+                        // Exactly one writer: a running download is asked to stop, and the item's writer token is
+                        // taken whatever its status, waiting for a writer that is still closing its file.
                         val wasRunning = item.status == DownloadStatus.Downloading
+                        if (wasRunning) paused += item.id
                         val stopped = !wasRunning || hooks.pauseAndWait(item.id)
                         if (stopped && acquireWriterToken(item.id)) {
                             tokens += item.id
-                            if (wasRunning) paused += item.id
-                            ready += item
                         } else {
                             prefailed += MoveFailure(item.fileName, MoveFailureReason.StillWriting)
-                            ItemLocks.release(item.id)
-                            locked.remove(item.id)
-                            if (wasRunning) paused += item.id
                         }
                     }
                 }
             }
-            movingNow = ready.map { it.id }.toSet()
+            movingNow = tokens.toSet()
             _state.value = _state.value.copy(moving = true, movingIds = movingNow)
-            val planned = plan(hooks.items().filter { it.id in movingNow }, destination, everything)
+            val ownership = hooks.allRecords()?.let { DownloadOwnership(locations, it) }
+            val planned = plan(hooks.items().filter { it.id in movingNow }, destination, ownership)
             val report = mover.run(
                 plan = MovePlan(destination.id, name, planned.items),
                 isCancelled = { cancelRequested.get() || hooks.profileId() != startedProfile },
                 onProgress = { _progress.value = it },
-                canCommit = { moveItem -> hooks.profileId() == moveItem.profileId && recordMatches(moveItem) },
-                onMoved = { moveItem, target -> hooks.relocate(moveItem.itemId, destination.id, target?.toFile()?.toURI()?.toString()) },
+                records = records,
             )
-            // A location that holds nothing in any profile's list is forgotten, after a move that ended normally.
-            if (report.problem == null) {
-                val used = hooks.recordsOfAllProfiles().map { (id, uri) -> locations.locationOfRecord(id, uri).id }.toSet()
-                locations.forgetExcept(used)
-            }
+            // A location that no record of any profile and no journal names is forgotten, after a move that ended normally.
+            val journalled = mover.referencedLocations()
+            val used = hooks.allRecords()?.map { locations.locationOfRecord(it.locationId, it.localFileUri).id }?.toSet()
+            if (report.problem == null && journalled != null && used != null) locations.forgetExcept(used + journalled)
             return report.copy(
                 unreachable = planned.unreachable,
                 failures = prefailed + planned.failures + report.failures,
             )
         } finally {
-            movingNow = emptySet()
-            usage.invalidate()
-            tokens.forEach(WriterTokens::release)
-            locked.forEach(ItemLocks::release)
-            paused.distinct().forEach(hooks::resume)
-            hooks.resumeHeld()
-            _progress.value = null
-            moveRunning.set(false)
-            refresh()
-        }
-    }
-
-    /** The record is the one the move planned for: it exists and still points at the journalled source. */
-    private fun recordMatches(moveItem: MoveItem): Boolean {
-        val record = hooks.items().firstOrNull { it.id == moveItem.itemId } ?: return false
-        if (record.locationId != moveItem.recordLocationId) return false
-        val main = moveItem.main ?: return true
-        val source = locations.location(main.srcLocationId)?.path?.resolve(main.srcRel)?.normalize() ?: return false
-        return currentPathOf(record) == source
-    }
-
-    /** Where the record's file is, by the record and nowhere else. */
-    private fun currentPathOf(record: DownloadItem): Path? =
-        if (record.status == DownloadStatus.Completed) {
-            (locations.locate(record.locationId, record.localFileUri, record.fileName) as? FileLookup.Found)
-                ?.let { DownloadLocations.fileOfUri(it.uri)?.toPath()?.normalize() }
-        } else {
-            locations.ownerOf(record.locationId, record.localFileUri)?.path?.resolve(record.fileName + ".part")?.normalize()
-        }
-
-    private fun recordSide(moveItem: MoveItem): RecordSide {
-        val record = hooks.items().firstOrNull { it.id == moveItem.itemId } ?: return RecordSide.Missing
-        val main = moveItem.main ?: return RecordSide.Missing
-        val current = currentPathOf(record) ?: return RecordSide.Missing
-        val source = locations.location(main.srcLocationId)?.path?.resolve(main.srcRel)?.normalize()
-        val target = locations.location(main.dstLocationId)?.path?.resolve(main.dstRel)?.normalize()
-        return when (current) {
-            source -> RecordSide.AtSource
-            target -> RecordSide.AtDestination
-            else -> RecordSide.Missing
+            // Every release on its own, so that one failure cannot keep anything else held.
+            try {
+                movingNow = emptySet()
+                runCatching { usage.invalidate() }
+                tokens.forEach { id -> runCatching { WriterTokens.release(id) } }
+                locked.forEach { id -> runCatching { ItemLocks.release(id) } }
+                paused.distinct().forEach { id -> runCatching { hooks.resume(id) } }
+                runCatching { hooks.resumeHeld() }
+            } finally {
+                _progress.value = null
+                moveRunning.set(false)
+                runCatching { refresh() }
+            }
         }
     }
 
     override fun removeExtraCopy(leftoverId: String): LeftoverOutcome =
-        mover.removeExtraCopy(leftoverId, hooks.profileId(), ::recordSide).also { refresh() }
+        mover.removeExtraCopy(leftoverId, records) { id -> if (ItemLocks.tryAcquire(id)) java.io.Closeable { ItemLocks.release(id) } else null }
+            .also { runCatching { refresh() } }
 
     override fun keepBoth(leftoverId: String) {
         mover.keepBoth(leftoverId)
-        refresh()
+        runCatching { refresh() }
     }
+
+    override fun setAside(leftoverId: String): Boolean = mover.setAside(leftoverId).also { runCatching { refresh() } }
 
     override fun cancelMove() {
         cancelRequested.set(true)
@@ -514,6 +526,8 @@ internal object DesktopDownloads {
             mover = DownloadMover(
                 journalDir = DesktopStorage.rootDir.resolve("moves"),
                 resolve = { id -> locations.location(id)?.takeIf { locations.availability(it) == FolderAvailability.Available }?.path },
+                trash = DownloadsTrash::moveToTrash,
+                locationPath = { id -> locations.location(id)?.path },
             ),
             picker = { NativeFolderPicker.pick(isMac, locations.defaultLocation().path.toFile().takeIf { it.isDirectory }) },
             isMac = isMac,
