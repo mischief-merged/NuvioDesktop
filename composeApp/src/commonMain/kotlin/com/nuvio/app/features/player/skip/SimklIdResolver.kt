@@ -89,7 +89,8 @@ internal object SimklIdResolver {
                 imdb = ids?.get("imdb")?.jsonPrimitive?.content?.takeIf { it.isNotBlank() },
                 tvdbSeason = details["season"]?.jsonPrimitive?.int?.takeIf { it > 0 }
             ).also { idsCache[cacheKey] = it }
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            reportSkipLookupFailure(error)
             null
         }
     }
@@ -113,7 +114,8 @@ internal object SimklIdResolver {
                 }
             }
             mapping.also { episodeCache[simklId] = it }
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            reportSkipLookupFailure(error)
             emptyList()
         }
     }
@@ -172,7 +174,8 @@ internal object SimklIdResolver {
             }
             animeSeasonCache[cacheKey] = seasons
             seasons.firstOrNull { it.tvdbSeason == tvdbSeason }?.simklId
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            reportSkipLookupFailure(error)
             null
         }
     }
@@ -195,7 +198,8 @@ internal object SimklIdResolver {
                 imdb = ids?.get("imdb")?.jsonPrimitive?.content?.takeIf { it.isNotBlank() },
                 tvdbSeason = details["season"]?.jsonPrimitive?.int?.takeIf { it > 0 }
             ).also { idsCache[cacheKey] = it }
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            reportSkipLookupFailure(error)
             null
         }
     }

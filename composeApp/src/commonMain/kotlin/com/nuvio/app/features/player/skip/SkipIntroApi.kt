@@ -22,7 +22,8 @@ internal object SkipIntroApi {
             json.decodeFromString<IntroDbSegmentsResponse>(text)
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            reportSkipLookupFailure(error)
             null
         }
     }
@@ -38,7 +39,8 @@ internal object SkipIntroApi {
         return try {
             val text = httpGetText(url)
             json.decodeFromString<IntroDbSegmentsResponse>(text)
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            reportSkipLookupFailure(error)
             null
         }
     }
@@ -110,7 +112,8 @@ internal object SkipIntroApi {
         return try {
             val text = httpGetText(url)
             json.decodeFromString<AniSkipResponse>(text)
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            reportSkipLookupFailure(error)
             null
         }
     }
@@ -131,7 +134,8 @@ internal object SkipIntroApi {
         return try {
             val text = httpPostJsonWithHeaders(ANIMESKIP_BASE + "graphql", body, headers)
             json.decodeFromString<AnimeSkipGraphqlResponse>(text)
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            reportSkipLookupFailure(error)
             null
         }
     }
