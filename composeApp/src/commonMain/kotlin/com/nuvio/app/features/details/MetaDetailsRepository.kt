@@ -605,6 +605,13 @@ object MetaDetailsRepository {
     }
 
    
+    /** Runtime of a video of the title that is open, when [parentMetaId] (if given) is that title. */
+    fun runtimeMinutesFor(parentMetaId: String?, videoId: String, season: Int?, episode: Int?): Int? {
+        val meta = _uiState.value.meta ?: return null
+        if (parentMetaId != null && meta.id != parentMetaId) return null
+        return meta.runtimeMinutesFor(videoId, season, episode)
+    }
+
     fun findEmbeddedStreams(videoId: String): List<com.nuvio.app.features.streams.StreamItem> {
         val meta = _uiState.value.meta ?: return emptyList()
         val videosWithStreams = meta.videos.filter { it.streams.isNotEmpty() }

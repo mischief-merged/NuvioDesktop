@@ -209,21 +209,52 @@ internal fun rankBatchCandidates(
     audioLanguage: DebridStreamLanguage? = null,
     runtimeMinutes: Int? = null,
 ): List<StreamItem> {
-    val runtimeSeconds = runtimeMinutes?.takeIf { it > 0 }?.let { it * 60L }
-    val maxBitsPerEpisode = if (maxBitrateMbps != null && runtimeSeconds != null) {
-        maxBitrateMbps * 1_000_000L * runtimeSeconds
-    } else {
-        null
-    }
-    val ordered = streams
-        .filter { stream ->
+    val ordered = rankStreamsByPreferences(
+        streams = streams.filter { stream ->
             val directUrl = stream.playableDirectUrl
             if (directUrl != null) {
                 directUrl.isSupportedDownloadUrl()
             } else {
                 stream.isDirectDebridStream || stream.needsLocalDebridResolve
             }
-        }
+        },
+        quality = quality,
+        maxBitrateMbps = maxBitrateMbps,
+        audioLanguage = audioLanguage,
+        runtimeMinutes = runtimeMinutes,
+    )
+    // Two sources with the same URL are the same request only when they also send the same headers.
+    val seenRequests = mutableSetOf<Pair<String, List<Pair<String, String>>>>()
+    return ordered.filter { stream ->
+        val url = stream.playableDirectUrl ?: return@filter true
+        val headers = stream.behaviorHints.proxyHeaders?.request.orEmpty()
+            .map { (name, value) -> name.lowercase() to value }
+            .sortedWith(compareBy({ it.first }, { it.second }))
+        seenRequests.add(url to headers)
+    }
+}
+
+/**
+ * The part of [rankBatchCandidates] that applies the saved quality, bitrate and language choices,
+ * shared with auto-play so both pick a source by the same rules. It does not look at whether a
+ * source can be downloaded or played: the caller passes only the sources it is willing to use.
+ * Sources the choices rule out are dropped and the rest come back best first, as described on
+ * [rankBatchCandidates].
+ */
+internal fun rankStreamsByPreferences(
+    streams: List<StreamItem>,
+    quality: BatchQuality,
+    maxBitrateMbps: Int? = null,
+    audioLanguage: DebridStreamLanguage? = null,
+    runtimeMinutes: Int? = null,
+): List<StreamItem> {
+    val runtimeSeconds = runtimeMinutes?.takeIf { it > 0 }?.let { it * 60L }
+    val maxBitsPerEpisode = if (maxBitrateMbps != null && runtimeSeconds != null) {
+        maxBitrateMbps * 1_000_000L * runtimeSeconds
+    } else {
+        null
+    }
+    return streams
         .map { stream ->
             val facts = DebridStreamMetadata.facts(stream, parsingPreferences)
             BatchCandidate(
@@ -246,15 +277,6 @@ internal fun rankBatchCandidates(
                 .thenBy { it.stream.playableDirectUrl == null },
         )
         .map { it.stream }
-    // Two sources with the same URL are the same request only when they also send the same headers.
-    val seenRequests = mutableSetOf<Pair<String, List<Pair<String, String>>>>()
-    return ordered.filter { stream ->
-        val url = stream.playableDirectUrl ?: return@filter true
-        val headers = stream.behaviorHints.proxyHeaders?.request.orEmpty()
-            .map { (name, value) -> name.lowercase() to value }
-            .sortedWith(compareBy({ it.first }, { it.second }))
-        seenRequests.add(url to headers)
-    }
 }
 
 /** Released, numbered episodes of one season. Unaired episodes are left out. */

@@ -13,6 +13,7 @@ import com.nuvio.app.features.downloads.DownloadsRepository
 import com.nuvio.app.features.player.skip.NextEpisodeInfo
 import com.nuvio.app.features.player.skip.PlayerNextEpisodeRules
 import com.nuvio.app.features.streams.StreamAutoPlayMode
+import com.nuvio.app.features.streams.StreamAutoPlayPolicy
 import com.nuvio.app.features.streams.StreamAutoPlaySelector
 import com.nuvio.app.features.streams.StreamAutoPlaySource
 import com.nuvio.app.features.streams.StreamItem
@@ -201,6 +202,9 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
             settleAutoSelect()
         }
 
+        val autoPlayPreferences = StreamAutoPlayPolicy.preferencesFor(effectiveMode)
+        val autoPlayRuntimeMinutes = nextVideo.runtime
+
         fun trySelectStream(streams: List<StreamItem>): StreamItem? =
             StreamAutoPlaySelector.selectAutoPlayStream(
                 streams = streams,
@@ -215,6 +219,8 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
                 bingeGroupOnly = bingeGroupOnlyManualMode,
                 debridEnabled = debridSettings.canResolvePlayableLinks,
                 activeResolverProviderId = debridSettings.activeResolverProviderId,
+                preferences = autoPlayPreferences,
+                runtimeMinutes = autoPlayRuntimeMinutes,
             )
 
         fun tryBingeGroupOnly(streams: List<StreamItem>): StreamItem? {
