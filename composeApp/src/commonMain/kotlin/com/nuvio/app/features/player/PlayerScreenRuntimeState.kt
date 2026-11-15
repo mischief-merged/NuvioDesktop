@@ -293,8 +293,8 @@ internal class PlayerScreenRuntime(
     var sourceFailoverForPlaceholder by mutableStateOf(false)
     /** The source whose first seconds were checked for being a placeholder, so each is checked once. */
     var placeholderCheckedUrl: String? = null
-    var placeholderFirstFrameUrl: String? = null
-    var placeholderFirstFramePositionMs = 0L
+    var placeholderCheckStateUrl: String? = null
+    var placeholderCheckState: PlaceholderCheckState? = null
     var placeholderWarnedUrl: String? = null
 
     var showAudioModal by mutableStateOf(false)
