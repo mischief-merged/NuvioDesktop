@@ -103,6 +103,11 @@ internal object DownloadSubtitles {
         localVideoUri: String,
         recheck: Boolean = false,
         nowEpochMs: Long = DownloadsClock.nowEpochMs(),
+        /**
+         * Runs each write. Returns false when it did not run (the video is gone), and then the save
+         * stops at once. The default just writes.
+         */
+        guardedWrite: (action: () -> Unit) -> Boolean = { it(); true },
     ): SubtitleSaveResult = withContext(Dispatchers.Default) {
         val storage = DownloadSubtitleStorage(localVideoUri)
         val manifest = readManifest(storage)
@@ -161,16 +166,25 @@ internal object DownloadSubtitles {
                 val extension = PlayerSubtitleCueParser.fileExtension(body, subtitle.url)
                 val fileName = "${nextFileIndex++}.$extension"
                 try {
-                    storage.write(fileName, body)
-                    saved += DownloadedSubtitle(subtitle.url, fileName, subtitle.language, subtitle.name)
-                    storage.write("manifest.json", json.encodeToString(SubtitleManifest(tracks = saved.toList(), failed = manifest.failed)))
+                    var stored = false
+                    if (!guardedWrite {
+                            storage.write(fileName, body)
+                            saved += DownloadedSubtitle(subtitle.url, fileName, subtitle.language, subtitle.name)
+                            storage.write("manifest.json", json.encodeToString(SubtitleManifest(tracks = saved.toList(), failed = manifest.failed)))
+                            stored = true
+                        }
+                    ) {
+                        return@withContext SubtitleSaveResult(saved = saved.size, newlySaved = saved.size - before, unreachable = unreachable)
+                    }
+                    if (!stored) continue
                 } catch (error: Exception) {
                     if (error is CancellationException) throw error
                 }
             }
         }
         currentCoroutineContext().ensureActive()
-        runCatching {
+        guardedWrite {
+            runCatching {
             // What failed is recorded with its time, so that only those tracks are tried again, later. Nothing saved is touched.
             val savedUrls = saved.map { it.sourceUrl }.toSet()
             val failed = manifest.failed.filter { it.sourceUrl !in attempted && it.sourceUrl !in savedUrls } + newFailures
@@ -179,6 +193,7 @@ internal object DownloadSubtitles {
                 "manifest.json",
                 json.encodeToString(SubtitleManifest(complete = failed.isEmpty(), tracks = saved, checkedAtEpochMs = checkedAt, failed = failed)),
             )
+            }
         }
         SubtitleSaveResult(saved = saved.size, newlySaved = saved.size - before, unreachable = unreachable)
     }

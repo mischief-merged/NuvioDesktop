@@ -137,6 +137,13 @@ object DownloadsRepository {
         }
     }
 
+    /** Whether [localFileUri] is a finished download that is listed and whose file exists at exactly that address. */
+    internal fun videoFileIsThere(localFileUri: String): Boolean {
+        val item = findCompletedDownloadByLocalFile(localFileUri) ?: return false
+        val resolved = backend.resolveLocalFileUri(localFileUri, item.fileName) ?: return false
+        return resolved.localFilePath() == localFileUri.localFilePath()
+    }
+
     fun playableLocalFileUri(item: DownloadItem): String? {
         ensureLoaded()
         if (item.status != DownloadStatus.Completed) return null
@@ -393,7 +400,7 @@ object DownloadsRepository {
                     listOfNotNull(other.localFileUri, backend.resolveLocalFileUri(other.localFileUri, other.fileName))
                         .any { backend.isSameFile(it, fileUri) }
             }
-            if (!usedByAnother && !backend.trashFile(fileUri)) return DownloadDeleteResult.NotMoved
+            if (!usedByAnother && !trashUnderSidecarLock(fileUri)) return DownloadDeleteResult.NotMoved
         }
         activeTransfers.remove(downloadId)?.cancel()
         backend.removePartialFile(item.fileName)
@@ -402,6 +409,9 @@ object DownloadsRepository {
         persist()
         DownloadDeleteResult.Removed
     }
+
+    /** Moves the file to the trash while no sidecar write for it is running, and none can start in between. */
+    private fun trashUnderSidecarLock(fileUri: String): Boolean = SidecarLocks.withLock(fileUri) { backend.trashFile(fileUri) }
 
     /** Whether the files of deleted downloads go to the trash of the system, or are held for days in the downloads folder. */
     internal val usesSystemTrash: Boolean get() = backend.usesSystemTrash
@@ -763,7 +773,7 @@ object DownloadsRepository {
                         listOfNotNull(other.localFileUri, backend.resolveLocalFileUri(other.localFileUri, other.fileName))
                             .any { backend.isSameFile(it, fileUri) }
                 }
-                if (!usedByAnother && !backend.trashFile(fileUri)) return AutoDownloadRemovalResult.NotMoved
+                if (!usedByAnother && !trashUnderSidecarLock(fileUri)) return AutoDownloadRemovalResult.NotMoved
             }
             publish(items.filterNot { it.id == downloadId })
             persist()

@@ -80,16 +80,20 @@ internal class SubtitlesCompanion(
 
     override suspend fun run(item: DownloadItem, localVideoUri: String): CompanionOutcome {
         if (!DownloadCompanionGuard.stillWanted(localVideoUri)) return CompanionOutcome.Busy
-        // Under the lock, and looked at again there: only what is not saved yet is added, and nothing is removed.
-        val result = SidecarLocks.withLock(localVideoUri) {
-            if (!DownloadCompanionGuard.stillWanted(localVideoUri) || !isDue(item, localVideoUri)) return@withLock null
-            withTimeoutOrNull(DownloadCompanions.SubtitlesTimeoutMs) {
-                runCatching { DownloadSubtitles.prepare(item, localVideoUri, recheck = true) }
-                    .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
-                    .getOrNull()
-                    ?: SubtitleSaveResult(0, 0, 1)
-            } ?: SubtitleSaveResult(0, 0, 1)
-        } ?: return CompanionOutcome.Busy
+        if (!isDue(item, localVideoUri)) return CompanionOutcome.Busy
+        // The lock is taken around each write only, never while waiting for the network. Before every
+        // write the video is checked again; when it is gone the save stops and nothing is created.
+        val guarded: (() -> Unit) -> Boolean = { action ->
+            SidecarLocks.withLock(localVideoUri) {
+                if (DownloadCompanionGuard.stillWanted(localVideoUri)) { action(); true } else false
+            }
+        }
+        val result = withTimeoutOrNull(DownloadCompanions.SubtitlesTimeoutMs) {
+            runCatching { DownloadSubtitles.prepare(item, localVideoUri, recheck = true, nowEpochMs = nowEpochMs(), guardedWrite = guarded) }
+                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+                .getOrNull()
+                ?: SubtitleSaveResult(0, 0, 1)
+        } ?: SubtitleSaveResult(0, 0, 1)
         return when {
             result.newlySaved > 0 -> CompanionOutcome.Saved
             result.unreachable > 0 -> CompanionOutcome.Failed

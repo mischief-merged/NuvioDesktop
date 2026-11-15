@@ -190,7 +190,7 @@ class SidecarSafetyTest {
             async(Dispatchers.Default) {
                 SidecarLocks.withLock(uri) {
                     most.updateAndGet { m -> maxOf(m, inside.incrementAndGet()) }
-                    kotlinx.coroutines.delay(5)
+                    Thread.sleep(5)
                     inside.decrementAndGet()
                 }
             }
