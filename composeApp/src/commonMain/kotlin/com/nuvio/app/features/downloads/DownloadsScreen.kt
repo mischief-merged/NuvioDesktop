@@ -157,6 +157,7 @@ internal fun DownloadsScreenContent(
         }
     }
     val folderState by folders.state.collectAsStateWithLifecycle()
+    val storageLimitGb by (autoDownloads?.storageLimitGb ?: NoStorageLimit).collectAsStateWithLifecycle()
     var selecting by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf(emptySet<String>()) }
     var moveRequest by remember { mutableStateOf<MoveRequest?>(null) }
@@ -262,6 +263,15 @@ internal fun DownloadsScreenContent(
         }
 
         if (selectedShowId == null) {
+            if (extras != null) {
+                item(key = "storage-summary") {
+                    DownloadStorageSummary(
+                        state = folderState,
+                        autoLimitGb = storageLimitGb,
+                        onManageLocations = openSettingsPage?.let { open -> { open(SettingsPage.Playback) } },
+                    )
+                }
+            }
             speedLimitBytes?.let { limit ->
                 item(key = "speed-limit") {
                     SpeedLimitLine(
@@ -414,6 +424,8 @@ internal fun DownloadsScreenContent(
 }
 
 private const val StatusRefreshMs = 5_000L
+
+private val NoStorageLimit = kotlinx.coroutines.flow.MutableStateFlow<Int?>(null)
 
 private val NoScheduledRemovals = kotlinx.coroutines.flow.MutableStateFlow(emptyList<AutoDownloadRemoval>())
 
@@ -616,7 +628,8 @@ private fun LazyListScope.downloadsRootContent(
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
-                            text = stringResource(Res.string.downloads_episode_count, episodes.size),
+                            // The size sits with the count that is already there.
+                            text = stringResource(Res.string.downloads_episode_count_size, episodes.size, formatBytes(episodes.sumOf { it.moveBytes })),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

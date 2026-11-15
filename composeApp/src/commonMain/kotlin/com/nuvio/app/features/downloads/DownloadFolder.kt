@@ -62,6 +62,10 @@ internal data class DownloadLocationInfo(
     val itemCount: Int,
     val totalBytes: Long,
     val freeBytes: Long?,
+    /** What the downloads of this location take on disk (partial and companion files included). */
+    val usedBytes: Long = totalBytes,
+    /** The location is away, so [usedBytes] is what was known when it was last there. */
+    val usedIsLastKnown: Boolean = false,
 )
 
 internal data class DownloadFolderState(
@@ -72,7 +76,17 @@ internal data class DownloadFolderState(
     val moving: Boolean = false,
     /** The downloads a move has in hand. They cannot be deleted, played or started until it is done. */
     val movingIds: Set<String> = emptySet(),
+    /** What automatic downloads take on disk, in the locations that are connected. */
+    val autoDownloadUsedBytes: Long = 0L,
+    /** Free space of the volumes of the connected locations, each volume counted once. Null when not known. */
+    val totalFreeBytes: Long? = null,
+    /** False until the first measurement of what is on disk has finished. */
+    val usageMeasured: Boolean = false,
 ) {
+    /** What downloads take on disk in the locations that can be reached. */
+    val totalUsedBytes: Long
+        get() = locations.filter { it.availability == FolderAvailability.Available }.sumOf { it.usedBytes }
+
     val defaultLocation: DownloadLocationInfo? get() = locations.firstOrNull { it.isDefault }
 
     /** The locations that hold downloads or take new ones. */

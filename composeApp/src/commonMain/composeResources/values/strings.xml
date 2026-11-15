@@ -3149,4 +3149,21 @@
     <string name="download_folder_reason_still_writing">its download did not stop in time</string>
     <string name="download_folder_reason_original">the original could not be removed</string>
     <string name="download_folder_result_kept">%1$d moved; the original could not be removed: %2$s. It is tried again at the next start.</string>
+    <string name="downloads_storage_summary">Downloads: %1$s used · %2$s free</string>
+    <string name="downloads_storage_summary_no_free">Downloads: %1$s used</string>
+    <string name="downloads_storage_summary_spoken">Downloads use %1$s, %2$s free</string>
+    <string name="downloads_storage_summary_spoken_no_free">Downloads use %1$s</string>
+    <string name="downloads_storage_measuring">Downloads: measuring…</string>
+    <string name="downloads_storage_auto">Automatic downloads: %1$s of %2$s</string>
+    <string name="downloads_storage_auto_spoken">Automatic downloads use %1$s of %2$s</string>
+    <string name="downloads_storage_show_locations">Show locations</string>
+    <string name="downloads_storage_hide_locations">Hide locations</string>
+    <string name="downloads_storage_location_line">%1$s: %2$s used, %3$s free</string>
+    <string name="downloads_storage_location_line_away">%1$s: not connected, last known %2$s used</string>
+    <string name="downloads_storage_manage">Manage locations</string>
+    <string name="downloads_unit_bytes">bytes</string>
+    <string name="downloads_unit_kilobytes">kilobytes</string>
+    <string name="downloads_unit_megabytes">megabytes</string>
+    <string name="downloads_unit_gigabytes">gigabytes</string>
+    <string name="downloads_episode_count_size">%1$d downloaded episode(s) • %2$s</string>
 </resources>

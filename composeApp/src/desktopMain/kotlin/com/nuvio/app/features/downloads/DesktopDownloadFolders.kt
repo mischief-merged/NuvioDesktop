@@ -87,6 +87,7 @@ internal class DesktopDownloadFolders(
     private val onReturned: () -> Unit = {},
     /** Whether the player has this download open. A playing download is not moved. */
     private val isPlaying: (DownloadItem) -> Boolean = { false },
+    internal val usage: DownloadStorageUsage = DownloadStorageUsage(locations),
 ) : DownloadFolderController {
     override val supported: Boolean = true
 
@@ -173,9 +174,12 @@ internal class DesktopDownloadFolders(
         val items = hooks.items()
         val byLocation = items.groupBy { locationIdOf(it) }
         val defaultId = locations.defaultLocation().id
+        val states = locations.all().associate { it.id to locations.availability(it) }
+        val measured = usage.current(items, states)
         val infos = locations.all().map { location ->
-            val availability = locations.availability(location)
+            val availability = states.getValue(location.id)
             val members = byLocation[location.id].orEmpty()
+            val used = measured.perLocation[location.id]
             DownloadLocationInfo(
                 id = location.id,
                 path = location.path.toString(),
@@ -185,6 +189,8 @@ internal class DesktopDownloadFolders(
                 availability = availability,
                 itemCount = members.size,
                 totalBytes = members.sumOf { it.moveBytes },
+                usedBytes = used?.usedBytes ?: members.sumOf { it.moveBytes },
+                usedIsLastKnown = used?.lastKnown ?: false,
                 freeBytes = if (availability == FolderAvailability.Available) {
                     FsGuard.call(3_000L, null) { DownloadFolderValidator.freeBytes(location.path) }
                 } else {
@@ -192,7 +198,15 @@ internal class DesktopDownloadFolders(
                 },
             )
         }
-        _state.value = DownloadFolderState(infos, isMac, moving = moveRunning.get(), movingIds = movingNow)
+        // Each volume counted once, so two folders on one drive do not count its free space twice.
+        val freeTotal = infos.filter { it.availability == FolderAvailability.Available && it.freeBytes != null }
+            .distinctBy { info -> runCatching { Files.getFileStore(Paths.get(info.path)).toString() }.getOrDefault(info.id) }
+            .sumOf { it.freeBytes ?: 0L }
+            .takeIf { infos.any { it.availability == FolderAvailability.Available && it.freeBytes != null } }
+        _state.value = DownloadFolderState(
+            infos, isMac, moving = moveRunning.get(), movingIds = movingNow,
+            autoDownloadUsedBytes = measured.autoDownloadBytes, totalFreeBytes = freeTotal, usageMeasured = true,
+        )
         var returned = false
         infos.forEach { info ->
             val before = lastAvailability.put(info.id, info.availability)
@@ -369,6 +383,7 @@ internal class DesktopDownloadFolders(
             )
         } finally {
             movingNow = emptySet()
+            usage.invalidate()
             locked.forEach(ItemLocks::release)
             paused.forEach(hooks::resume)
             hooks.resumeHeld()
