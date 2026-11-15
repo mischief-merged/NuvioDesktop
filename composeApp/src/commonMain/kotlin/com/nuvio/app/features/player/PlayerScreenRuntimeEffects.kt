@@ -21,6 +21,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.downloads.AutoDownloads
+import com.nuvio.app.features.downloads.SidecarIo
 import com.nuvio.app.features.downloads.savedEpisodeVideosFor
 import com.nuvio.app.features.p2p.P2pSettingsRepository
 import com.nuvio.app.features.p2p.P2pStreamRequest
@@ -100,7 +101,11 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
         playerMetaVideos = playerMeta?.videos.orEmpty()
         // Without details in memory a finished download offers the next episode at once from what was saved beside it.
         // Details that arrive from the network replace it.
-        if (playerMetaVideos.isEmpty()) playerMetaVideos = savedEpisodeVideosFor(activeSourceUrl.takeIf { it.startsWith("file:") })
+        if (playerMetaVideos.isEmpty()) {
+            val localUri = activeSourceUrl.takeIf { it.startsWith("file:") }
+            // Read off the main thread, with a time limit; applied here.
+            playerMetaVideos = SidecarIo.read { savedEpisodeVideosFor(localUri) }.orEmpty()
+        }
         if (playerMeta?.videos.isNullOrEmpty()) {
             MetaDetailsRepository.fetch(parentMetaType, parentMetaId)?.let { meta ->
                 playerMeta = meta

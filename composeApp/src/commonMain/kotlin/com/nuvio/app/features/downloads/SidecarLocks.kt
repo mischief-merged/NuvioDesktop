@@ -2,6 +2,7 @@ package com.nuvio.app.features.downloads
 
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
+import kotlinx.coroutines.async
 
 /**
  * One lock per video for everything written beside it: subtitles, skip times, next-episode details,
@@ -35,4 +36,26 @@ internal object SidecarLocks {
 internal object DownloadCompanionGuard {
     internal var stillWanted: (localVideoUri: String) -> Boolean =
         { uri -> DownloadsRepository.videoFileIsThere(uri) }
+}
+
+/**
+ * Reads files beside a video without ever holding the caller (a screen, a playback effect) on a
+ * slow or disconnected drive. The read runs on the IO dispatcher; the caller gets the result back on
+ * its own dispatcher, or null once [timeoutMs] has passed (the read itself may still finish in the
+ * background and is then ignored). A read that throws also gives null.
+ */
+internal object SidecarIo {
+    /** How long a screen or playback waits for a sidecar read. */
+    const val ReadTimeoutMs = 2_000L
+
+    private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
+
+    suspend fun <T> read(
+        timeoutMs: Long = ReadTimeoutMs,
+        dispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.IO,
+        block: () -> T,
+    ): T? {
+        val pending = scope.async(dispatcher) { runCatching(block).getOrNull() }
+        return kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { pending.await() }
+    }
 }

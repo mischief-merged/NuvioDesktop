@@ -20,8 +20,7 @@ import com.nuvio.app.features.downloads.DownloadStatus
 import com.nuvio.app.features.downloads.DownloadsRepository
 import com.nuvio.app.features.downloads.EpisodeListSidecar
 import com.nuvio.app.features.downloads.SavedEpisodes
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import com.nuvio.app.features.downloads.SidecarIo
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.details_showing_saved
 import org.jetbrains.compose.resources.stringResource
@@ -34,14 +33,16 @@ import org.jetbrains.compose.resources.stringResource
  * unavailable so that its page does not offer to play it.
  */
 internal object SavedDetails {
-    /** Null when the title has no finished download. Reads files, so it is called off the main thread. */
-    suspend fun metaFor(type: String, id: String): MetaDetails? = withContext(Dispatchers.Default) {
+    /** Null when the title has no finished download, or the files cannot be read in time. Reads on the IO dispatcher. */
+    suspend fun metaFor(type: String, id: String): MetaDetails? = SidecarIo.read { readMeta(type, id) }
+
+    private fun readMeta(type: String, id: String): MetaDetails? {
         val items = DownloadsRepository.uiState.value.items.filter { it.parentMetaId == id && it.status == DownloadStatus.Completed }
-        if (items.isEmpty()) return@withContext null
+        if (items.isEmpty()) return null
         val lists = items.mapNotNull { item ->
             item.localFileUri?.let { runCatching { EpisodeListSidecar.read(it) }.getOrNull() }
         }
-        buildSavedMeta(type, id, items, lists)
+        return buildSavedMeta(type, id, items, lists)
     }
 }
 

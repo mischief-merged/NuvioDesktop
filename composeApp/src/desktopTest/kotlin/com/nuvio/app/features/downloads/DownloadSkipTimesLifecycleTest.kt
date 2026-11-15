@@ -60,6 +60,7 @@ class DownloadSkipTimesLifecycleTest {
         val skipTimes = OfflineSkipTimes(
             fetcher = { request -> requests += request; SkipFetchResult.Found(listOf(intro)) },
             isOnline = { true },
+            io = Dispatchers.Unconfined,
         )
         val companions = DownloadCompanions(
             listOf(skipTimes), isOnline = { true },

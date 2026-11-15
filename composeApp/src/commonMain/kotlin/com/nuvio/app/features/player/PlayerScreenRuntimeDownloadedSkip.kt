@@ -3,6 +3,7 @@ package com.nuvio.app.features.player
 import com.nuvio.app.features.downloads.DownloadCompanions
 import com.nuvio.app.features.downloads.DownloadsRepository
 import com.nuvio.app.features.downloads.OfflineSkipTimes
+import com.nuvio.app.features.downloads.SidecarIo
 import com.nuvio.app.features.downloads.SkipTimesRequest
 
 /**
@@ -16,10 +17,12 @@ import com.nuvio.app.features.downloads.SkipTimesRequest
  */
 internal suspend fun PlayerScreenRuntime.applyDownloadedSkipIntervals(): Boolean {
     val localUri = activeSourceUrl.takeIf { it.startsWith("file:") } ?: return false
-    if (DownloadsRepository.findCompletedDownloadByLocalFile(localUri) == null) return false
+    // Every look at the disk is off the main thread and bounded; the result is applied here.
+    // When the drive is too slow to even tell, the title is looked up online like any other source.
+    if (SidecarIo.read { DownloadsRepository.findCompletedDownloadByLocalFile(localUri) } == null) return false
     val skipTimes = OfflineSkipTimes.app
 
-    apiSkipIntervals = skipTimes.saved(localUri)
+    apiSkipIntervals = SidecarIo.read { skipTimes.saved(localUri) }.orEmpty()
     recomputeMergedSkipIntervals()
 
     val videoId = activeVideoId?.takeIf { it.isNotBlank() } ?: return true
@@ -51,6 +54,6 @@ internal suspend fun PlayerScreenRuntime.applyDownloadedSkipIntervals(): Boolean
  */
 internal suspend fun PlayerScreenRuntime.saveCompanionsOfPlayingDownload() {
     val localUri = activeSourceUrl.takeIf { it.startsWith("file:") } ?: return
-    val item = DownloadsRepository.findCompletedDownloadByLocalFile(localUri) ?: return
+    val item = SidecarIo.read { DownloadsRepository.findCompletedDownloadByLocalFile(localUri) } ?: return
     DownloadCompanions.app.ensure(item, localUri)
 }

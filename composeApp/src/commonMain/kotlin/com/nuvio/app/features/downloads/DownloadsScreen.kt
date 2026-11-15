@@ -556,7 +556,7 @@ private fun DownloadRow(
         // Subtitles and skip times are saved a moment after a download finishes, so a missing note is looked for a few more times.
         var looks = 0
         while (uri != null) {
-            value = withContext(Dispatchers.Default) { DownloadCompanions.noteFor(uri) }.takeIf { it.skipTimes != null || it.subtitleCount > 0 }
+            value = SidecarIo.read { DownloadCompanions.noteFor(uri) }?.takeIf { it.skipTimes != null || it.subtitleCount > 0 }
             if (value != null || ++looks >= SkipTimesNoteLooks) break
             delay(SkipTimesNoteLookIntervalMs)
         }

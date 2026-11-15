@@ -40,21 +40,22 @@ internal object SavedArtwork {
         return extensions.firstNotNullOfOrNull { storage.localFileUri("${role.fileStem}.$it") }
     }
 
+    /** A video and role whose image address is [url]. Memory only: no file is touched. */
+    internal fun candidatesFor(url: String, items: List<DownloadItem>): List<Pair<String, ArtworkRole>> {
+        val wanted = url.trim()
+        return items.mapNotNull { item ->
+            val video = item.localFileUri?.takeIf { item.status == DownloadStatus.Completed } ?: return@mapNotNull null
+            ArtworkRole.values().firstOrNull { urlFor(item, it) == wanted }?.let { video to it }
+        }
+    }
+
     /**
      * The saved file for an image address, among [items]: the address is that of the poster or
-     * thumbnail of a finished download and its file is there. Null for any other address.
+     * thumbnail of a finished download and its file is there. Null for any other address. Looks at
+     * the disk, so it is called off the main thread.
      */
-    fun savedFileFor(url: String, items: List<DownloadItem>): String? {
-        val wanted = url.trim()
-        for (item in items) {
-            if (item.status != DownloadStatus.Completed) continue
-            val video = item.localFileUri ?: continue
-            for (role in ArtworkRole.values()) {
-                if (urlFor(item, role) == wanted) fileUri(video, role)?.let { return it }
-            }
-        }
-        return null
-    }
+    fun savedFileFor(url: String, items: List<DownloadItem>): String? =
+        candidatesFor(url, items).firstNotNullOfOrNull { (video, role) -> fileUri(video, role) }
 
     /** The extension for image bytes, or null when they are not an image this build shows. */
     fun extensionOf(bytes: ByteArray): String? = when {
@@ -159,17 +160,23 @@ private suspend fun fetchImageBytes(url: String): ByteArray? {
  */
 class SavedArtworkInterceptor : Interceptor {
     override suspend fun intercept(chain: Interceptor.Chain): ImageResult {
-        val url = chain.request.data as? String
-        val saved = url?.let { runCatching { SavedArtwork.savedFileFor(it, DownloadsRepository.uiState.value.items) }.getOrNull() }
-        val plan = SavedArtwork.plan(NetworkStatusRepository.uiState.value.isOfflineLike, saved)
-        if (saved == null || plan == ArtworkPlan.Network) return chain.proceed()
-        val fromFile = chain.withRequest(chain.request.newBuilder().data(saved).build())
-        if (plan == ArtworkPlan.SavedFirst) {
-            val result = fromFile.proceed()
-            if (result !is ErrorResult) return result
-            return chain.proceed()
+        val url = chain.request.data as? String ?: return chain.proceed()
+        // Memory only: an image that is not a download's poster or thumbnail goes straight on, with no disk access.
+        val candidates = SavedArtwork.candidatesFor(url, DownloadsRepository.uiState.value.items)
+        if (candidates.isEmpty()) return chain.proceed()
+        // The disk is consulted off the main thread, and given a short time; a slow drive just means no saved file.
+        suspend fun savedFile(): String? = SidecarIo.read(timeoutMs = 750L) {
+            candidates.firstNotNullOfOrNull { (video, role) -> SavedArtwork.fileUri(video, role) }
         }
-        val result = chain.proceed()
-        return if (result is ErrorResult) fromFile.proceed() else result
+        suspend fun fromSaved(file: String): ImageResult = chain.withRequest(chain.request.newBuilder().data(file).build()).proceed()
+        if (!NetworkStatusRepository.uiState.value.isOfflineLike) {
+            // Online the network (and Coil's cache) goes first and is never held up; the disk is looked at only after a failure.
+            val result = chain.proceed()
+            if (result !is ErrorResult) return result
+            return savedFile()?.let { fromSaved(it) } ?: result
+        }
+        val file = savedFile() ?: return chain.proceed()
+        val fromFile = fromSaved(file)
+        return if (fromFile is ErrorResult) chain.proceed() else fromFile
     }
 }

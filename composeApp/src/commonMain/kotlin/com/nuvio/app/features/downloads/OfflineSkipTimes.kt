@@ -150,6 +150,7 @@ internal class OfflineSkipTimes(
     private val fetcher: SkipTimesFetcher = ServiceSkipTimesFetcher,
     private val isOnline: () -> Boolean = { NetworkStatusRepository.uiState.value.isOnline },
     private val nowEpochMs: () -> Long = { DownloadsClock.nowEpochMs() },
+    private val io: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.IO,
 ) : DownloadCompanion {
     private val lock = SynchronizedObject()
     private val running = mutableSetOf<String>()
@@ -184,7 +185,11 @@ internal class OfflineSkipTimes(
 
     private class Attempt(val outcome: CompanionOutcome, val changed: List<SkipInterval>? = null)
 
-    private suspend fun lookup(request: SkipTimesRequest, uri: String, eligible: (SavedSkipTimesRead) -> Boolean): Attempt {
+    /** Every read and write of the sidecar happens on the IO dispatcher, whoever asks. */
+    private suspend fun lookup(request: SkipTimesRequest, uri: String, eligible: (SavedSkipTimesRead) -> Boolean): Attempt =
+        withContext(io) { lookupOnIo(request, uri, eligible) }
+
+    private suspend fun lookupOnIo(request: SkipTimesRequest, uri: String, eligible: (SavedSkipTimesRead) -> Boolean): Attempt {
         if (!isOnline()) return Attempt(CompanionOutcome.Failed)
         if (!eligible(SkipTimesSidecar.read(uri))) return Attempt(CompanionOutcome.Busy)
         if (inCooldown(uri)) return Attempt(CompanionOutcome.Busy)
