@@ -34,8 +34,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -67,6 +70,10 @@ fun DownloadsScreen(
      */
     onChooseAnotherSource: ((DownloadItem) -> Unit)? = null,
     openDownloadsFolder: () -> Boolean = DownloadsPlatformDownloader::openDownloadsDirectory,
+    /** Takes the user to where titles are found, from the empty state. Null where the screen cannot: the action is not offered. */
+    onBrowse: (() -> Unit)? = null,
+    /** Whether the empty state mentions downloading whole seasons and auto-download. Only where those exist. */
+    showSeasonHint: Boolean = showAutoDownloads,
 ) {
     val uiState by remember {
         DownloadsRepository.ensureLoaded()
@@ -146,6 +153,8 @@ fun DownloadsScreen(
                 onOpenDownloadsFolder = {
                     if (!openDownloadsFolder()) NuvioToastController.show(openDownloadsDirectoryFailedText)
                 },
+                showSeasonHint = showSeasonHint,
+                onBrowse = onBrowse,
                 onOpenDownload = onOpenDownload,
                 onOpenShow = { showId, title ->
                     onNavigateToShow?.invoke(showId, title) ?: run { selectedShowId = showId }
@@ -208,6 +217,8 @@ private fun LazyListScope.downloadsRootContent(
     clock: RowClock,
     onChooseAnotherSource: ((DownloadItem) -> Unit)?,
     onOpenDownloadsFolder: () -> Unit,
+    showSeasonHint: Boolean,
+    onBrowse: (() -> Unit)?,
     onOpenDownload: (DownloadItem) -> Unit,
     onOpenShow: (showId: String, title: String) -> Unit,
     onDeleteDownload: (String) -> Unit,
@@ -293,7 +304,7 @@ private fun LazyListScope.downloadsRootContent(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 6.dp)
-                    .clickable { onOpenShow(item.parentMetaId, item.title) },
+                    .clickable(role = Role.Button) { onOpenShow(item.parentMetaId, item.title) },
                 shape = MaterialTheme.shapes.medium,
                 color = MaterialTheme.colorScheme.surfaceContainer,
             ) {
@@ -334,18 +345,7 @@ private fun LazyListScope.downloadsRootContent(
     // A list that could not be read is not an empty one: the banner says so instead.
     if (uiState.items.isEmpty() && uiState.storeProblem == null) {
         item {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 40.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = stringResource(Res.string.downloads_empty_title),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            EmptyDownloads(showSeasonHint = showSeasonHint, onBrowse = onBrowse)
         }
     }
 }
@@ -437,11 +437,34 @@ private fun DownloadRow(
         displayTitle = displayTitle,
     )
 
+    val name = item.nameForLabels()
+    val announcement = stringResource(
+        Res.string.downloads_announce_row,
+        name,
+        if (rowStatus.phase == DownloadPhase.Failed) {
+            stringResource(Res.string.downloads_status_failed_reason, failureReasonText(item))
+        } else {
+            stringResource(rowStatus.phase.announcement)
+        },
+    )
+    val pauseDescription = stringResource(Res.string.downloads_pause_description, name)
+    val resumeDescription = stringResource(Res.string.downloads_resume_description, name)
+    val playDescription = stringResource(Res.string.downloads_play_description, name)
+    val deleteDescription = stringResource(Res.string.downloads_delete_description, name)
+
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 6.dp)
-            .clickable(enabled = item.isPlayable, onClick = onOpen),
+            .then(
+                // One item for a screen reader: title, subtitle and status read together. Its own
+                // buttons stay apart. A row that can be played is a button; one that cannot is not.
+                if (item.isPlayable) {
+                    Modifier.clickable(role = Role.Button, onClick = onOpen)
+                } else {
+                    Modifier.semantics(mergeDescendants = true) {}
+                },
+            ),
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
@@ -477,6 +500,12 @@ private fun DownloadRow(
                     )
                     Text(
                         text = statusText(item, rowStatus),
+                        // Announced when the phase changes. The description has no sizes, so the
+                        // bytes arriving do not make it speak again.
+                        modifier = Modifier.semantics {
+                            contentDescription = announcement
+                            liveRegion = LiveRegionMode.Polite
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -495,7 +524,7 @@ private fun DownloadRow(
                             IconButton(onClick = onPause) {
                                 Icon(
                                     imageVector = Icons.Rounded.Pause,
-                                    contentDescription = stringResource(Res.string.compose_action_pause),
+                                    contentDescription = pauseDescription,
                                 )
                             }
                         }
@@ -503,7 +532,7 @@ private fun DownloadRow(
                             IconButton(onClick = onResume) {
                                 Icon(
                                     imageVector = Icons.Rounded.PlayArrow,
-                                    contentDescription = stringResource(Res.string.action_resume),
+                                    contentDescription = resumeDescription,
                                 )
                             }
                         }
@@ -512,7 +541,7 @@ private fun DownloadRow(
                             IconButton(onClick = onOpen) {
                                 Icon(
                                     imageVector = Icons.Rounded.PlayArrow,
-                                    contentDescription = stringResource(Res.string.action_play),
+                                    contentDescription = playDescription,
                                 )
                             }
                         }
@@ -520,7 +549,7 @@ private fun DownloadRow(
                     IconButton(onClick = onDelete) {
                         Icon(
                             imageVector = Icons.Rounded.Delete,
-                            contentDescription = stringResource(Res.string.action_delete),
+                            contentDescription = deleteDescription,
                         )
                     }
                 }
@@ -584,7 +613,9 @@ private fun downloadDisplaySubtitle(
 private fun SectionTitle(title: String) {
     Text(
         text = title,
-        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+        modifier = Modifier
+            .padding(horizontal = 14.dp, vertical = 8.dp)
+            .semantics { heading() },
         style = MaterialTheme.typography.labelLarge,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         fontWeight = FontWeight.SemiBold,
@@ -662,6 +693,47 @@ private fun FailureDetails(
                 onClick = onRetry,
             ) {
                 Text(text = retryText, style = MaterialTheme.typography.labelLarge)
+            }
+        }
+    }
+}
+
+/** The empty list: what to do to get a download, and where to start. */
+@Composable
+private fun EmptyDownloads(showSeasonHint: Boolean, onBrowse: (() -> Unit)?) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 40.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Column(
+            modifier = Modifier.semantics(mergeDescendants = true) {},
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = stringResource(Res.string.downloads_empty_title),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = stringResource(Res.string.downloads_empty_hint),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (showSeasonHint) {
+                Text(
+                    text = stringResource(Res.string.downloads_empty_hint_seasons),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (onBrowse != null) {
+            TextButton(onClick = onBrowse) {
+                Text(text = stringResource(Res.string.downloads_empty_browse), style = MaterialTheme.typography.labelLarge)
             }
         }
     }

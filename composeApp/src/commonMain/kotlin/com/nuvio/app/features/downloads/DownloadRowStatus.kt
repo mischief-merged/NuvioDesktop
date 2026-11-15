@@ -1,6 +1,15 @@
 package com.nuvio.app.features.downloads
 
 import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.downloads_announce_checking
+import nuvio.composeapp.generated.resources.downloads_announce_completed
+import nuvio.composeapp.generated.resources.downloads_announce_downloading
+import nuvio.composeapp.generated.resources.downloads_announce_failed
+import nuvio.composeapp.generated.resources.downloads_announce_paused
+import nuvio.composeapp.generated.resources.downloads_announce_paused_low_disk
+import nuvio.composeapp.generated.resources.downloads_announce_paused_storage_limit
+import nuvio.composeapp.generated.resources.downloads_announce_reconnecting
+import nuvio.composeapp.generated.resources.downloads_announce_waiting_network
 import nuvio.composeapp.generated.resources.downloads_result_basic
 import nuvio.composeapp.generated.resources.downloads_result_not_checked
 import nuvio.composeapp.generated.resources.downloads_result_suspect
@@ -26,23 +35,28 @@ internal enum class DownloadPhase(
     val message: StringResource,
     /** Whether the message has a place for "downloaded / total". */
     val showsSize: Boolean,
+    /**
+     * What a screen reader says when the row enters this phase. It has no sizes, so that it changes
+     * only when the phase does and not with every chunk that arrives.
+     */
+    val announcement: StringResource,
 ) {
-    Downloading(Res.string.downloads_status_downloading, showsSize = true),
+    Downloading(Res.string.downloads_status_downloading, showsSize = true, Res.string.downloads_announce_downloading),
 
     /** The internet cannot be reached: the transfer waits and goes on by itself. */
-    WaitingForNetwork(Res.string.downloads_status_waiting_network, showsSize = true),
+    WaitingForNetwork(Res.string.downloads_status_waiting_network, showsSize = true, Res.string.downloads_announce_waiting_network),
 
     /** The internet looks reachable but nothing arrives: the transfer is being tried again. */
-    Reconnecting(Res.string.downloads_status_reconnecting, showsSize = true),
+    Reconnecting(Res.string.downloads_status_reconnecting, showsSize = true, Res.string.downloads_announce_reconnecting),
 
     /** All bytes are in; the file and its pictures are being looked at. */
-    CheckingFile(Res.string.downloads_status_checking, showsSize = false),
+    CheckingFile(Res.string.downloads_status_checking, showsSize = false, Res.string.downloads_announce_checking),
 
-    Paused(Res.string.downloads_status_paused, showsSize = true),
-    PausedStorageLimit(Res.string.downloads_status_paused_storage_limit, showsSize = true),
-    PausedLowDiskSpace(Res.string.downloads_status_paused_low_disk, showsSize = true),
-    Completed(Res.string.downloads_status_completed, showsSize = true),
-    Failed(Res.string.downloads_status_failed, showsSize = false),
+    Paused(Res.string.downloads_status_paused, showsSize = true, Res.string.downloads_announce_paused),
+    PausedStorageLimit(Res.string.downloads_status_paused_storage_limit, showsSize = true, Res.string.downloads_announce_paused_storage_limit),
+    PausedLowDiskSpace(Res.string.downloads_status_paused_low_disk, showsSize = true, Res.string.downloads_announce_paused_low_disk),
+    Completed(Res.string.downloads_status_completed, showsSize = true, Res.string.downloads_announce_completed),
+    Failed(Res.string.downloads_status_failed, showsSize = false, Res.string.downloads_announce_failed),
 }
 
 /** What was checked about a finished file, in the words the row shows. */

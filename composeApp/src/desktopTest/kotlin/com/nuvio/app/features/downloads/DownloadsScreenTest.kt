@@ -1,15 +1,21 @@
 package com.nuvio.app.features.downloads
 
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.test.onAllNodesWithContentDescription
-import androidx.compose.ui.test.onFirst
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.nuvio.app.core.ui.NuvioTheme
@@ -17,7 +23,20 @@ import com.nuvio.app.core.ui.NuvioToastController
 import kotlinx.coroutines.runBlocking
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.action_cancel
-import nuvio.composeapp.generated.resources.action_delete
+import nuvio.composeapp.generated.resources.downloads_announce_checking
+import nuvio.composeapp.generated.resources.downloads_announce_downloading
+import nuvio.composeapp.generated.resources.downloads_announce_row
+import nuvio.composeapp.generated.resources.downloads_delete_description
+import nuvio.composeapp.generated.resources.downloads_empty_browse
+import nuvio.composeapp.generated.resources.downloads_empty_hint
+import nuvio.composeapp.generated.resources.downloads_empty_hint_seasons
+import nuvio.composeapp.generated.resources.downloads_pause_description
+import nuvio.composeapp.generated.resources.downloads_play_description
+import nuvio.composeapp.generated.resources.downloads_resume_description
+import nuvio.composeapp.generated.resources.downloads_section_active
+import nuvio.composeapp.generated.resources.downloads_section_movies
+import nuvio.composeapp.generated.resources.downloads_section_shows
+import nuvio.composeapp.generated.resources.episodes_season
 import nuvio.composeapp.generated.resources.action_retry
 import nuvio.composeapp.generated.resources.downloads_delete_confirm_partial
 import nuvio.composeapp.generated.resources.downloads_delete_confirm_trash
@@ -66,6 +85,7 @@ class DownloadsScreenTest {
     internal class FakeBackend : DownloadsBackend {
         var payload: String? = null
         val started = mutableListOf<String>()
+        val progress = mutableMapOf<String, (Long, Long?) -> Unit>()
         var previousPayload: String? = null
         var puttingAsideFails = false
         val trashed = mutableListOf<String>()
@@ -98,6 +118,7 @@ class DownloadsScreenTest {
             onPaused: () -> Unit,
         ): DownloadsTaskHandle {
             started += request.item.id
+            progress[request.item.id] = onProgress
             return object : DownloadsTaskHandle {
                 override fun cancel() = Unit
             }
@@ -442,8 +463,8 @@ class DownloadsScreenTest {
         assertEquals(text(Res.string.downloads_delete_not_moved_toast), NuvioToastController.currentToast.value?.message)
     }
 
-    private fun pressDelete() {
-        compose.onAllNodesWithContentDescription(text(Res.string.action_delete)).onFirst().performClick()
+    private fun pressDelete(name: String = "Pantheon S02E03") {
+        compose.onNodeWithContentDescription(text(Res.string.downloads_delete_description, name)).performClick()
     }
 
     private fun openShow() {
@@ -504,5 +525,191 @@ class DownloadsScreenTest {
         show(stored("a", "Paused"))
 
         compose.onNodeWithText(text(Res.string.downloads_store_problem_title)).assertDoesNotExist()
+    }
+
+    // Accessibility
+
+    private fun description(resource: StringResource, name: String) = text(resource, name)
+
+    @Test
+    fun every_row_action_names_the_download_it_acts_on() {
+        show(
+            stored("d", "Downloading", episode = 1, extra = ""","downloadedBytes":5,"totalBytes":100"""),
+            stored("p", "Paused", episode = 2, extra = ""","downloadedBytes":5,"totalBytes":100"""),
+        )
+
+        compose.onNodeWithContentDescription(description(Res.string.downloads_pause_description, "Pantheon S02E01")).assertHasClickAction()
+        compose.onNodeWithContentDescription(description(Res.string.downloads_resume_description, "Pantheon S02E02")).assertHasClickAction()
+        compose.onNodeWithContentDescription(description(Res.string.downloads_delete_description, "Pantheon S02E01")).assertHasClickAction()
+        compose.onNodeWithContentDescription(description(Res.string.downloads_delete_description, "Pantheon S02E02")).assertHasClickAction()
+    }
+
+    @Test
+    fun the_play_and_delete_buttons_of_a_finished_download_name_it() {
+        show(completedEpisode("a"))
+        openShow()
+
+        compose.onNodeWithContentDescription(description(Res.string.downloads_play_description, "Pantheon S02E03")).assertHasClickAction()
+        compose.onNodeWithContentDescription(description(Res.string.downloads_delete_description, "Pantheon S02E03")).assertHasClickAction()
+    }
+
+    @Test
+    fun no_row_action_is_named_by_the_bare_verb() {
+        show(
+            stored("d", "Downloading", episode = 1, extra = ""","downloadedBytes":5,"totalBytes":100"""),
+            stored("p", "Paused", episode = 2, extra = ""","downloadedBytes":5,"totalBytes":100"""),
+            failedRow("f", "Other", "Connection lost", 3),
+        )
+
+        listOf("Pause", "Resume", "Delete", "Play", "Retry").forEach { verb ->
+            compose.onAllNodesWithContentDescription(verb).assertCountEquals(0)
+        }
+    }
+
+    @Test
+    fun a_row_that_can_be_played_is_one_button_that_reads_its_title() {
+        show(completedEpisode("a"))
+        openShow()
+
+        compose.onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button) and hasText("Pantheon", substring = true))
+            .assertCountEquals(1)
+            .onFirst()
+            .assertHasClickAction()
+    }
+
+    @Test
+    fun a_row_that_cannot_be_played_is_one_item_with_its_title_and_status_together_and_no_button_role() {
+        show(stored("p", "Paused", extra = ""","downloadedBytes":5"""))
+
+        compose.onNode(hasText("Pantheon", substring = true) and hasText(text(DownloadPhase.Paused.message, "5 B")))
+            .assertIsDisplayed()
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Role))
+    }
+
+    @Test
+    fun the_show_card_is_a_button() {
+        show(completedEpisode("a"))
+
+        compose.onNode(hasText("Pantheon") and SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button))
+            .assertHasClickAction()
+    }
+
+    @Test
+    fun the_section_titles_are_headings() {
+        show(
+            stored("p", "Paused", episode = 1, extra = ""","downloadedBytes":5"""),
+            stored("m", "Completed", title = "Film", season = null, episode = null, extra = ""","localFileUri":"file:/m.mkv","downloadedBytes":100,"totalBytes":100"""),
+            completedEpisode("a", episode = 2),
+        )
+
+        listOf(Res.string.downloads_section_active, Res.string.downloads_section_movies, Res.string.downloads_section_shows).forEach { title ->
+            compose.onNode(hasText(text(title)) and SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading)).assertIsDisplayed()
+        }
+    }
+
+    @Test
+    fun the_season_titles_of_a_show_are_headings() {
+        show(completedEpisode("a"))
+        openShow()
+
+        compose.onNode(hasText(text(Res.string.episodes_season, 2)) and SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading)).assertIsDisplayed()
+    }
+
+    private fun statusNode(name: String, phase: StringResource) =
+        compose.onNodeWithContentDescription(text(Res.string.downloads_announce_row, name, text(phase)), useUnmergedTree = true)
+
+    @Test
+    fun the_status_of_a_row_is_a_polite_live_region_that_names_the_download() {
+        show(stored("d", "Downloading", extra = ""","downloadedBytes":5,"totalBytes":100"""))
+
+        statusNode("Pantheon S02E03", Res.string.downloads_announce_downloading)
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.LiveRegion, LiveRegionMode.Polite))
+    }
+
+    @Test
+    fun bytes_arriving_change_what_is_shown_but_not_what_is_announced() {
+        show(stored("d", "Downloading", extra = ""","downloadedBytes":5,"totalBytes":100"""))
+        val announced = text(Res.string.downloads_announce_row, "Pantheon S02E03", text(Res.string.downloads_announce_downloading))
+        compose.onNodeWithText(text(DownloadPhase.Downloading.message, "5 B / 100 B")).assertIsDisplayed()
+
+        listOf(10L, 20L, 40L, 80L).forEach { bytes -> backend.progress.getValue("d")(bytes, 100L) }
+        compose.waitForIdle()
+
+        compose.onNodeWithText(text(DownloadPhase.Downloading.message, "80 B / 100 B")).assertIsDisplayed()
+        compose.onNodeWithContentDescription(announced, useUnmergedTree = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun a_change_of_phase_changes_what_is_announced() {
+        show(stored("d", "Downloading", extra = ""","downloadedBytes":50,"totalBytes":100"""))
+        statusNode("Pantheon S02E03", Res.string.downloads_announce_downloading).assertIsDisplayed()
+
+        backend.progress.getValue("d")(100L, 100L)
+        compose.waitForIdle()
+
+        statusNode("Pantheon S02E03", Res.string.downloads_announce_checking).assertIsDisplayed()
+        statusNode("Pantheon S02E03", Res.string.downloads_announce_downloading).assertDoesNotExist()
+    }
+
+    @Test
+    fun a_failed_row_announces_its_reason() {
+        show(failedRow("f", "NotEnoughSpace", "No space left on device"))
+
+        compose.onNodeWithContentDescription(
+            text(
+                Res.string.downloads_announce_row, "Pantheon S02E03",
+                text(Res.string.downloads_status_failed_reason, text(Res.string.downloads_error_not_enough_space)),
+            ),
+            useUnmergedTree = true,
+        ).assertIsDisplayed()
+    }
+
+    @Test
+    fun the_empty_state_says_how_to_get_a_download() {
+        show()
+
+        compose.onNodeWithText(text(Res.string.downloads_empty_title)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_empty_hint)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_empty_hint_seasons)).assertDoesNotExist()
+    }
+
+    @Test
+    fun the_empty_state_mentions_seasons_where_they_can_be_downloaded() {
+        backend.payload = null
+        compose.setContent {
+            NuvioTheme {
+                DownloadsScreen(onBack = {}, onOpenDownload = {}, showAutoDownloads = false, showSeasonHint = true)
+            }
+        }
+
+        compose.onNodeWithText(text(Res.string.downloads_empty_hint_seasons)).assertIsDisplayed()
+    }
+
+    @Test
+    fun the_empty_state_offers_browsing_only_where_the_screen_can_do_it() {
+        show()
+        compose.onNodeWithText(text(Res.string.downloads_empty_browse)).assertDoesNotExist()
+    }
+
+    @Test
+    fun browsing_from_the_empty_state_calls_the_hook() {
+        var browsed = 0
+        compose.setContent {
+            NuvioTheme {
+                DownloadsScreen(onBack = {}, onOpenDownload = {}, showAutoDownloads = false, onBrowse = { browsed++ })
+            }
+        }
+
+        compose.onNodeWithText(text(Res.string.downloads_empty_browse)).performClick()
+
+        assertEquals(1, browsed)
+    }
+
+    @Test
+    fun the_empty_state_is_gone_once_there_is_a_download() {
+        show(stored("p", "Paused"))
+
+        compose.onNodeWithText(text(Res.string.downloads_empty_title)).assertDoesNotExist()
+        compose.onNodeWithText(text(Res.string.downloads_empty_hint)).assertDoesNotExist()
     }
 }

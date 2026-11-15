@@ -159,4 +159,27 @@ class DownloadRowStatusTest {
         val item = Json { ignoreUnknownKeys = true; coerceInputValues = true }.decodeFromString<DownloadItem>(stored)
         assertEquals(DownloadResult.NotChecked, downloadRowStatus(item, now).result)
     }
+
+    @Test
+    fun what_a_screen_reader_says_has_no_sizes_and_differs_per_phase() {
+        val announcements = DownloadPhase.entries.map { text(it.announcement) }
+        assertEquals(announcements.size, announcements.toSet().size, "two phases share an announcement")
+        announcements.forEach { assertFalse('%' in it, "\"$it\" has a place for a value") }
+    }
+
+    @Test
+    fun what_a_screen_reader_says_has_no_technical_terms() {
+        val jargon = listOf("checksum", "decode", "digest", "hash", "codec", "frame", "ffmpeg")
+        DownloadPhase.entries.map { text(it.announcement).lowercase() }.forEach { announcement ->
+            jargon.forEach { term -> assertFalse(term in announcement, "'$term' is in \"$announcement\"") }
+        }
+    }
+
+    @Test
+    fun the_name_of_a_download_in_a_label_carries_the_episode_or_is_the_movie_title() {
+        assertEquals("Show S01E01", item(DownloadStatus.Paused).copy(title = "Show", seasonNumber = 1, episodeNumber = 1).nameForLabels())
+        assertEquals("Pantheon S02E13", item(DownloadStatus.Paused).copy(title = "Pantheon", seasonNumber = 2, episodeNumber = 13).nameForLabels())
+        assertEquals("Film", item(DownloadStatus.Paused).copy(title = "Film", seasonNumber = null, episodeNumber = null).nameForLabels())
+        assertEquals("Film", item(DownloadStatus.Paused).copy(title = "Film", seasonNumber = 1, episodeNumber = null).nameForLabels())
+    }
 }
