@@ -35,6 +35,7 @@ internal fun BoxScope.PlayerPlaybackOverlays(
     onBackWithProgress: () -> Unit,
     openingLoadingMessage: String?,
     p2pInitialLoadingProgress: Float?,
+    announceOpeningMessage: Boolean = false,
     showP2pRebufferStats: Boolean,
     p2pRebufferMessage: String?,
     p2pRebufferProgress: Float?,
@@ -93,6 +94,7 @@ internal fun BoxScope.PlayerPlaybackOverlays(
             modifier = Modifier.fillMaxSize(),
             message = openingLoadingMessage,
             progress = p2pInitialLoadingProgress,
+            announceMessage = announceOpeningMessage,
         )
     }
 

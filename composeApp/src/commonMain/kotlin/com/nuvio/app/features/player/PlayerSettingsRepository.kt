@@ -2,6 +2,7 @@ package com.nuvio.app.features.player
 
 import com.nuvio.app.core.build.AppFeaturePolicy
 import com.nuvio.app.isDesktop
+import com.nuvio.app.isIos
 import com.nuvio.app.features.player.skip.AutoSkipSegmentType
 import com.nuvio.app.features.player.skip.NextEpisodeThresholdMode
 import com.nuvio.app.features.streams.StreamAutoPlayMode
@@ -56,7 +57,7 @@ data class PlayerSettingsUiState(
     val streamReuseLastLinkCacheHours: Int = 24,
     val androidPlaybackEngine: AndroidPlaybackEngine = AndroidPlaybackEngine.ExoPlayer,
     val autoSwitchPlaybackEngineOnError: Boolean = true,
-    val streamAutoPlayFallbackOnFailure: Boolean = false,
+    val streamAutoPlayFallbackOnFailure: Boolean = DEFAULT_SOURCE_FAILOVER_ENABLED,
     val streamAutoPlayFallbackMaxSources: Int = DEFAULT_SOURCE_FALLBACK_MAX_SOURCES,
     val streamAutoPlayFallbackStartupTimeoutSeconds: Int = DEFAULT_SOURCE_STARTUP_TIMEOUT_SECONDS,
     val androidLibmpvVideoOutput: AndroidLibmpvVideoOutput = AndroidLibmpvVideoOutput.GpuNext,
@@ -137,13 +138,26 @@ val SOURCE_STARTUP_TIMEOUT_SECONDS_RANGE = 5..45
 const val SOURCE_STARTUP_TIMEOUT_SECONDS_STEP = 5
 
 /**
- * Falling back to the next matching source applies only while auto source selection picks the
- * stream and the internal player plays it.
+ * Moving to the next source when one fails is on by default on desktop only. Android and iOS keep
+ * it off until the user turns it on, as before.
+ */
+val DEFAULT_SOURCE_FAILOVER_ENABLED: Boolean
+    get() = isDesktop
+
+/**
+ * Moving to the next source when one fails applies while the setting is on and the internal player
+ * plays the source. It covers a source the user picked by hand only after playback started.
  */
 val PlayerSettingsUiState.streamAutoPlayFallbackActive: Boolean
-    get() = streamAutoPlayFallbackOnFailure &&
-        streamAutoPlayMode != StreamAutoPlayMode.MANUAL &&
-        !externalPlayerEnabled
+    get() = streamAutoPlayFallbackOnFailure && !externalPlayerEnabled
+
+/**
+ * Whether the automatic engine switch on error (Android only) takes the failure. It excludes
+ * moving to the next source, as both react to the same error. Desktop has no engine switch, even
+ * though the stored value defaults to on there, and iOS has none either.
+ */
+val PlayerSettingsUiState.engineSwitchOnErrorBlocksSourceFailover: Boolean
+    get() = !isIos && !isDesktop && autoSwitchPlaybackEngineOnError
 
 object PlayerSettingsRepository {
     private val _uiState = MutableStateFlow(PlayerSettingsUiState())
@@ -172,7 +186,7 @@ object PlayerSettingsRepository {
     private var streamReuseLastLinkCacheHours = 24
     private var androidPlaybackEngine = AndroidPlaybackEngine.ExoPlayer
     private var autoSwitchPlaybackEngineOnError = true
-    private var streamAutoPlayFallbackOnFailure = false
+    private var streamAutoPlayFallbackOnFailure = DEFAULT_SOURCE_FAILOVER_ENABLED
     private var streamAutoPlayFallbackMaxSources = DEFAULT_SOURCE_FALLBACK_MAX_SOURCES
     private var streamAutoPlayFallbackStartupTimeoutSeconds = DEFAULT_SOURCE_STARTUP_TIMEOUT_SECONDS
     private var androidLibmpvVideoOutput = AndroidLibmpvVideoOutput.GpuNext
@@ -275,7 +289,7 @@ object PlayerSettingsRepository {
         streamReuseLastLinkCacheHours = 24
         androidPlaybackEngine = AndroidPlaybackEngine.ExoPlayer
         autoSwitchPlaybackEngineOnError = true
-        streamAutoPlayFallbackOnFailure = false
+        streamAutoPlayFallbackOnFailure = DEFAULT_SOURCE_FAILOVER_ENABLED
         streamAutoPlayFallbackMaxSources = DEFAULT_SOURCE_FALLBACK_MAX_SOURCES
         streamAutoPlayFallbackStartupTimeoutSeconds = DEFAULT_SOURCE_STARTUP_TIMEOUT_SECONDS
         androidLibmpvVideoOutput = AndroidLibmpvVideoOutput.GpuNext
@@ -415,7 +429,7 @@ object PlayerSettingsRepository {
             ?.let { runCatching { AndroidPlaybackEngine.valueOf(it) }.getOrNull() }
             ?: AndroidPlaybackEngine.ExoPlayer
         autoSwitchPlaybackEngineOnError = PlayerSettingsStorage.loadAutoSwitchPlaybackEngineOnError() ?: true
-        streamAutoPlayFallbackOnFailure = PlayerSettingsStorage.loadStreamAutoPlayFallbackOnFailure() ?: false
+        streamAutoPlayFallbackOnFailure = PlayerSettingsStorage.loadStreamAutoPlayFallbackOnFailure() ?: DEFAULT_SOURCE_FAILOVER_ENABLED
         streamAutoPlayFallbackMaxSources = PlayerSettingsStorage.loadStreamAutoPlayFallbackMaxSources()
             ?.coerceIn(SOURCE_FALLBACK_MAX_SOURCES_RANGE)
             ?: DEFAULT_SOURCE_FALLBACK_MAX_SOURCES
