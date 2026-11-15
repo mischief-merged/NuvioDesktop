@@ -221,6 +221,80 @@ class DownloadLocationsRepositoryTest {
     }
 
     @Test
+    fun deleting_a_partial_download_on_an_unplugged_drive_keeps_its_record_and_its_partial_file() {
+        val drive = world.driveLocation("Archive")
+        val partial = episodeItem("tt1", 1, status = DownloadStatus.Paused, locationId = drive.id)
+        val file = drive.path.resolve(partial.fileName + ".part").also { java.nio.file.Files.write(it, ByteArray(10)) }
+        load(partial)
+        world.unplug("Archive")
+
+        assertEquals(DownloadDeleteResult.NotReachable, DownloadsRepository.deleteDownload(partial.id))
+        DownloadsRepository.cancelDownload(partial.id)
+
+        assertEquals(1, items().size)
+        world.replug("Archive")
+        assertTrue(file.toFile().exists())
+    }
+
+    @Test
+    fun clearing_failed_downloads_leaves_the_ones_on_an_unplugged_drive() {
+        val drive = world.driveLocation("Archive")
+        val onDrive = episodeItem("tt1", 1, status = DownloadStatus.Failed, locationId = drive.id)
+        val inApp = episodeItem("tt2", 1, status = DownloadStatus.Failed)
+        load(onDrive, inApp)
+        world.unplug("Archive")
+
+        assertEquals(1, DownloadsRepository.clearFailed())
+
+        assertEquals(listOf(onDrive.id), items().map { it.id })
+    }
+
+    @Test
+    fun a_delete_a_removal_after_watching_and_a_file_check_do_nothing_while_a_move_has_the_item() {
+        val rule = autoDownloadRuleKey("series", "tt1")
+        val item = episodeIn(null, "tt1", 1, ruleKey = rule)
+        load(item)
+        assertTrue(ItemLocks.tryAcquire(item.id))
+        try {
+            assertEquals(DownloadDeleteResult.Moving, DownloadsRepository.deleteDownload(item.id))
+            assertEquals(AutoDownloadRemovalResult.Busy, DownloadsRepository.removeWatchedAutoDownload(item.id, rule))
+            // A file in the middle of changing places is not a lost file.
+            java.nio.file.Files.delete(java.nio.file.Paths.get(java.net.URI(item.localFileUri!!)))
+            assertTrue(DownloadsRepository.verifyCompletedDownload(item.id))
+            DownloadsRepository.cancelDownload(item.id)
+        } finally {
+            ItemLocks.release(item.id)
+        }
+
+        assertEquals(1, items().size)
+        assertEquals(DownloadStatus.Completed, items().single().status)
+        assertTrue(backend.trashed.isEmpty())
+    }
+
+    @Test
+    fun a_delete_removes_only_the_partial_file_in_the_items_own_location() {
+        val drive = world.driveLocation("Archive")
+        val item = episodeItem("tt1", 1, status = DownloadStatus.Paused, locationId = null)
+        val elsewhere = drive.path.resolve(item.fileName + ".part").also { java.nio.file.Files.write(it, ByteArray(3)) }
+        val partials = mutableListOf<String>()
+        val recording = object : DownloadsBackend by backend {
+            override fun removePartialOf(item: DownloadItem): Boolean {
+                partials += item.fileName
+                return backend.removePartialOf(item)
+            }
+        }
+        DownloadsRepository.backend = recording
+        backend.payload = storedPayload(listOf(item))
+        DownloadsRepository.clearLocalState()
+        DownloadsRepository.ensureLoaded()
+
+        DownloadsRepository.deleteDownload(item.id)
+
+        assertEquals(listOf(item.fileName), partials)
+        assertTrue(elsewhere.toFile().exists(), "a partial file of the same name in another location was removed")
+    }
+
+    @Test
     fun the_list_stays_readable_by_a_build_without_locations() {
         val drive = world.driveLocation("Archive")
         val item = episodeIn(drive, "tt1", 1)

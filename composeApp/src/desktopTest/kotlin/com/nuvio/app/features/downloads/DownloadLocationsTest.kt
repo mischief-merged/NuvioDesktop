@@ -3,6 +3,7 @@ package com.nuvio.app.features.downloads
 import java.nio.file.Files
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
+import kotlin.io.path.name
 import kotlin.io.path.writeText
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -41,6 +42,100 @@ class DownloadLocationsTest {
 
         // The record says the app folder. A file of that name on a drive is another file.
         assertEquals(FileLookup.Missing, world.locations.locate(null, oldAddress, "c.mp4"))
+    }
+
+    @Test
+    fun when_the_records_own_drive_is_away_a_same_named_file_on_another_drive_is_not_adopted() {
+        val a = world.driveLocation("A")
+        val b = world.driveLocation("B")
+        val file = a.path.resolve("x.mp4").writeVideo(1)
+        b.path.resolve("x.mp4").writeVideo(2)
+        world.unplug("A")
+
+        assertEquals(FileLookup.Unreachable(a.id, FolderAvailability.NotConnected), world.locations.locate(a.id, file.toUri().toString(), "x.mp4"))
+    }
+
+    @Test
+    fun a_record_naming_a_location_that_is_not_known_is_unreachable_and_nothing_is_searched() {
+        world.appFolder.resolve("x.mp4").writeVideo(1)
+
+        assertEquals(FileLookup.Unreachable("gone", FolderAvailability.NotFound), world.locations.locate("gone", null, "x.mp4"))
+    }
+
+    @Test
+    fun a_recorded_address_inside_another_location_must_pass_that_locations_marker_too() {
+        val a = world.driveLocation("A")
+        val b = world.driveLocation("B")
+        val file = b.path.resolve("x.mp4").writeVideo(1)
+        Files.delete(b.path.resolve(DownloadLocations.MarkerName))
+
+        val lookup = world.locations.locate(a.id, file.toUri().toString(), "x.mp4")
+
+        assertEquals(FileLookup.Unreachable(b.id, FolderAvailability.NotSetUp), lookup)
+    }
+
+    @Test
+    fun a_healthy_drive_without_its_marker_is_not_set_up_and_never_looks_like_lost_items_until_chosen_again() {
+        val drive = world.driveLocation("Archive")
+        val file = drive.path.resolve("d.mp4").writeVideo(1)
+        Files.delete(drive.path.resolve(DownloadLocations.MarkerName))
+
+        assertEquals(FolderAvailability.NotSetUp, world.locations.availability(drive))
+        assertEquals(FileLookup.Unreachable(drive.id, FolderAvailability.NotSetUp), world.locations.locate(drive.id, file.toUri().toString(), "d.mp4"))
+
+        world.locations.register(drive.path) // choosing it again
+
+        assertEquals(FolderAvailability.Available, world.locations.availability(drive))
+        assertIs<FileLookup.Found>(world.locations.locate(drive.id, file.toUri().toString(), "d.mp4"))
+    }
+
+    @Test
+    fun a_drive_that_mounts_at_another_path_is_recognised_by_its_marker_and_the_path_is_updated() {
+        val drive = world.driveLocation("Archive")
+        val file = drive.path.resolve("d.mp4").writeVideo(1)
+        world.unplug("Archive")
+        Files.move(world.root.resolve("Archive.unplugged"), world.volumes.resolve("Archive 1"))
+
+        assertEquals(FolderAvailability.NotConnected, world.locations.availability(drive))
+        val found = world.locations.rediscover(drive)
+
+        assertEquals(world.volumes.resolve("Archive 1/Movies"), found?.path)
+        assertEquals(drive.id, found?.id)
+        val updated = world.locations.location(drive.id)!!
+        assertEquals(FolderAvailability.Available, world.locations.availability(updated))
+        assertEquals(world.volumes.resolve("Archive 1/Movies"), updated.path)
+        assertIs<FileLookup.Found>(world.locations.locate(drive.id, null, "d.mp4"))
+        assertTrue(file.name == "d.mp4")
+    }
+
+    @Test
+    fun a_folder_with_another_locations_marker_is_not_taken_for_the_drive() {
+        val drive = world.driveLocation("Archive")
+        world.unplug("Archive")
+        val impostor = world.volumes.resolve("Other/Movies").createDirectories()
+        impostor.resolve(DownloadLocations.MarkerName).writeText("some-other-id")
+
+        assertEquals(null, world.locations.rediscover(drive))
+    }
+
+    @Test
+    fun a_volume_that_does_not_answer_counts_as_not_connected_within_the_timeout_and_never_hangs_the_caller() {
+        val hanging = object : DownloadVolumes {
+            override fun anchorOf(path: java.nio.file.Path): java.nio.file.Path? {
+                Thread.sleep(20_000)
+                return null
+            }
+        }
+        val locations = DownloadLocations(world.config, { world.appFolder }, hanging, timeoutMs = 200L)
+        val location = DesktopDownloadLocation("loc-x", world.root.resolve("slow"))
+        val started = System.nanoTime()
+
+        val state = locations.availability(location)
+        val lookup = locations.locate("loc-x", null, "a.mp4")
+
+        assertEquals(FolderAvailability.NotConnected, state)
+        assertTrue((System.nanoTime() - started) / 1_000_000 < 5_000, "the caller waited for the volume")
+        assertTrue(lookup is FileLookup.Unreachable || lookup == FileLookup.Missing)
     }
 
     @Test

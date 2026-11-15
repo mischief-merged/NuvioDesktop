@@ -8,6 +8,8 @@ import kotlin.random.Random
 
 /** Treats the folders under a temporary "Volumes" folder as separate drives. Moving one aside unplugs it. */
 internal class FakeVolumes(private val volumesDir: Path) : DownloadVolumes {
+    override fun mountPoints(): List<Path> = Files.list(volumesDir).use { it.toList() }
+
     override fun anchorOf(path: Path): Path? {
         val absolute = path.toAbsolutePath().normalize()
         return if (absolute.startsWith(volumesDir) && absolute.nameCount > volumesDir.nameCount) {
