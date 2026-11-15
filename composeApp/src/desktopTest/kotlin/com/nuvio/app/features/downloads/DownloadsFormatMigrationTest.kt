@@ -191,6 +191,51 @@ class DownloadsFormatMigrationTest {
     }
 
     @Test
+    fun a_record_written_before_frames_were_checked_is_read_in_full_as_not_checked_and_keeps_its_fields_when_rewritten() {
+        backend.payload = payloadOf(
+            record("a", 1, "Completed", later = ""","verifiedBy":"Size""""),
+            record("b", 2, "Paused"),
+        )
+
+        val (finished, paused) = load()
+
+        assertOriginalFieldsKept(finished, 1)
+        assertEquals(DownloadVerification.Size, finished.verifiedBy)
+        assertEquals(DownloadFramesCheck.NotChecked, finished.framesCheck)
+        assertOriginalFieldsKept(paused, 2)
+        assertEquals(DownloadFramesCheck.NotChecked, paused.framesCheck)
+        assertEquals(emptyList(), backend.unreadable)
+
+        rewrite("b")
+        val written = backend.payload!!
+        DownloadsRepository.clearLocalState()
+        backend.payload = written
+        val (afterFinished, afterPaused) = load()
+        assertOriginalFieldsKept(afterFinished, 1)
+        assertEquals("tt0121955:29:2", afterPaused.videoId)
+        assertEquals(DownloadFramesCheck.NotChecked, afterFinished.framesCheck)
+    }
+
+    @Test
+    fun a_record_that_states_what_the_frames_came_to_is_read_with_it_and_an_unknown_or_null_value_reads_as_not_checked() {
+        backend.payload = payloadOf(
+            record("a", 1, "Completed", later = ""","framesCheck":"Passed""""),
+            record("b", 2, "Completed", later = ""","framesCheck":"Suspect""""),
+            record("c", 3, "Completed", later = ""","framesCheck":"SomethingFromALaterBuild""""),
+            record("d", 4, "Completed", later = ""","framesCheck":null"""),
+        )
+
+        val items = load()
+
+        assertEquals(
+            listOf(DownloadFramesCheck.Passed, DownloadFramesCheck.Suspect, DownloadFramesCheck.NotChecked, DownloadFramesCheck.NotChecked),
+            items.map { it.framesCheck },
+        )
+        assertOriginalFieldsKept(items[2], 3)
+        assertEquals(emptyList(), backend.unreadable)
+    }
+
+    @Test
     fun a_download_that_a_limit_stopped_is_read_with_the_reason_it_was_stopped_for() {
         backend.payload = payloadOf(
             record("a", 1, "Paused", later = ""","autoDownloadRuleKey":"series|tt0121955","autoDownloadStop":"StorageLimit""""),
