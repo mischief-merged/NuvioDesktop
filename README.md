@@ -1,86 +1,91 @@
 <div align="center">
 
-  <img src="https://nuvio.tv/assets/nuvio-app-logo-wordmark.webp" alt="Nuvio" width="320" />
+<img src="assets/fork-logo.png" alt="NuvioRoid logo: the Nuvio play-button icon with two flexing cartoon arms" width="260" />
 
-  <p>
-    A free, open-source media app for Windows, macOS, and Linux.
-    <br />
-    Bring your own sources. Nuvio turns them into a library with artwork, ratings, subtitles, and your place saved on every screen.
-  </p>
+# NuvioRoid
 
-  [Website](https://nuvio.tv) · [GitHub releases](https://github.com/NuvioMedia/NuvioDesktop/releases/latest) · [Support Nuvio](https://nuvio.tv/support)
+### Nuvio Desktop, on steroids. 💪
+
+**Download whole seasons. Keep the next episodes ready. Press Play and it just plays.**
+
+![Platform](https://img.shields.io/badge/macOS-Apple%20silicon-111111?logo=apple&logoColor=white)
+![Status](https://img.shields.io/badge/status-alpha%20%C2%B7%20fast%20development-8A2BE2)
+![Tests](https://img.shields.io/badge/desktop%20tests-2%2C887-2EA3F2)
+![License](https://img.shields.io/badge/license-GPLv3-3DA639)
+![Based on](https://img.shields.io/badge/based%20on-Nuvio%20Desktop-5B5BD6)
+
+[What's different](FORK.md) · [Download](#-download) · [Build it yourself](#-build-from-source) · [Credits](#-credits)
 
 </div>
 
-<p align="center">
-  <img src="assets/fork-logo.png" alt="Nuvio play-button icon with two flexing cartoon arms" width="220" />
-</p>
+---
 
-> **This is a fork of [NuvioMedia/NuvioDesktop](https://github.com/NuvioMedia/NuvioDesktop).** It adds offline downloads, auto-download, download file checks and play-by-preferences to the desktop app. **[FORK.md](FORK.md) lists what is different**, change by change, with what was tested. The official builds are at the links above; this fork does not publish releases.
+## ⚡ What you get
 
-## ⚠️ Alpha Software - Slow Development - Testers Only
+| | |
+|---|---|
+| 📥 **Season download** | One click fetches every released episode of a season, two at a time, with progress and Stop on the button. |
+| 🔁 **Auto-download** | Per show: keep the next N unwatched episodes on disk, inside a storage limit you set. |
+| 🧹 **Delete after watching** | Watched episodes move to the Trash after a delay, with Keep and a "Recently deleted" list. |
+| 🔍 **File checks** | Every download is checked before it counts: size, type, running time, hash, audio language, and a look at the frames to catch fakes, blanks and cut-off files. |
+| ▶️ **Play by preferences** | Set quality, bitrate and language once. Play picks the best matching source instead of asking every time. |
+| 🧭 **Episode pages** | Plex-style navigation: every episode has its own page, with a `Show › Season › Episode` trail, previous and next, and the rest of the season. |
+| 🎬 **Movies and collections** | The same download flow for a single movie or a whole collection, with a checklist. |
+| 🚦 **Speed limit** | Cap download speed so the rest of the house keeps streaming. |
+| 📡 **Trakt offline queue** | Watches recorded offline are kept and sent when the connection returns. |
+| ♿ **Clearer and more accessible** | Rows say what is happening and why, failures give a next step, and controls are named for assistive technology. |
 
-Nuvio Desktop is currently in alpha and is intended only for testers. It is under development and is not suitable for daily use.
+## 🥊 Nuvio vs NuvioRoid
 
-Expect breaking changes with every update. Features, settings, stored data, and compatibility may change or stop working without notice. Do not rely on this build as your primary media app, and report any issues you encounter during testing.
+| | Nuvio Desktop | NuvioRoid |
+|---|:---:|:---:|
+| Download one episode or movie | ✅ | ✅ |
+| Download a whole season in one click | — | ✅ |
+| Keep the next N episodes downloaded automatically | — | ✅ |
+| Delete after watching, with undo | — | ✅ |
+| Frame check for fake or broken files | — | ✅ |
+| Play the best source without asking | — | ✅ |
+| Episode pages with a trail back to season and show | — | ✅ |
+| Download speed limit | — | ✅ |
+| Windows and Linux builds | ✅ | not yet |
 
-## Get Nuvio Desktop
+Every row is described, with its branch and what was tested, in **[FORK.md](FORK.md)**.
 
-Download the latest build from [GitHub Releases](https://github.com/NuvioMedia/NuvioDesktop/releases/latest).
+## 📦 Download
 
-- Windows: MSI installer
-- macOS: DMG installer
-- Linux: DEB, RPM, Flatpak, or AppImage
+**macOS (Apple silicon):** the first NuvioRoid build is being prepared and will be linked here.
 
-## Build from source
+NuvioRoid installs beside the official Nuvio app. It has its own name, icon and data folder, and it does not update itself.
+
+## 🧪 Status
+
+Alpha software under **fast development**. Expect breaking changes, and do not rely on it as your only media app.
+
+- Built and tested on macOS (Apple silicon). The desktop test suite runs 2,887 tests; the three that fail also fail on upstream without any of these changes.
+- Android, iOS, Windows and Linux builds of this fork have not been run.
+- NuvioRoid is a client only. You bring your own sources, as with Nuvio.
+
+## 🛠 Build from source
 
 ```bash
-git clone https://github.com/NuvioMedia/NuvioDesktop.git
-cd NuvioDesktop
-```
-
-### Run the app
-
-```bash
+git clone https://github.com/mischief-merged/NuvioRoid.git
+cd NuvioRoid
+touch local.properties
 ./gradlew :composeApp:run
 ```
 
-On Windows PowerShell:
-
-```powershell
-.\gradlew.bat :composeApp:run
-```
-
-### Package the app
-
-Build a release package for the current host:
+Package a macOS app:
 
 ```bash
-./gradlew :composeApp:packageReleaseDistributionForCurrentOS
+./gradlew :composeApp:createDistributable
 ```
 
-For platform-specific packaging:
+The app is built with Kotlin Multiplatform and Compose Multiplatform. The `nuvioroid` branch carries the NuvioRoid name and icon; `downloads-suite` is the same code under the original name, and each change lives on its own `pr/` or `fix/` branch.
 
-Windows PowerShell:
+## 🙏 Credits
 
-```powershell
-.\gradlew.bat :composeApp:packageReleaseMsi --rerun-tasks
-```
-
-macOS:
-
-```bash
-./scripts/build-macos-release-dmgs.sh --package-only
-```
-
-Linux:
-
-```bash
-./gradlew :composeApp:packageReleaseDeb
-```
-
-The shared app is built with Kotlin Multiplatform and Compose Multiplatform.
+NuvioRoid is a fork of **[Nuvio Desktop](https://github.com/NuvioMedia/NuvioDesktop)** by NuvioMedia, and would not exist without it. It is an independent project and is not affiliated with or endorsed by NuvioMedia. Everything here is offered back to the upstream project.
 
 ## License
 
-[GNU General Public License v3.0](./LICENSE)
+[GNU General Public License v3.0](./LICENSE), the same as upstream.

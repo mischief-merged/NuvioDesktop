@@ -1,6 +1,6 @@
-# What is different in this fork
+# NuvioRoid: what is different in this fork
 
-This is a fork of [NuvioMedia/NuvioDesktop](https://github.com/NuvioMedia/NuvioDesktop). It adds offline-viewing features to the desktop app and makes the existing download and playback flows easier to follow. Everything here is offered back to the upstream project; nothing has been submitted yet, and each change is kept on its own branch so it can be proposed and reviewed separately.
+NuvioRoid is a fork of [NuvioMedia/NuvioDesktop](https://github.com/NuvioMedia/NuvioDesktop). It adds offline-viewing features to the desktop app and makes the existing download and playback flows easier to follow. Everything here is offered back to the upstream project; nothing has been submitted yet, and each change is kept on its own branch so it can be proposed and reviewed separately.
 
 - **Based on:** upstream `Dev` at `c8ee7621` (14 November 2026).
 - **Everything together:** the `downloads-suite` branch.
