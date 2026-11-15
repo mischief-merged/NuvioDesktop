@@ -12,6 +12,10 @@ import kotlinx.coroutines.async
  * each other, and a write cannot interleave with a delete: delete takes the same lock, and once the
  * video is gone every later write finds that and does nothing.
  *
+ * LOCK ORDER, everywhere: this per-video lock FIRST, then DownloadsRepository's state lock. A block
+ * run under this lock must not take the state lock (and the guard it calls does not); both delete
+ * paths take this lock before entering the state lock.
+ *
  * The blocks are short file operations, which is why a plain lock is used: the delete path is not
  * a coroutine.
  */

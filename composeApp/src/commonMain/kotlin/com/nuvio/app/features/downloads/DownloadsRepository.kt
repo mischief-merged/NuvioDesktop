@@ -26,6 +26,9 @@ import org.jetbrains.compose.resources.getString
 object DownloadsRepository {
     private const val MaxDownloadAttempts = 3
 
+    /** How often a delete looks again when the file moved while it waited for the per-video lock. */
+    private const val LockAttempts = 3
+
     private val _uiState = MutableStateFlow(DownloadsUiState())
     val uiState: StateFlow<DownloadsUiState> = _uiState.asStateFlow()
 
@@ -34,6 +37,11 @@ object DownloadsRepository {
 
     // The UI, downloader callbacks and background workers reach this object from different threads.
     // Every read-modify-write of the item list, and every use of activeTransfers, holds this lock.
+    //
+    // LOCK ORDER, everywhere: the per-video lock (SidecarLocks) FIRST, then this state lock. Code that
+    // holds this lock never waits for a per-video lock, and code that holds a per-video lock never
+    // takes this one: the guard behind every sidecar write (videoFileIsThere) reads the disk through
+    // the backend only. Both delete paths therefore take the per-video lock before entering here.
     private val stateLock = SynchronizedObject()
 
     // The transfer that currently owns each download. A transfer that was paused, replaced or removed
@@ -63,6 +71,9 @@ object DownloadsRepository {
 
     // The downloads that were started again when the list was loaded, until someone asks for them.
     private var downloadsResumedAtLoad: Set<String> = emptySet()
+
+    /** Runs [block] inside the state lock. Tests only: proves what must not need it. */
+    internal fun holdStateLockForTest(block: () -> Unit) = synchronized(stateLock) { block() }
 
     fun ensureLoaded(): Unit = synchronized(stateLock) {
         if (hasLoaded) return
@@ -137,11 +148,20 @@ object DownloadsRepository {
         }
     }
 
-    /** Whether [localFileUri] is a finished download that is listed and whose file exists at exactly that address. */
+    /**
+     * Whether the file at [localFileUri] physically exists, at exactly that address. Reads the disk
+     * through the backend and takes no lock of this repository, so it is safe to call while holding a
+     * per-video lock (see the lock order at [stateLock]).
+     */
     internal fun videoFileIsThere(localFileUri: String): Boolean {
-        val item = findCompletedDownloadByLocalFile(localFileUri) ?: return false
-        val resolved = backend.resolveLocalFileUri(localFileUri, item.fileName) ?: return false
+        val resolved = backend.resolveLocalFileUri(localFileUri, "") ?: return false
         return resolved.localFilePath() == localFileUri.localFilePath()
+    }
+
+    /** The address of a finished download's file now, from the published list: no lock is taken. */
+    private fun finishedFileUriOf(downloadId: String): String? {
+        val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return null
+        return if (item.status == DownloadStatus.Completed) backend.resolveLocalFileUri(item.localFileUri, item.fileName) else null
     }
 
     fun playableLocalFileUri(item: DownloadItem): String? {
@@ -384,7 +404,23 @@ object DownloadsRepository {
      * far is removed. A file that another download also uses stays where it is. When the file cannot
      * be moved nothing is removed: the entry stays, so that the file is not lost from view.
      */
-    internal fun deleteDownload(downloadId: String): DownloadDeleteResult = synchronized(stateLock) {
+    internal fun deleteDownload(downloadId: String): DownloadDeleteResult {
+        ensureLoaded()
+        // Per-video lock first, then the state lock. If the file moved between the look and the locks, look again.
+        repeat(LockAttempts) {
+            val locked = finishedFileUriOf(downloadId)
+            val result = if (locked != null) {
+                SidecarLocks.withLock(locked) { deleteWithLocksHeld(downloadId, locked) }
+            } else {
+                deleteWithLocksHeld(downloadId, null)
+            }
+            if (result != null) return result
+        }
+        return DownloadDeleteResult.NotMoved
+    }
+
+    /** Null when the file is no longer where [lockedUri] said: the caller starts again with the right lock. */
+    private fun deleteWithLocksHeld(downloadId: String, lockedUri: String?): DownloadDeleteResult? = synchronized(stateLock) {
         ensureLoaded()
         val items = _uiState.value.items
         val item = items.firstOrNull { it.id == downloadId } ?: return DownloadDeleteResult.Gone
@@ -394,13 +430,14 @@ object DownloadsRepository {
         } else {
             null
         }
+        if (fileUri != lockedUri) return null
         if (fileUri != null) {
             val usedByAnother = items.any { other ->
                 other.id != item.id &&
                     listOfNotNull(other.localFileUri, backend.resolveLocalFileUri(other.localFileUri, other.fileName))
                         .any { backend.isSameFile(it, fileUri) }
             }
-            if (!usedByAnother && !trashUnderSidecarLock(fileUri)) return DownloadDeleteResult.NotMoved
+            if (!usedByAnother && !backend.trashFile(fileUri)) return DownloadDeleteResult.NotMoved
         }
         activeTransfers.remove(downloadId)?.cancel()
         backend.removePartialFile(item.fileName)
@@ -409,9 +446,6 @@ object DownloadsRepository {
         persist()
         DownloadDeleteResult.Removed
     }
-
-    /** Moves the file to the trash while no sidecar write for it is running, and none can start in between. */
-    private fun trashUnderSidecarLock(fileUri: String): Boolean = SidecarLocks.withLock(fileUri) { backend.trashFile(fileUri) }
 
     /** Whether the files of deleted downloads go to the trash of the system, or are held for days in the downloads folder. */
     internal val usesSystemTrash: Boolean get() = backend.usesSystemTrash
@@ -757,28 +791,48 @@ object DownloadsRepository {
         downloadId: String,
         ruleKey: String,
         stillWanted: () -> Boolean = { true },
-    ): AutoDownloadRemovalResult =
-        synchronized(stateLock) {
-            ensureLoaded()
-            val items = _uiState.value.items
-            val item = items.firstOrNull { it.id == downloadId } ?: return AutoDownloadRemovalResult.Changed
-            if (item.autoDownloadRuleKey != ruleKey || item.status != DownloadStatus.Completed) {
-                return AutoDownloadRemovalResult.Changed
+    ): AutoDownloadRemovalResult {
+        ensureLoaded()
+        // Per-video lock first, then the state lock (see the lock order at stateLock).
+        repeat(LockAttempts) {
+            val locked = finishedFileUriOf(downloadId)
+            val result = if (locked != null) {
+                SidecarLocks.withLock(locked) { removeAutoWithLocksHeld(downloadId, ruleKey, stillWanted, locked) }
+            } else {
+                removeAutoWithLocksHeld(downloadId, ruleKey, stillWanted, null)
             }
-            if (!stillWanted()) return AutoDownloadRemovalResult.Changed
-            val fileUri = backend.resolveLocalFileUri(item.localFileUri, item.fileName)
-            if (fileUri != null) {
-                val usedByAnother = items.any { other ->
-                    other.id != item.id &&
-                        listOfNotNull(other.localFileUri, backend.resolveLocalFileUri(other.localFileUri, other.fileName))
-                            .any { backend.isSameFile(it, fileUri) }
-                }
-                if (!usedByAnother && !trashUnderSidecarLock(fileUri)) return AutoDownloadRemovalResult.NotMoved
-            }
-            publish(items.filterNot { it.id == downloadId })
-            persist()
-            AutoDownloadRemovalResult.Removed
+            if (result != null) return result
         }
+        return AutoDownloadRemovalResult.NotMoved
+    }
+
+    private fun removeAutoWithLocksHeld(
+        downloadId: String,
+        ruleKey: String,
+        stillWanted: () -> Boolean,
+        lockedUri: String?,
+    ): AutoDownloadRemovalResult? = synchronized(stateLock) {
+        ensureLoaded()
+        val items = _uiState.value.items
+        val item = items.firstOrNull { it.id == downloadId } ?: return AutoDownloadRemovalResult.Changed
+        if (item.autoDownloadRuleKey != ruleKey || item.status != DownloadStatus.Completed) {
+            return AutoDownloadRemovalResult.Changed
+        }
+        if (!stillWanted()) return AutoDownloadRemovalResult.Changed
+        val fileUri = backend.resolveLocalFileUri(item.localFileUri, item.fileName)
+        if (fileUri != lockedUri) return null
+        if (fileUri != null) {
+            val usedByAnother = items.any { other ->
+                other.id != item.id &&
+                    listOfNotNull(other.localFileUri, backend.resolveLocalFileUri(other.localFileUri, other.fileName))
+                        .any { backend.isSameFile(it, fileUri) }
+            }
+            if (!usedByAnother && !backend.trashFile(fileUri)) return AutoDownloadRemovalResult.NotMoved
+        }
+        publish(items.filterNot { it.id == downloadId })
+        persist()
+        AutoDownloadRemovalResult.Removed
+    }
 
     /** Runs [block] under the state lock, and only while [transfer] still owns the download. */
     private inline fun ifCurrent(downloadId: String, transfer: ActiveTransfer, block: () -> Unit) {
