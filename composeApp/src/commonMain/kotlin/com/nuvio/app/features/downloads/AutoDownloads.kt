@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.downloads_auto_delete_failed_toast
 import nuvio.composeapp.generated.resources.downloads_auto_delete_playing_toast
@@ -248,6 +249,17 @@ internal object AutoDownloads : AutoDownloadController {
         scope.launch {
             val saved = runCatching { store.setStorageLimit(profileId, limitGb) }.getOrDefault(false)
             if (saved) checkSafely()
+        }
+    }
+
+    /**
+     * The user is deleting [item] from Downloads. Called before the download is removed, so that no
+     * check can queue the episode again in between. A rule that queued it remembers it.
+     */
+    suspend fun rememberUserDeletion(item: DownloadItem) {
+        if (item.autoDownloadRuleKey == null) return
+        withContext(Dispatchers.Default) {
+            runCatching { engine.onDeletedByUser(store.profileId(), item) }
         }
     }
 

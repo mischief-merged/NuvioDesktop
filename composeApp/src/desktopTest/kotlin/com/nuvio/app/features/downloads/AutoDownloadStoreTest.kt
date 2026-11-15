@@ -87,6 +87,16 @@ class AutoDownloadStoreTest {
     }
 
     @Test
+    fun a_rule_stored_before_owned_episodes_existed_loads_and_keeps_what_the_user_deletes_afterwards() {
+        payloads.saved[1] = "{\"rules\":[{\"parentMetaType\":\"series\",\"parentMetaId\":\"tt1\",\"title\":\"Show\"}]}"
+
+        assertEquals(emptySet(), store.currentRules().single().ownedEpisodeKeys)
+        store.update(1, testRule().key) { it.copy(ownedEpisodeKeys = it.ownedEpisodeKeys + "1|2") }
+
+        assertEquals(setOf("1|2"), AutoDownloadStore(payloads) { 1 }.currentRules().single().ownedEpisodeKeys)
+    }
+
+    @Test
     fun whether_episodes_are_deleted_after_watching_is_written_for_every_rule_and_is_off_unless_chosen() {
         store.upsert(1, testRule(showId = "tt1"))
         store.upsert(1, testRule(showId = "tt2").copy(deleteAfterWatching = true))

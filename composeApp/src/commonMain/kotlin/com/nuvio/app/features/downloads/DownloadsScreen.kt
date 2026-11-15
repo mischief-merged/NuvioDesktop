@@ -29,6 +29,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -47,6 +48,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.app.core.i18n.localizedByteUnit
 import com.nuvio.app.core.network.NetworkStatusRepository
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import com.nuvio.app.core.ui.NuvioScreen
 import com.nuvio.app.core.ui.NuvioScreenHeader
 import com.nuvio.app.core.ui.NuvioStatusModal
@@ -74,6 +76,8 @@ fun DownloadsScreen(
     onBrowse: (() -> Unit)? = null,
     /** Whether the empty state mentions downloading whole seasons and auto-download. Only where those exist. */
     showSeasonHint: Boolean = showAutoDownloads,
+    /** Called before a download the user deletes is removed, so that auto-download does not fetch it again. */
+    rememberDeletion: suspend (DownloadItem) -> Unit = AutoDownloads::rememberUserDeletion,
 ) {
     val uiState by remember {
         DownloadsRepository.ensureLoaded()
@@ -97,6 +101,7 @@ fun DownloadsScreen(
     var selectedShowId by rememberSaveable(initialShowId) { mutableStateOf(initialShowId) }
     var downloadPendingDeletionId by rememberSaveable { mutableStateOf<String?>(null) }
     val openDownloadsDirectoryFailedText = stringResource(Res.string.downloads_open_directory_failed)
+    val deleteScope = rememberCoroutineScope()
 
     val completedEpisodes = remember(uiState.items) {
         uiState.completedItems
@@ -185,7 +190,11 @@ fun DownloadsScreen(
                     usesTrash -> Res.string.downloads_delete_message_trash
                     else -> Res.string.downloads_delete_message_held
                 },
-            ),
+            ) + if (pendingDeletion.autoDownloadRuleKey != null) {
+                " " + stringResource(Res.string.downloads_delete_auto_note)
+            } else {
+                ""
+            },
             isVisible = true,
             destructive = true,
             confirmText = stringResource(
@@ -198,8 +207,11 @@ fun DownloadsScreen(
             dismissText = stringResource(Res.string.action_cancel),
             onConfirm = {
                 downloadPendingDeletionId = null
-                if (DownloadsRepository.deleteDownload(pendingDeletion.id) == DownloadDeleteResult.NotMoved) {
-                    NuvioToastController.show(deleteNotMovedText)
+                deleteScope.launch {
+                    rememberDeletion(pendingDeletion)
+                    if (DownloadsRepository.deleteDownload(pendingDeletion.id) == DownloadDeleteResult.NotMoved) {
+                        NuvioToastController.show(deleteNotMovedText)
+                    }
                 }
             },
             onDismiss = { downloadPendingDeletionId = null },
