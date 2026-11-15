@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Info
@@ -36,6 +37,8 @@ import nuvio.composeapp.generated.resources.cw_action_go_to_details
 import nuvio.composeapp.generated.resources.cw_action_remove
 import nuvio.composeapp.generated.resources.cw_action_start_from_beginning
 import nuvio.composeapp.generated.resources.hero_mark_watched
+import nuvio.composeapp.generated.resources.nav_go_to_episode
+import nuvio.composeapp.generated.resources.nav_go_to_season
 import nuvio.composeapp.generated.resources.play_manually
 import org.jetbrains.compose.resources.stringResource
 
@@ -47,6 +50,10 @@ fun NuvioContinueWatchingActionSheet(
     showDetailsOption: Boolean = true,
     onDismiss: () -> Unit,
     onOpenDetails: () -> Unit,
+    /** Opens the page of the episode. Null where the app has no episode page: the action is not offered. */
+    onGoToEpisode: (() -> Unit)? = null,
+    /** Opens the show with the season of the episode selected. Null where it is not offered. */
+    onGoToSeason: (() -> Unit)? = null,
     onStartFromBeginning: (() -> Unit)? = null,
     onPlayManually: (() -> Unit)? = null,
     onMarkWatched: (() -> Unit)? = null,
@@ -85,6 +92,20 @@ fun NuvioContinueWatchingActionSheet(
                     title = stringResource(Res.string.cw_action_go_to_details),
                     onClick = { dismissAfter(onOpenDetails) },
                 )
+                if (onGoToEpisode != null) {
+                    NuvioBottomSheetActionRow(
+                        icon = Icons.Default.Info,
+                        title = stringResource(Res.string.nav_go_to_episode),
+                        onClick = { dismissAfter(onGoToEpisode) },
+                    )
+                }
+                if (onGoToSeason != null) {
+                    NuvioBottomSheetActionRow(
+                        icon = Icons.AutoMirrored.Filled.List,
+                        title = stringResource(Res.string.nav_go_to_season),
+                        onClick = { dismissAfter(onGoToSeason) },
+                    )
+                }
             }
             if (showManualPlayOption && onPlayManually != null) {
                 NuvioBottomSheetActionRow(

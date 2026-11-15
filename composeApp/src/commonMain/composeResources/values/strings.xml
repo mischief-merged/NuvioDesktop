@@ -2988,6 +2988,9 @@
     <string name="episode_page_open_episode">Open %1$s</string>
     <string name="episode_page_overview_missing">No description available.</string>
     <string name="episode_play_button_description">Play %1$s</string>
+    <string name="downloads_episode_details_description">Episode details for %1$s</string>
+    <string name="downloads_go_to_season_description">Go to the season of %1$s</string>
+    <string name="downloads_go_to_show_description">Go to the show of %1$s</string>
     <string name="nav_episode_details">Episode details</string>
     <string name="nav_go_to_episode">Go to episode</string>
     <string name="nav_go_to_season">Go to season</string>
