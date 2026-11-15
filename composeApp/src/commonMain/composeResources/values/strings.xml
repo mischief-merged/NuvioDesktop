@@ -2782,4 +2782,7 @@
     <string name="window_menu_window">Window</string>
     <string name="window_menu_close">Close Window</string>
     <string name="window_menu_minimize">Minimize</string>
+    <string name="settings_download_speed_limit_title">Download speed limit (megabytes per second)</string>
+    <string name="settings_download_speed_limit_unlimited">Unlimited</string>
+    <string name="settings_download_speed_limit_value">%1$d MB/s</string>
 </resources>

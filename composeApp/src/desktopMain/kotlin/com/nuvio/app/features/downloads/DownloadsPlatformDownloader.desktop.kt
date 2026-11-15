@@ -156,7 +156,7 @@ internal actual object DownloadsPlatformDownloader {
         return openDirectoryWithPlatformCommand(directory)
     }
 
-    private class Transferred(
+    internal class Transferred(
         val totalBytes: Long?,
         /** Whether the body matched the digest the server sent. Null when there was none to compare. */
         val digestMatched: Boolean?,
@@ -168,10 +168,11 @@ internal actual object DownloadsPlatformDownloader {
      * only for a body that was received whole in this transfer: a transfer that resumed a partial
      * file saw only part of the body, so its digest is not checked.
      */
-    private suspend fun transferToTempFile(
+    internal suspend fun transferToTempFile(
         request: DownloadPlatformRequest,
         tempFile: File,
         onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
+        limiter: DownloadSpeedLimiter = DownloadBandwidth.limiter.also { DownloadBandwidth.applyStoredLimit() },
     ): Transferred {
         // The address check at queue time reads only the text of the URL. Here the name is resolved.
         if (request.item.autoDownloadRuleKey != null && !resolvesToPublicAddresses(request.sourceUrl)) {
@@ -258,6 +259,9 @@ internal actual object DownloadsPlatformDownloader {
                             digest?.update(buffer, 0, read)
                             downloadedBytes += read.toLong()
                             onProgress(downloadedBytes, totalBytes)
+                            limiter.throttle(read)
+                            // Waiting for the speed limit is not a connection that went silent.
+                            lastReadAtNanos.set(System.nanoTime())
                             // A body without an announced size, or one that is longer than announced, is
                             // caught here, as is free space that other writers used up meanwhile.
                             if (limits != null && downloadedBytes >= nextLimitCheckAtBytes) {
