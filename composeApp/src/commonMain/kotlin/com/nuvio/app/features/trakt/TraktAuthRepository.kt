@@ -121,6 +121,15 @@ object TraktAuthRepository : TrackingAuthProvider {
         return _uiState.value
     }
 
+    /**
+     * Names the Trakt account connected for [profileId], or null when that profile is not the loaded
+     * one, is not connected, or its account name has not been fetched yet. Never a token.
+     */
+    fun connectedAccountKey(profileId: Int): String? {
+        if (!hasLoaded || currentProfileId != profileId || !authState.isAuthenticated) return null
+        return authState.userSlug?.takeIf { it.isNotBlank() } ?: authState.username?.takeIf { it.isNotBlank() }
+    }
+
     fun hasRequiredCredentials(): Boolean =
         TraktConfig.CLIENT_ID.isNotBlank() && TraktConfig.CLIENT_SECRET.isNotBlank()
 
