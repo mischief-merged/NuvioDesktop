@@ -75,3 +75,11 @@ internal class PlayerBackReleaseGuard {
         }
     }
 }
+
+/**
+ * The place to open after the player has been left. It is set when the Back guard accepts a
+ * request, never for one it turns away, and read when that request's pop has happened.
+ */
+internal class PlayerExitTargetHolder {
+    var target: PlayerExitTarget? = null
+}

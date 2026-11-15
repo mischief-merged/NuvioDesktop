@@ -12,6 +12,7 @@ import com.nuvio.app.features.player.ExternalPlayerIntentResult
 import com.nuvio.app.features.player.ExternalPlayerPlatform
 import com.nuvio.app.features.player.PlayerLaunch
 import com.nuvio.app.features.player.PlayerExitTarget
+import com.nuvio.app.features.player.PlayerExitTargetHolder
 import com.nuvio.app.features.player.PlayerLaunchStore
 import com.nuvio.app.features.player.PlayerScreen
 import com.nuvio.app.features.watchprogress.ResumePromptRepository
@@ -168,11 +169,6 @@ internal fun PlayerDestination(
         onOpenPartyMedia = onOpenPartyMedia,
         modifier = Modifier.fillMaxSize(),
     )
-}
-
-/** The place to open after the player has been left, set before each Back request. */
-private class PlayerExitTargetHolder {
-    var target: PlayerExitTarget? = null
 }
 
 /** Runs after the player has been popped, so the usual guards and the progress save have already happened. */

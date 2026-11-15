@@ -967,11 +967,12 @@ internal fun releaseRetainedPlayerBeforeNavigation(
 }
 
 private fun PlayerScreenRuntime.requestBack(exitTarget: PlayerExitTarget? = null) {
-    // Set on every request, so a target left over from a Back that did not finish cannot be used later.
-    args.onExitTarget(exitTarget)
     flushWatchProgress()
     val exitingController = playerLifecycleController
     args.onBack { afterRelease, releaseFailed ->
+        // Only a request the Back guard accepted gets here, so a duplicate request that is turned
+        // away cannot replace the target of the exit that is already under way.
+        args.onExitTarget(exitTarget)
         val releaseAttemptId = playerReleaseSurfaceRetention.begin()
         try {
             releaseRetainedPlayerBeforeNavigation(
