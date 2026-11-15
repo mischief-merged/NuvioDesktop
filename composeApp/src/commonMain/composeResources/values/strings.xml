@@ -2240,6 +2240,13 @@
     <string name="downloads_auto_toast_save_failed">Couldn't save auto-download for this show. Try again.</string>
     <string name="downloads_auto_toast_off_failed">Couldn't turn off auto-download for this show. Try again.</string>
     <string name="downloads_auto_toast_limit_failed">Couldn't change the storage limit. Try again.</string>
+    <string name="quit_downloads_title">Quit Nuvio?</string>
+    <plurals name="quit_downloads_message">
+        <item quantity="one">%1$d download is in progress. It will pause and resume next time you open Nuvio.</item>
+        <item quantity="other">%1$d downloads are in progress. They will pause and resume next time you open Nuvio.</item>
+    </plurals>
+    <string name="quit_downloads_quit">Quit</string>
+    <string name="quit_downloads_keep_open">Keep open</string>
     <string name="downloads_auto_section_title">Auto-download</string>
     <string name="downloads_auto_check_now">Check now</string>
     <string name="downloads_auto_checking_toast">Checking for new episodes</string>
