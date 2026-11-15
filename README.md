@@ -12,6 +12,10 @@
 
 </div>
 
+<p align="center">
+  <img src="assets/fork-logo.png" alt="Nuvio play-button icon with two flexing cartoon arms" width="220" />
+</p>
+
 > **This is a fork of [NuvioMedia/NuvioDesktop](https://github.com/NuvioMedia/NuvioDesktop).** It adds offline downloads, auto-download, download file checks and play-by-preferences to the desktop app. **[FORK.md](FORK.md) lists what is different**, change by change, with what was tested. The official builds are at the links above; this fork does not publish releases.
 
 ## ⚠️ Alpha Software - Slow Development - Testers Only
