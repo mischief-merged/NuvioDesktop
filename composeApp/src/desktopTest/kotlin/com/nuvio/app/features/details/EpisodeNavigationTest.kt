@@ -169,4 +169,32 @@ class EpisodeNavigationTest {
     fun notPlayableWhenMarkedUnavailable() {
         assertEquals(false, MetaVideo(id = "a", title = "a", released = "2000-01-01", available = false).isPlayableNow(now))
     }
+
+    @Test
+    fun requestedSeasonIsNullWithoutARequest() {
+        assertNull(sample.requestedSeason(null, null))
+    }
+
+    @Test
+    fun requestedSeasonUsesKnownSeason() {
+        assertEquals(2, sample.requestedSeason(2, null))
+        assertEquals(0, sample.requestedSeason(0, null))
+    }
+
+    @Test
+    fun requestedSeasonIgnoresUnknownSeason() {
+        assertNull(sample.requestedSeason(7, null))
+    }
+
+    @Test
+    fun requestedSeasonFollowsTheFocusedEpisode() {
+        val focus = sample.findEpisode("s2e2")
+        assertEquals(2, sample.requestedSeason(1, focus))
+        assertEquals(0, sample.requestedSeason(null, sample.findEpisode("sp1")))
+    }
+
+    @Test
+    fun requestedSeasonOfShowWithoutEpisodesIsNull() {
+        assertNull(show().requestedSeason(1, null))
+    }
 }

@@ -87,6 +87,20 @@ internal fun DetailsDestination(
         onPlay = onPlay,
         onPlayManually = onPlayManually,
         onOpenMeta = onOpenMeta,
+        onOpenEpisode = { video ->
+            navController.navigate(
+                EpisodeDetailRoute(
+                    type = route.type,
+                    id = route.id,
+                    videoId = video.id,
+                    season = video.season,
+                    episode = video.episode,
+                    title = route.title,
+                ),
+            )
+        },
+        initialSeason = route.season,
+        focusVideoId = route.focusVideoId,
         onCastClick = { person, avatarTransitionKey ->
             val tmdbId = person.tmdbId
             if (tmdbId != null && tmdbId > 0) {

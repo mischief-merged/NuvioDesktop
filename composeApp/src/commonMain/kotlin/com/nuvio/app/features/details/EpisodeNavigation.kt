@@ -67,3 +67,14 @@ internal fun MetaVideo.isPlayableNow(nowEpochMs: Long? = null): Boolean {
     }
     return aired != false
 }
+
+/**
+ * The season a show page should open on when it was asked for [initialSeason] or for [focusVideo].
+ * The focused episode wins. An unknown season gives null, so the page opens as usual.
+ */
+internal fun MetaDetails.requestedSeason(initialSeason: Int?, focusVideo: MetaVideo?): Int? {
+    if (focusVideo != null) return normalizeSeasonNumber(focusVideo.season)
+    if (initialSeason == null) return null
+    val wanted = normalizeSeasonNumber(initialSeason)
+    return wanted.takeIf { it in groupedEpisodesForDisplay() }
+}
