@@ -3,6 +3,8 @@ package com.nuvio.app.features.player
 import com.nuvio.app.core.network.NetworkCondition
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class SourceFailoverPlannerTest {
 
@@ -195,5 +197,109 @@ class SourceFailoverPlannerTest {
     fun resumeWithAnUnknownLengthOnlyStepsBack() {
         assertEquals(98_000L, sourceFailoverResumePositionMs(positionMs = 100_000L, durationMs = 0L))
         assertEquals(98_000L, sourceFailoverResumePositionMs(positionMs = 100_000L, durationMs = -1L))
+    }
+
+    @Test
+    fun goingOfflineWhileALinkIsResolvedStopsBeforeLoading() {
+        assertEquals(SourceFailoverStop.Offline, sourceFailoverStopBeforeLoading(false, NetworkCondition.NoInternet))
+        assertEquals(SourceFailoverStop.Offline, sourceFailoverStopBeforeLoading(false, NetworkCondition.ServersUnreachable))
+    }
+
+    @Test
+    fun leavingWhileALinkIsResolvedStopsBeforeLoadingEvenWhenOffline() {
+        assertEquals(SourceFailoverStop.UserCancelled, sourceFailoverStopBeforeLoading(true, NetworkCondition.NoInternet))
+        assertEquals(SourceFailoverStop.UserCancelled, sourceFailoverStopBeforeLoading(true, NetworkCondition.Online))
+    }
+
+    @Test
+    fun anOnlineOrUnknownNetworkLetsTheReplacementLoad() {
+        assertEquals(null, sourceFailoverStopBeforeLoading(false, NetworkCondition.Online))
+        assertEquals(null, sourceFailoverStopBeforeLoading(false, NetworkCondition.Unknown))
+        assertEquals(null, sourceFailoverStopBeforeLoading(false, NetworkCondition.Checking))
+    }
+
+    private val minute = 60_000L
+
+    @Test
+    fun aClipFarShorterThanTheRuntimeIsAPlaceholder() {
+        assertTrue(looksLikePlaceholder(durationMs = 30_000L, expectedRuntimeMinutes = 45))
+        assertTrue(looksLikePlaceholder(durationMs = 2 * minute, expectedRuntimeMinutes = 120))
+    }
+
+    @Test
+    fun theDurationBoundariesAreStrict() {
+        // Exactly 5 minutes is not under 5 minutes.
+        assertFalse(looksLikePlaceholder(PLACEHOLDER_MAX_DURATION_MS, expectedRuntimeMinutes = 120))
+        assertTrue(looksLikePlaceholder(PLACEHOLDER_MAX_DURATION_MS - 1, expectedRuntimeMinutes = 120))
+        // 30% of 10 minutes is exactly 3 minutes.
+        assertFalse(looksLikePlaceholder(3 * minute, expectedRuntimeMinutes = 10))
+        assertTrue(looksLikePlaceholder(3 * minute - 1, expectedRuntimeMinutes = 10))
+    }
+
+    @Test
+    fun aShortEpisodeOfAShortShowIsNotAPlaceholder() {
+        assertFalse(looksLikePlaceholder(durationMs = 4 * minute, expectedRuntimeMinutes = 5))
+        assertFalse(looksLikePlaceholder(durationMs = 4 * minute, expectedRuntimeMinutes = 8))
+    }
+
+    @Test
+    fun aFileOfFullLengthIsNeverAPlaceholderEvenIfItIsOnePicture() {
+        assertFalse(looksLikePlaceholder(durationMs = 45 * minute, expectedRuntimeMinutes = 45))
+        assertFalse(looksLikePlaceholder(durationMs = 6 * minute, expectedRuntimeMinutes = 100))
+    }
+
+    @Test
+    fun nothingIsClaimedWhenTheRuntimeOrTheDurationIsUnknown() {
+        assertFalse(looksLikePlaceholder(durationMs = 30_000L, expectedRuntimeMinutes = null))
+        assertFalse(looksLikePlaceholder(durationMs = 30_000L, expectedRuntimeMinutes = 0))
+        assertFalse(looksLikePlaceholder(durationMs = 0L, expectedRuntimeMinutes = 45))
+        assertFalse(looksLikePlaceholder(durationMs = -1L, expectedRuntimeMinutes = 45))
+    }
+
+    @Test
+    fun theCheckRunsOncePerSourceAtTheStartAndNotOffline() {
+        assertTrue(placeholderCheckDue(false, 0L, NetworkCondition.Online))
+        assertTrue(placeholderCheckDue(false, PLACEHOLDER_CHECK_WINDOW_MS, NetworkCondition.Unknown))
+        assertFalse(placeholderCheckDue(true, 0L, NetworkCondition.Online))
+        assertFalse(placeholderCheckDue(false, PLACEHOLDER_CHECK_WINDOW_MS + 1, NetworkCondition.Online))
+        assertFalse(placeholderCheckDue(false, 0L, NetworkCondition.NoInternet))
+        assertFalse(placeholderCheckDue(false, 0L, NetworkCondition.ServersUnreachable))
+    }
+
+    @Test
+    fun aPlaceholderMovesOnInEveryModeIncludingASourcePickedByHand() {
+        assertEquals(
+            SourceFailoverDecision.TryNext("b"),
+            decide(failure = SourceFailure.PlaceholderClip, manualMode = true, autoSelected = false),
+        )
+        assertEquals(
+            SourceFailoverDecision.TryNext("b"),
+            decide(failure = SourceFailure.PlaceholderClip, manualMode = false, autoSelected = false),
+        )
+    }
+
+    @Test
+    fun aPlaceholderObeysTheSettingTheLimitAndTheFailedSet() {
+        assertEquals(stop(SourceFailoverStop.Disabled), decide(failure = SourceFailure.PlaceholderClip, settingEnabled = false))
+        assertEquals(
+            stop(SourceFailoverStop.LimitReached),
+            decide(failure = SourceFailure.PlaceholderClip, attempts = 3, maxAttempts = 3),
+        )
+        assertEquals(
+            SourceFailoverDecision.TryNext("c"),
+            decide(failure = SourceFailure.PlaceholderClip, failed = setOf("a", "b")),
+        )
+        assertEquals(
+            stop(SourceFailoverStop.Exhausted),
+            decide(failure = SourceFailure.PlaceholderClip, failed = ranked.toSet()),
+        )
+        assertEquals(
+            stop(SourceFailoverStop.Offline),
+            decide(failure = SourceFailure.PlaceholderClip, network = NetworkCondition.NoInternet),
+        )
+        assertEquals(
+            stop(SourceFailoverStop.UserCancelled),
+            decide(failure = SourceFailure.PlaceholderClip, userCancelled = true),
+        )
     }
 }

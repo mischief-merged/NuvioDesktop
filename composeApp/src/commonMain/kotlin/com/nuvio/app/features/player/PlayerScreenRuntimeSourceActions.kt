@@ -300,6 +300,8 @@ internal fun PlayerScreenRuntime.switchToSource(
     stream: StreamItem,
     saveForReuse: Boolean = true,
 ) {
+    // Even picking the source that is playing now ends a lookup for a replacement.
+    restartSourceFailoverAfterUserChoice()
     if (prepareServerForPlayer(stream) { switchToSource(it) }) return
     // The resolved URL expires after a few hours, so it isn't kept for reuse.
     if (resolveYouTubeForPlayer(stream) { switchToSource(it, saveForReuse = false) }) return
@@ -334,7 +336,6 @@ internal fun PlayerScreenRuntime.switchToSource(
         activeSourceIdentityKey = sourceIdentityKey ?: activeSourceIdentityKey
         return
     }
-    restartSourceFailoverAfterUserChoice()
     val currentPositionMs = playbackSnapshot.positionMs.coerceAtLeast(0L)
     flushWatchProgress()
     stopActiveP2pStream()

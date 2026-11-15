@@ -21,6 +21,12 @@ internal enum class SourceFailure {
 
     /** The source errored after playback had started. */
     DiedDuringPlayback,
+
+    /**
+     * The source plays without an error, but what plays is a short placeholder clip, such as a notice that
+     * the file is not ready, and not the video. It applies in every mode: the user never chose a placeholder.
+     */
+    PlaceholderClip,
 }
 
 internal enum class SourceFailoverStop {
@@ -91,6 +97,18 @@ internal fun <T> decideSourceFailover(
 }
 
 /**
+ * Checked right before a replacement is loaded, after its link was resolved, which can take a
+ * while: the device may have gone offline or the user may have left in the meantime. Returns the
+ * reason to stop, or null when loading the replacement is fine.
+ */
+internal fun sourceFailoverStopBeforeLoading(userCancelled: Boolean, network: NetworkCondition): SourceFailoverStop? =
+    when {
+        userCancelled -> SourceFailoverStop.UserCancelled
+        network == NetworkCondition.NoInternet || network == NetworkCondition.ServersUnreachable -> SourceFailoverStop.Offline
+        else -> null
+    }
+
+/**
  * Where the next source starts after one died at [positionMs]: a couple of seconds earlier, never
  * before the start, and when the length is known never past [SOURCE_FAILOVER_END_MARGIN_MS] before the end.
  */
@@ -102,3 +120,38 @@ internal fun sourceFailoverResumePositionMs(positionMs: Long, durationMs: Long):
         back
     }
 }
+
+/** A file shorter than this can be a placeholder. */
+internal const val PLACEHOLDER_MAX_DURATION_MS = 5L * 60_000L
+
+/** A file shorter than this part of the expected running time can be a placeholder. */
+internal const val PLACEHOLDER_MAX_FRACTION_OF_RUNTIME = 0.30
+
+/**
+ * How far playback may have advanced from the first frame for the placeholder check to still run.
+ * The check is for the start of a source, not for one the user has watched for a while.
+ */
+internal const val PLACEHOLDER_CHECK_WINDOW_MS = 30_000L
+
+/**
+ * Whether the playing file is a placeholder rather than the video. Both the length of the file
+ * and the expected running time (in minutes, from the metadata) must be known, and the file must
+ * be both under [PLACEHOLDER_MAX_DURATION_MS] and under [PLACEHOLDER_MAX_FRACTION_OF_RUNTIME] of the
+ * running time. With either unknown, nothing is claimed. A still picture on a file of full length
+ * is never a placeholder by this rule.
+ */
+internal fun looksLikePlaceholder(durationMs: Long, expectedRuntimeMinutes: Int?): Boolean {
+    if (durationMs <= 0L) return false
+    val expectedMs = (expectedRuntimeMinutes ?: return false).takeIf { it > 0 }?.let { it * 60_000L } ?: return false
+    return durationMs < PLACEHOLDER_MAX_DURATION_MS && durationMs < expectedMs * PLACEHOLDER_MAX_FRACTION_OF_RUNTIME
+}
+
+/**
+ * Whether the placeholder check should look now: it has not run for this source yet, playback has
+ * advanced no more than [PLACEHOLDER_CHECK_WINDOW_MS] since the first frame, and the device is not offline.
+ */
+internal fun placeholderCheckDue(alreadyChecked: Boolean, playedSinceFirstFrameMs: Long, network: NetworkCondition): Boolean =
+    !alreadyChecked &&
+        playedSinceFirstFrameMs <= PLACEHOLDER_CHECK_WINDOW_MS &&
+        network != NetworkCondition.NoInternet &&
+        network != NetworkCondition.ServersUnreachable

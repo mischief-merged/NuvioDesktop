@@ -289,6 +289,13 @@ internal class PlayerScreenRuntime(
     var sourceFailoverTryingName by mutableStateOf<String?>(null)
     /** Set when a failed source was replaced; the message that it plays now is shown on its first frame. */
     var sourceFailoverPlayingName: String? = null
+    /** The failure being moved on from was a placeholder clip, which changes what the screens say. */
+    var sourceFailoverForPlaceholder by mutableStateOf(false)
+    /** The source whose first seconds were checked for being a placeholder, so each is checked once. */
+    var placeholderCheckedUrl: String? = null
+    var placeholderFirstFrameUrl: String? = null
+    var placeholderFirstFramePositionMs = 0L
+    var placeholderWarnedUrl: String? = null
 
     var showAudioModal by mutableStateOf(false)
     var showSubtitleModal by mutableStateOf(false)

@@ -1,5 +1,6 @@
 package com.nuvio.app.features.player
 
+import androidx.compose.runtime.Composable
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.network.NetworkStatusRepository
 import com.nuvio.app.core.ui.NuvioToastController
@@ -19,7 +20,12 @@ import kotlinx.coroutines.launch
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.player_failover_exhausted
 import nuvio.composeapp.generated.resources.player_failover_now_playing
+import nuvio.composeapp.generated.resources.player_failover_placeholder_exhausted
+import nuvio.composeapp.generated.resources.player_failover_placeholder_warning
+import nuvio.composeapp.generated.resources.player_failover_trying_after_placeholder
+import nuvio.composeapp.generated.resources.player_failover_trying_source
 import org.jetbrains.compose.resources.getString
+import org.jetbrains.compose.resources.stringResource
 
 private const val SOURCE_FALLBACK_POLL_COUNT = 30
 private const val SOURCE_FALLBACK_POLL_INTERVAL_MS = 500L
@@ -115,14 +121,58 @@ internal fun PlayerScreenRuntime.announceSourceFailoverIfPending() {
     val name = sourceFailoverPlayingName ?: return
     sourceFailoverPlayingName = null
     sourceFailoverTryingName = null
-    scope.launch {
-        val text = getString(Res.string.player_failover_now_playing, name)
-        if (isDesktop) {
-            playerNotificationMessage = text
-            playerNotificationToken += 1L
-        } else {
-            NuvioToastController.show(text, SOURCE_FAILOVER_NOTICE_DURATION_MS, announce = true)
-        }
+    scope.launch { showSourceNotice(getString(Res.string.player_failover_now_playing, name)) }
+}
+
+private fun PlayerScreenRuntime.showSourceNotice(text: String) {
+    if (isDesktop) {
+        playerNotificationMessage = text
+        playerNotificationToken += 1L
+    } else {
+        NuvioToastController.show(text, SOURCE_FAILOVER_NOTICE_DURATION_MS, announce = true)
+    }
+}
+
+/** The loading screen text while a replacement for a failed source is looked up, or null when none is. */
+@Composable
+internal fun PlayerScreenRuntime.sourceFailoverLoadingMessage(): String? =
+    sourceFailoverTryingName?.let { name ->
+        stringResource(
+            if (sourceFailoverForPlaceholder) Res.string.player_failover_trying_after_placeholder else Res.string.player_failover_trying_source,
+            name,
+        )
+    }
+
+/**
+ * Looks at the first seconds of a source for a placeholder clip: a file far shorter than the expected
+ * running time. Runs once per source on desktop. When the setting is off the source is kept and the user
+ * is told once; otherwise it is treated as a failed source and the next one is tried from the start.
+ */
+internal fun PlayerScreenRuntime.checkForPlaceholderSource(snapshot: PlayerPlaybackSnapshot) {
+    if (!isDesktop || sourceFailoverCancelled || snapshot.isLoading) return
+    val url = activeSourceUrl
+    val videoId = activeVideoId
+    if (url.isBlank() || videoId == null || placeholderCheckedUrl == url) return
+    if (placeholderFirstFrameUrl != url) {
+        placeholderFirstFrameUrl = url
+        placeholderFirstFramePositionMs = snapshot.positionMs
+    }
+    val playedMs = snapshot.positionMs - placeholderFirstFramePositionMs
+    if (!placeholderCheckDue(false, playedMs, NetworkStatusRepository.uiState.value.condition)) {
+        if (playedMs > PLACEHOLDER_CHECK_WINDOW_MS) placeholderCheckedUrl = url
+        return
+    }
+    // The length may arrive a moment after the first frame.
+    if (snapshot.durationMs <= 0L) return
+    placeholderCheckedUrl = url
+    val expectedMinutes = MetaDetailsRepository.runtimeMinutesFor(parentMetaId, videoId, activeSeasonNumber, activeEpisodeNumber)
+    if (!looksLikePlaceholder(snapshot.durationMs, expectedMinutes)) return
+    log.i { "Source looks like a placeholder: ${snapshot.durationMs} ms against $expectedMinutes minutes expected" }
+    if (tryFallbackToNextSourceAfterError(message = null, failureOverride = SourceFailure.PlaceholderClip)) return
+    // Not moved on: the setting is off (or the device is offline). Say so once, only when the user chose to stay.
+    if (!playerSettingsUiState.streamAutoPlayFallbackActive && placeholderWarnedUrl != url) {
+        placeholderWarnedUrl = url
+        scope.launch { showSourceNotice(getString(Res.string.player_failover_placeholder_warning)) }
     }
 }
 
@@ -137,7 +187,10 @@ internal fun PlayerScreenRuntime.announceSourceFailoverIfPending() {
  * Returns `true` when the failure is taken care of (a replacement is being looked up, or the final
  * message is being shown) and the caller must not show the error itself.
  */
-internal fun PlayerScreenRuntime.tryFallbackToNextSourceAfterError(message: String?): Boolean {
+internal fun PlayerScreenRuntime.tryFallbackToNextSourceAfterError(
+    message: String?,
+    failureOverride: SourceFailure? = null,
+): Boolean {
     if (sourceFallbackJob?.isActive == true) return true
     val settings = playerSettingsUiState
     if (!settings.streamAutoPlayFallbackActive) return false
@@ -146,9 +199,12 @@ internal fun PlayerScreenRuntime.tryFallbackToNextSourceAfterError(message: Stri
     if (failedUrl.isBlank()) return false
     val videoId = activeVideoId ?: return false
 
-    val failure = if (initialLoadCompleted) SourceFailure.DiedDuringPlayback else SourceFailure.FailedToStart
+    val failure = failureOverride
+        ?: if (initialLoadCompleted) SourceFailure.DiedDuringPlayback else SourceFailure.FailedToStart
+    val forPlaceholder = failure == SourceFailure.PlaceholderClip
     val manualMode = settings.streamAutoPlayMode == StreamAutoPlayMode.MANUAL
     val chosenByApp = failedUrl == autoSelectedSourceUrl
+    sourceFailoverForPlaceholder = forPlaceholder
     // Everything except the list is checked first, so a failure that does not apply is left alone.
     val preflight = decideSourceFailover(
         failure = failure,
@@ -168,6 +224,7 @@ internal fun PlayerScreenRuntime.tryFallbackToNextSourceAfterError(message: Stri
             scope.launch { finishSourceFailover(message, preflight.reason) }
             return true
         }
+        sourceFailoverForPlaceholder = false
         return false
     }
 
@@ -177,13 +234,14 @@ internal fun PlayerScreenRuntime.tryFallbackToNextSourceAfterError(message: Stri
     val failedAddonId = activeProviderAddonId
     val season = activeSeasonNumber
     val episode = activeEpisodeNumber
-    val resumeMs = if (failure == SourceFailure.DiedDuringPlayback) {
-        sourceFailoverResumePositionMs(
+    val resumeMs = when (failure) {
+        // The placeholder's position means nothing for the real video.
+        SourceFailure.PlaceholderClip -> 0L
+        SourceFailure.DiedDuringPlayback -> sourceFailoverResumePositionMs(
             positionMs = playbackSnapshot.positionMs,
             durationMs = playbackSnapshot.durationMs,
         )
-    } else {
-        null
+        SourceFailure.FailedToStart -> null
     }
     errorMessage = null
 
@@ -253,7 +311,17 @@ internal fun PlayerScreenRuntime.tryFallbackToNextSourceAfterError(message: Stri
                     log.d { "Fallback source from ${next.addonName} has no playable link, trying the next one" }
                     continue
                 }
-                if (sourceFailoverCancelled) return@launch
+                val stopBeforeLoading = sourceFailoverStopBeforeLoading(
+                    userCancelled = sourceFailoverCancelled,
+                    network = NetworkStatusRepository.uiState.value.condition,
+                )
+                if (stopBeforeLoading == SourceFailoverStop.UserCancelled) return@launch
+                if (stopBeforeLoading != null) {
+                    // Went offline while the link was resolved: nothing is loaded and the attempt is given back.
+                    sourceFallbackAttempts = (sourceFallbackAttempts - 1).coerceAtLeast(0)
+                    stopReason = stopBeforeLoading
+                    break
+                }
                 log.i { "Source failed (${failure.name}), moving on to ${playable.streamLabel} from ${playable.addonName}" }
                 playReplacementSource(playable, url, videoId, resumePositionMs = resumeMs, byFailover = true)
                 sourceFailoverPlayingName = next.failoverDisplayName()
@@ -278,6 +346,17 @@ private suspend fun PlayerScreenRuntime.finishSourceFailover(message: String?, r
     removeFailedStreamFromCache()
     sourceFailoverTryingName = null
     sourceFailoverPlayingName = null
+    if (sourceFailoverForPlaceholder) {
+        sourceFailoverForPlaceholder = false
+        if (reason == SourceFailoverStop.Offline) {
+            // The device is offline: the other sources were not at fault, so the clip keeps playing and the user is told.
+            showSourceNotice(getString(Res.string.player_failover_placeholder_warning))
+        } else {
+            errorMessage = getString(Res.string.player_failover_placeholder_exhausted)
+            controlsVisible = !playerControlsLocked
+        }
+        return
+    }
     errorMessage = if (sourceFallbackAttempts > 0 && reason != SourceFailoverStop.Offline) {
         getString(Res.string.player_failover_exhausted)
     } else {
