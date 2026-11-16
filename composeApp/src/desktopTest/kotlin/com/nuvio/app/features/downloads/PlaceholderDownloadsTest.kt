@@ -585,4 +585,134 @@ class PlaceholderDownloadsTest {
 
         assertEquals(MovieSetEntryState.Available, entries.single().state)
     }
+
+    // Findings of the review: a stored file is never removed or trashed by anything automatic
+
+    @Test
+    fun an_automatic_fetch_for_a_marked_episode_keeps_the_marked_file_and_its_record() {
+        loadOld()
+        DownloadsRepository.recheckCompleted("a")
+
+        DownloadsRepository.enqueueFromStream(
+            contentType = "movie", videoId = "tt1", parentMetaId = "tt1", parentMetaType = "movie", title = "Some Title",
+            logo = null, poster = null, background = null, seasonNumber = null, episodeNumber = null, episodeTitle = null,
+            episodeThumbnail = null, stream = stream("https://example.com/other.mkv", description = null),
+            autoDownloadRuleKey = "movie|tt1",
+        )
+
+        assertEquals(emptyList(), backend.trashed)
+        assertEquals(emptyList(), backend.removed)
+        assertTrue(uri in backend.files)
+        assertEquals(2, items().size)
+        val marked = items().single { it.id == "a" }
+        assertTrue(marked.isPlaceholder)
+        assertEquals(uri, marked.localFileUri)
+        val fresh = items().single { it.id != "a" }
+        assertTrue(fresh.fileName != marked.fileName, "the new copy has its own file name")
+        assertEquals(DownloadStatus.Downloading, fresh.status)
+    }
+
+    @Test
+    fun the_keep_rule_does_not_fetch_again_once_the_new_copy_is_there() {
+        val marked = testDownload(1, DownloadStatus.Completed, localFileUri = uri, id = "old").copy(
+            framesCheck = DownloadFramesCheck.NotTheRealVideo,
+        )
+        val fresh = testDownload(1, DownloadStatus.Completed, localFileUri = "file:/new.mp4", id = "new")
+
+        val plan = planAutoDownload(testRule(keepCount = 1), listOf(testEpisode(1)), { false }, listOf(fresh, marked))
+
+        assertEquals(emptyList(), plan.toDownload.map { it.episodeNumber })
+    }
+
+    @Test
+    fun the_keep_rule_sees_the_new_copy_whatever_the_order_of_the_list() {
+        val marked = testDownload(1, DownloadStatus.Completed, localFileUri = uri, id = "old").copy(
+            framesCheck = DownloadFramesCheck.NotTheRealVideo,
+        )
+        val downloading = testDownload(1, DownloadStatus.Downloading, id = "new")
+
+        val plan = planAutoDownload(testRule(keepCount = 1), listOf(testEpisode(1)), { false }, listOf(downloading, marked))
+        val reversed = planAutoDownload(testRule(keepCount = 1), listOf(testEpisode(1)), { false }, listOf(marked, downloading))
+
+        assertEquals(emptyList(), plan.toDownload.map { it.episodeNumber })
+        assertEquals(emptyList(), reversed.toDownload.map { it.episodeNumber })
+    }
+
+    // Findings of the review: a claim must describe the selected file
+
+    @Test
+    fun a_structured_size_of_a_whole_torrent_is_not_a_claim_for_the_selected_file() {
+        DownloadsRepository.ensureLoaded()
+        DownloadsRepository.enqueueFromStream(
+            contentType = "series", videoId = "tt1:1:1", parentMetaId = "tt1", parentMetaType = "series", title = "Show",
+            logo = null, poster = null, background = null, seasonNumber = 1, episodeNumber = 1, episodeTitle = null,
+            episodeThumbnail = null,
+            stream = StreamItem(
+                name = "RD+ 1080p", description = "Show.S01.1080p", url = "https://example.com/e1.mkv", addonName = "A", addonId = "a",
+                infoHash = "abcdef0123456789abcdef0123456789abcdef01", fileIdx = 3,
+                behaviorHints = StreamBehaviorHints(videoSize = 30_000_000_000L),
+            ),
+        )
+
+        assertNull(only().expectedSizeBytes)
+    }
+
+    @Test
+    fun a_genuine_single_file_claim_on_an_episode_is_kept() {
+        DownloadsRepository.ensureLoaded()
+        DownloadsRepository.enqueueFromStream(
+            contentType = "series", videoId = "tt1:1:1", parentMetaId = "tt1", parentMetaType = "series", title = "Show",
+            logo = null, poster = null, background = null, seasonNumber = 1, episodeNumber = 1, episodeTitle = null,
+            episodeThumbnail = null,
+            stream = StreamItem(
+                name = "RD+ 1080p", description = "Show.S01E01.1080p.mkv", url = "https://example.com/e1.mkv", addonName = "A", addonId = "a",
+                behaviorHints = StreamBehaviorHints(videoSize = 1_000_000_000L),
+            ),
+        )
+
+        assertEquals(1_000_000_000L, only().expectedSizeBytes)
+    }
+
+    @Test
+    fun a_season_sized_claim_does_not_fail_a_genuine_episode_at_the_start() {
+        backend.onStart = { _, progress, _ -> progress(0L, 1_000_000_000L) }
+        DownloadsRepository.ensureLoaded()
+        DownloadsRepository.enqueueFromStream(
+            contentType = "series", videoId = "tt1:1:1", parentMetaId = "tt1", parentMetaType = "series", title = "Show",
+            logo = null, poster = null, background = null, seasonNumber = 1, episodeNumber = 1, episodeTitle = null,
+            episodeThumbnail = null,
+            stream = StreamItem(
+                name = "RD+ 1080p", description = "Show Season 1 \u2014 30 GB", url = "https://example.com/e1.mkv", addonName = "A", addonId = "a",
+                behaviorHints = StreamBehaviorHints(videoSize = 30_000_000_000L),
+            ),
+        )
+
+        assertEquals(DownloadStatus.Downloading, only().status)
+    }
+
+    // Findings of the review: a complete video of a low bitrate is not a placeholder
+
+    @Test
+    fun a_complete_low_bitrate_video_is_not_marked_by_its_bitrate_on_a_recheck() {
+        downloadRuntimeLookup = { 60 }
+        // 60 minutes in 40 MB is about 89 kbit/s, and the file's own length matches the title.
+        loadOld(
+            subtitle = null,
+            file = DownloadedFileFacts(exists = true, sizeBytes = 40_000_000L, isVideoContainer = true, durationMs = 3_600_000L),
+            totalBytes = 40_000_000L,
+        )
+
+        assertFalse(DownloadsRepository.recheckCompleted("a") == RecheckOutcome.Flagged)
+        assertFalse(only().isPlaceholder)
+    }
+
+    @Test
+    fun a_total_of_a_low_bitrate_video_does_not_end_the_transfer_at_the_start() {
+        downloadRuntimeLookup = { 60 }
+        backend.onStart = { _, progress, _ -> progress(0L, 40_000_000L) }
+
+        enqueueMovie(stream("https://example.com/a.mkv", description = null))
+
+        assertEquals(DownloadStatus.Downloading, only().status)
+    }
 }

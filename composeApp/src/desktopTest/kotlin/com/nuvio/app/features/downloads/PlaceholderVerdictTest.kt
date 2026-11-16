@@ -222,4 +222,41 @@ class PlaceholderVerdictTest {
         assertEquals("45 seconds", formatFileLength(45_000L))
         assertEquals("1 second", formatFileLength(1_000L))
     }
+
+    @Test
+    fun a_complete_sixty_minute_video_of_forty_megabytes_is_not_flagged() {
+        // About 89 kbit/s, but its own length matches the title.
+        assertFalse(flagged(verdict(file = 40 * mb, duration = 60 * minute, runtime = 60)))
+        assertFalse(flagged(verdict(file = 1 * mb, duration = 60 * minute, runtime = 60)))
+    }
+
+    @Test
+    fun with_the_length_unknown_a_bitrate_between_the_floors_is_one_weak_signal() {
+        assertEquals(PlaceholderVerdict.CouldNotCheck, verdict(file = 40 * mb, runtime = 60))
+        assertTrue(flagged(verdict(file = 40 * mb, runtime = 60, frames = DownloadedFramesProblem.StillPicture)))
+    }
+
+    @Test
+    fun the_real_case_is_decisive_by_both_conditions() {
+        assertTrue(flagged(verdict(file = 8_509_628L, duration = 300_900L, runtime = 120)))
+        assertTrue(flagged(verdict(file = 8_509_628L, runtime = 120)))
+    }
+
+    @Test
+    fun the_floors_are_strict() {
+        // 20 kbit/s over 100 minutes is 15,000,000 bytes: below it is absurd with no length known.
+        assertTrue(flagged(verdict(file = 14_999_999L, runtime = 100)))
+        assertFalse(flagged(verdict(file = 15_000_000L, runtime = 100)))
+        // 100 kbit/s over 100 minutes is 75,000,000 bytes, judged with a length far short of the runtime.
+        assertTrue(flagged(verdict(file = 74_999_999L, duration = 15 * minute, runtime = 100)))
+        assertFalse(flagged(verdict(file = 75_000_000L, duration = 15 * minute, runtime = 100)))
+        // A length of exactly a fifth of the runtime is not far short of it.
+        assertFalse(flagged(verdict(file = 30 * mb, duration = 20 * minute, runtime = 100)))
+        assertTrue(flagged(verdict(file = 30 * mb, duration = 20 * minute - 1, runtime = 100)))
+    }
+
+    @Test
+    fun an_absurd_bitrate_does_not_flag_a_file_whose_length_matches_the_title() {
+        assertFalse(flagged(verdict(file = 1 * mb, duration = 100 * minute, runtime = 100)))
+    }
 }

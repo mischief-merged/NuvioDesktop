@@ -154,4 +154,17 @@ class SourceSizeClaimTest {
         assertEquals("9.5 GB", formatClaimedSize(9_530_000_000L))
         assertEquals("8.5 MB", formatDecimalSize(8_509_628L))
     }
+
+    @Test
+    fun season_wording_and_ranges_describe_a_pack_whatever_the_dash() {
+        assertNull(claimedSizeFromSourceText("Show", "Show Season 1 \u2014 30 GB"))
+        assertNull(claimedSizeFromSourceText("Show Season 1", "30 GB"))
+        assertNull(claimedSizeFromSourceText("Show", "[\uD83D\uDCBE 30 GB] Show.S01E01-E10.1080p"))
+        assertNull(claimedSizeFromSourceText("Show", "[\uD83D\uDCBE 30 GB] 10 files"))
+        assertNull(claimedSizeFromSourceText("Show", "[\uD83D\uDCBE 30 GB] 3 of 10 files"))
+        assertEquals(
+            1_200_000_000L,
+            claimedSizeFromSourceText("Show", "[\uD83D\uDCBE 1.2 GB] Show Season 1 Episode 3"),
+        )
+    }
 }
