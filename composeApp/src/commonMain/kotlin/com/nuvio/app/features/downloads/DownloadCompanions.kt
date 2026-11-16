@@ -201,7 +201,30 @@ internal class DownloadCompanions(
         return summary.copy(stoppedEarly = summary.stoppedEarly || scanStopped)
     }
 
+    /**
+     * Passes one after another while some download still failed or the scan was cut short, waiting
+     * [BackfillRetryAfterMs] between them, at most [BackfillMaxRounds]. A pass can fail only because
+     * the details of a title were not ready yet at start-up; the next one finds them.
+     */
+    suspend fun backfillUntilDone(items: () -> List<DownloadItem>, resolveLocalFileUri: (DownloadItem) -> String?): CompanionBackfillSummary {
+        var total = CompanionBackfillSummary()
+        repeat(BackfillMaxRounds) { round ->
+            val pass = backfill(items(), resolveLocalFileUri)
+            total = CompanionBackfillSummary(
+                looked = total.looked + pass.looked, saved = total.saved + pass.saved, nothingFound = total.nothingFound + pass.nothingFound,
+                failed = pass.failed, unavailable = pass.unavailable, stoppedEarly = pass.stoppedEarly,
+            )
+            if (pass.failed == 0 && !pass.stoppedEarly) return total
+            if (!isOnline() || round == BackfillMaxRounds - 1) return total
+            pause(BackfillRetryAfterMs)
+        }
+        return total
+    }
+
     companion object {
+        /** Passes in a row at most, see [backfillUntilDone]. */
+        const val BackfillMaxRounds = 4
+
         /** Most downloads one background pass looks at. */
         const val BackfillMaxPerPass = 30
 
@@ -233,5 +256,5 @@ internal class DownloadCompanions(
 /** Waits [DownloadCompanions.BackfillStartDelayMs], then fills in what finished downloads lack. */
 internal suspend fun DownloadCompanions.backfillWhenIdle(): CompanionBackfillSummary {
     delay(DownloadCompanions.BackfillStartDelayMs)
-    return backfill(DownloadsRepository.uiState.value.items, DownloadsRepository::playableLocalFileUri)
+    return backfillUntilDone({ DownloadsRepository.uiState.value.items }, DownloadsRepository::playableLocalFileUri)
 }

@@ -223,4 +223,82 @@ class EpisodeListSidecarTest {
         backend.finish!!(uri, 1_000)
         return uri
     }
+
+    // ---- existing downloads get their list, loaded once per show ----
+
+    private fun episodeItem(uri: String, episode: Int) = item(uri, season = 1, episode = episode)
+
+    @Test
+    fun several_episodes_of_one_show_load_the_details_once() = runBlocking {
+        meta = show
+        val uris = (1..4).map { uriOf("e$it.mkv") }
+        val companions = DownloadCompanions(listOf(companion()), { true }, { now }, CoroutineScope(Dispatchers.Unconfined), {}, Dispatchers.Default)
+
+        val summary = companions.backfill(uris.mapIndexed { i, uri -> episodeItem(uri, i + 1) }) { it.localFileUri }
+
+        assertEquals(4, summary.saved)
+        assertEquals(1, fetches, "the show was loaded more than once")
+        assertTrue(uris.all { EpisodeListSidecar.read(it) != null })
+    }
+
+    @Test
+    fun a_failed_load_is_not_cached_and_a_loaded_show_is_cached_only_for_a_while() = runBlocking {
+        val uriA = uriOf("a.mkv")
+        val uriB = uriOf("b.mkv")
+        meta = null
+        assertEquals(CompanionOutcome.Failed, companion().run(episodeItem(uriA, 1), uriA))
+        meta = show
+        assertEquals(CompanionOutcome.Saved, companion().run(episodeItem(uriA, 1), uriA))
+        assertEquals(2, fetches)
+
+        val sameCompanion = companion()
+        sameCompanion.run(episodeItem(uriB, 2), uriB)
+        val after = fetches
+        sameCompanion.run(episodeItem(uriB, 2).copy(id = "other"), uriA.replace("a.mkv", "b.mkv"))
+        now += EpisodeListCompanion.ShowCacheMs + 1
+        File(java.net.URI(uriB)).parentFile.resolve("b.mkv.subtitles").deleteRecursively()
+        sameCompanion.run(episodeItem(uriB, 2), uriB)
+        assertEquals(after + 1, fetches)
+    }
+
+    @Test
+    fun a_movie_has_no_episode_list_and_nothing_is_loaded_for_it() = runBlocking {
+        val uri = uriOf("m.mkv")
+        meta = show
+        val movie = item(uri).copy(contentType = "movie", parentMetaType = "movie", seasonNumber = null, episodeNumber = null)
+
+        assertFalse(companion().isDue(movie, uri))
+        assertEquals(0, fetches)
+    }
+
+    @Test
+    fun a_pass_that_failed_because_details_were_not_ready_is_tried_again_and_then_fills_everything_in() = runBlocking {
+        val uris = (1..3).map { uriOf("r$it.mkv") }
+        val items = uris.mapIndexed { i, uri -> episodeItem(uri, i + 1) }
+        meta = null
+        var rounds = 0
+        val companions = DownloadCompanions(
+            listOf(companion()), { true }, { now }, CoroutineScope(Dispatchers.Unconfined),
+            pause = { ms -> now += ms; if (++rounds == 1) meta = show }, Dispatchers.Default,
+        )
+
+        val summary = companions.backfillUntilDone({ items }) { it.localFileUri }
+
+        assertTrue(summary.saved >= 3)
+        assertTrue(uris.all { EpisodeListSidecar.read(it) != null })
+    }
+
+    @Test
+    fun the_retries_are_bounded() = runBlocking {
+        val uri = uriOf("x.mkv")
+        meta = null
+        val companions = DownloadCompanions(
+            listOf(companion()), { true }, { now }, CoroutineScope(Dispatchers.Unconfined), pause = { ms -> now += ms }, Dispatchers.Default,
+        )
+
+        companions.backfillUntilDone({ listOf(episodeItem(uri, 1)) }) { it.localFileUri }
+
+        assertTrue(fetches <= DownloadCompanions.BackfillMaxRounds, "fetches $fetches")
+        assertNull(EpisodeListSidecar.read(uri))
+    }
 }

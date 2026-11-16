@@ -116,7 +116,7 @@ class SidecarDeleteSafetyTest {
             poster = "https://img/p.jpg",
             sourceSubtitles = listOf(com.nuvio.app.features.streams.StreamSubtitle(url = "https://s/en.srt", language = "en")),
         )
-        val artwork = ArtworkCompanion(fetchImage = { byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 1) })
+        val artwork = ArtworkCompanion(fetchImage = { ImageFetch.Bytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 1)) })
         val episodes = EpisodeListCompanion(fetchMeta = { _, _ ->
             com.nuvio.app.features.details.MetaDetails(
                 id = "tt1", type = "series", name = "Show",
