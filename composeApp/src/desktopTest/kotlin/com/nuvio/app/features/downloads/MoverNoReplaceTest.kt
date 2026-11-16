@@ -119,6 +119,25 @@ class MoverNoReplaceTest {
     }
 
     @Test
+    fun every_output_channel_is_closed_when_the_source_check_fails_before_the_copy() {
+        val item = film()
+        val drive = world.driveLocation("Archive")
+        val opened = mutableListOf<java.nio.channels.FileChannel>()
+        var created = false
+        // The source looks changed once the copy is about to start: the check before the copy fails.
+        val mover = world.mover(
+            onOutputOpened = { opened += it; created = true },
+            fileKey = { path -> if (created && path == fileOf(item)) "changed" else DownloadMover.identityOf(path) },
+        )
+
+        val report = folders(ProfileHooks(listOf(item)), mover).move(setOf(item.id), drive.path.toString())
+
+        assertEquals(MoveFailureReason.ChangedWhileCopying, report.failures.single().reason)
+        assertTrue(opened.isNotEmpty())
+        assertTrue(opened.none { it.isOpen }, "an output channel was left open")
+    }
+
+    @Test
     fun a_direct_copy_that_fails_verification_is_removed_only_while_it_is_still_the_file_this_move_created() {
         val item = film()
         val drive = world.driveLocation("Archive")

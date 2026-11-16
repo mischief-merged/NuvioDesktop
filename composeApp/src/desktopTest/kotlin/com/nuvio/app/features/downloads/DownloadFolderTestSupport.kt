@@ -69,6 +69,7 @@ internal class FolderWorld(val root: Path = Files.createTempDirectory("nuvio-fol
         hashOf: (Path) -> String = DownloadMover::sha256Of,
         trash: (Path) -> Boolean = this.trash::send,
         resolve: (String) -> Path? = resolver(),
+        onOutputOpened: (java.nio.channels.FileChannel) -> Unit = {},
     ) = DownloadMover(
         journalDir = root.resolve("moves"),
         resolve = resolve,
@@ -83,6 +84,7 @@ internal class FolderWorld(val root: Path = Files.createTempDirectory("nuvio-fol
         txIdFactory = txId,
         beforeJournalWrite = beforeJournalWrite,
         fileKeyOf = fileKey,
+        onOutputOpened = onOutputOpened,
     )
 
     /** The temporary files of any move left in [folder]. */

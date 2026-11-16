@@ -222,6 +222,8 @@ internal class DownloadMover(
     /** Called before every journal write. Tests make it throw to see what a failed journal write leaves. */
     private val beforeJournalWrite: (MoveJournal) -> Unit = {},
     private val lock: MoveLock = MoveLock(journalDir.resolve("move.lock")),
+    /** Told of every output channel the mover opens, so tests can see that each one is closed. */
+    private val onOutputOpened: (FileChannel) -> Unit = {},
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -490,14 +492,18 @@ internal class DownloadMover(
 
         /** Copies the original through the channel that created [owned], checks the original did not change, and returns the hash. */
         private fun copyInto(owned: Owned, e: MoveEntry, index: Int): String {
-            val source = path(e.srcLocationId, e.srcRel) ?: throw ItemFailure(MoveFailureReason.CouldNotRead)
-            val before = sourceState(source)
-            if (before.third != e.srcKey) throw ItemFailure(MoveFailureReason.ChangedWhileCopying)
-            val hash = try {
-                owned.channel.use { channel -> copy(source, channel, { bytes -> progress(journal.items[index].displayName, bytes, before.first) }, isCancelled) }
-            } catch (error: IOException) {
-                if (isNoSpace(error)) throw StopMove(MoveFailureReason.NoSpace)
-                throw ItemFailure(MoveFailureReason.CouldNotWrite, error.message)
+            // The channel is closed on every path, the checks before the copy included.
+            val (source, before, hash) = owned.channel.use { channel ->
+                val source = path(e.srcLocationId, e.srcRel) ?: throw ItemFailure(MoveFailureReason.CouldNotRead)
+                val before = sourceState(source)
+                if (before.third != e.srcKey) throw ItemFailure(MoveFailureReason.ChangedWhileCopying)
+                val hash = try {
+                    copy(source, channel, { bytes -> progress(journal.items[index].displayName, bytes, before.first) }, isCancelled)
+                } catch (error: IOException) {
+                    if (isNoSpace(error)) throw StopMove(MoveFailureReason.NoSpace)
+                    throw ItemFailure(MoveFailureReason.CouldNotWrite, error.message)
+                }
+                Triple(source, before, hash)
             }
             checkpoint("copied")
             if (sourceState(source) != before) throw ItemFailure(MoveFailureReason.ChangedWhileCopying)
@@ -664,6 +670,7 @@ internal class DownloadMover(
             if (isNoSpace(error)) throw StopMove(MoveFailureReason.NoSpace)
             throw error
         }
+        onOutputOpened(channel)
         try {
             val mark = ByteArray(16).also(random::nextBytes)
             val buffer = ByteBuffer.wrap(mark)
