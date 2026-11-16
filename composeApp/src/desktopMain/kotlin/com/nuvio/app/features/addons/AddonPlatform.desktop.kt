@@ -117,11 +117,14 @@ actual suspend fun httpRequestRaw(
     val request = buildDesktopRequest(method, url, headers, body, bodyBytes)
 
     client.newCall(request).execute().use { response ->
+        val limited = readResponseBodyLimited(response.body, maxResponseBodyBytes)
         RawHttpResponse(
             status = response.code,
             statusText = response.message,
             url = response.request.url.toString(),
-            body = readResponseBodyLimited(response.body, maxResponseBodyBytes),
+            body = limited.text,
+            // The bytes as they came, not the decoded text encoded again: that corrupts anything that is not text.
+            bodyBytes = limited.bytes,
             headers = response.headers.toMultimap().mapValues { (_, values) ->
                 values.joinToString(",")
             }.mapKeys { (name, _) ->
@@ -217,8 +220,10 @@ private fun readAtMostBytes(stream: InputStream, maxBytes: Int): LimitedReadResu
     return LimitedReadResult(out.toByteArray(), truncated)
 }
 
-private fun readResponseBodyLimited(body: ResponseBody?, maxBytes: Int): String {
-    if (body == null) return ""
+private class LimitedBody(val text: String, val bytes: ByteArray)
+
+private fun readResponseBodyLimited(body: ResponseBody?, maxBytes: Int): LimitedBody {
+    if (body == null) return LimitedBody("", ByteArray(0))
     val charset = body.contentType()?.charset(Charsets.UTF_8) ?: Charsets.UTF_8
     val readResult = body.byteStream().use { stream ->
         readAtMostBytes(stream, maxBytes.coerceAtLeast(0))
@@ -228,7 +233,7 @@ private fun readResponseBodyLimited(body: ResponseBody?, maxBytes: Int): String 
     }.getOrElse {
         String(readResult.bytes, Charsets.UTF_8)
     }
-    return if (readResult.truncated) decoded + truncationSuffix else decoded
+    return LimitedBody(if (readResult.truncated) decoded + truncationSuffix else decoded, readResult.bytes)
 }
 
 private fun readResponseBody(body: ResponseBody?): String {

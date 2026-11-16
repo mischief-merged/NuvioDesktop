@@ -4,6 +4,7 @@ import com.nuvio.app.features.details.MetaDetails
 import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.details.MetaVideo
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -134,6 +135,30 @@ internal class EpisodeListCompanion(
 ) : DownloadCompanion {
     override val name: String get() = "episode list"
 
+    private val cacheLock = kotlinx.atomicfu.locks.SynchronizedObject()
+    private val shows = mutableMapOf<String, Pair<Long, MetaDetails>>()
+    private val showLoads = mutableMapOf<String, kotlinx.coroutines.sync.Mutex>()
+
+    /**
+     * The details of a show, loaded once for all its episodes: a show loaded within [ShowCacheMs] is
+     * reused, and two episodes asking together share one load. A load that failed is not remembered.
+     */
+    private suspend fun detailsOf(type: String, id: String): MetaDetails? {
+        val key = "$type:$id"
+        val mutex = kotlinx.atomicfu.locks.synchronized(cacheLock) { showLoads.getOrPut(key) { kotlinx.coroutines.sync.Mutex() } }
+        return mutex.withLock {
+            kotlinx.atomicfu.locks.synchronized(cacheLock) { shows[key] }
+                ?.takeIf { (at, _) -> nowEpochMs() - at in 0 until ShowCacheMs }?.second
+                ?: try {
+                    withTimeoutOrNull(LookupTimeoutMs) { fetchMeta(type, id) }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    null
+                }?.also { loaded -> kotlinx.atomicfu.locks.synchronized(cacheLock) { shows[key] = nowEpochMs() to loaded } }
+        }
+    }
+
     override fun isDue(item: DownloadItem, localVideoUri: String): Boolean {
         if (!item.isEpisode) return false
         val saved = EpisodeListSidecar.read(localVideoUri) ?: return true
@@ -143,13 +168,7 @@ internal class EpisodeListCompanion(
 
     override suspend fun run(item: DownloadItem, localVideoUri: String): CompanionOutcome {
         val season = item.seasonNumber ?: return CompanionOutcome.NothingFound
-        val meta = try {
-            withTimeoutOrNull(LookupTimeoutMs) { fetchMeta(item.parentMetaType, item.parentMetaId) }
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Exception) {
-            null
-        } ?: return CompanionOutcome.Failed
+        val meta = detailsOf(item.parentMetaType, item.parentMetaId) ?: return CompanionOutcome.Failed
         val fresh = meta.savedEpisodesFor(season, nowEpochMs()) ?: return CompanionOutcome.NothingFound
         return SidecarLocks.withLock(localVideoUri) {
             if (!DownloadCompanionGuard.stillWanted(localVideoUri)) return@withLock CompanionOutcome.Busy
@@ -161,6 +180,9 @@ internal class EpisodeListCompanion(
     companion object {
         /** The list is fetched again, when a pass looks at the download, after this long. */
         const val RefreshAgeMs = 14L * 24 * 60 * 60 * 1000
+
+        /** The details of a show are reused for its other episodes for this long. */
+        const val ShowCacheMs = 10L * 60 * 1000
 
         /** A lookup that takes longer than this is given up. */
         const val LookupTimeoutMs = 25_000L
