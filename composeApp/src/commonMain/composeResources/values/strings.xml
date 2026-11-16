@@ -3175,6 +3175,7 @@
     <string name="download_folder_leftover_row">%1$s, %2$s. One copy at %3$s, another at %4$s.</string>
     <string name="download_folder_unresolved_row">An interrupted move could not be settled by itself: its drive is not connected, or its record could not be read. The record is kept at %1$s and nothing was deleted. New moves wait until it is set aside.</string>
     <string name="download_folder_unresolved_set_aside">Set aside</string>
+    <string name="app_already_open">NuvioRoid is already open.</string>
     <string name="download_folder_unresolved_set_aside_description">Set aside the interrupted move record %1$s</string>
     <string name="download_folder_leftover_remove">Remove the extra copy</string>
     <string name="download_folder_leftover_remove_description">Remove the extra copy of %1$s</string>

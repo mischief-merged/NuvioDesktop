@@ -75,46 +75,62 @@ internal object DesktopStorage {
         }
     }
 
+    /**
+     * One store file shared by every copy of the app. Every change is made under [exclusive]: a lock held
+     * across processes on `<file>.lock`, inside which the file is read again and only the changed key is
+     * written over what is on disk, so a copy whose memory is stale never overwrites another copy's keys.
+     */
     internal class Store(
         private val file: Path,
         private val write: (Properties, OutputStream) -> Unit = { properties, output ->
             properties.store(output, "Nuvio desktop preferences")
         },
     ) {
-        private val lock = Any()
+        private val gate = FileGate.of(file.resolveSibling("${file.fileName}.lock"))
         private val properties = Properties()
         private var loaded = false
         private var fileIsGood = false
         private val temporaryFile = file.resolveSibling("${file.fileName}.tmp")
         private val previousFile = file.resolveSibling("${file.fileName}.bak")
 
-        fun contains(key: String): Boolean = synchronized(lock) {
+        /** Runs [block] holding the lock of this store file across processes. Re-entrant. */
+        fun <T> exclusive(block: () -> T): T = gate.exclusive(block)
+
+        private inline fun <T> local(block: () -> T): T = gate.local(block)
+
+        fun contains(key: String): Boolean = local {
             ensureLoaded()
             properties.containsKey(key)
         }
 
-        fun getString(key: String): String? = synchronized(lock) {
+        fun getString(key: String): String? = local {
             ensureLoaded()
             properties.getProperty(key)
         }
 
+        /** The value as it is in the file now, read again under the lock. */
+        fun getFreshString(key: String): String? = exclusive {
+            reload()
+            properties.getProperty(key)
+        }
+
+        /** Every key and value as they are in the file now, read again under the lock. */
+        fun freshEntries(): Map<String, String> = exclusive {
+            reload()
+            properties.stringPropertyNames().associateWith { properties.getProperty(it) }
+        }
+
         /** The value the previous copy of the store holds, for a value of the store that cannot be used. */
-        fun getPreviousString(key: String): String? = synchronized(lock) {
+        fun getPreviousString(key: String): String? = local {
             Properties().takeIf { read(previousFile, it) }?.getProperty(key)
         }
 
-        fun putString(key: String, value: String?) = synchronized(lock) {
-            ensureLoaded()
-            val changed = if (value == null) {
-                properties.remove(key) != null
-            } else {
-                properties.setProperty(key, value) != value
-            }
-            if (changed) persist()
+        fun putString(key: String, value: String?) = change {
+            if (value == null) properties.remove(key) != null else properties.setProperty(key, value) != value
         }
 
         /** Every key the store holds. */
-        fun keys(): Set<String> = synchronized(lock) {
+        fun keys(): Set<String> = local {
             ensureLoaded()
             properties.stringPropertyNames().toSet()
         }
@@ -123,7 +139,7 @@ internal object DesktopStorage {
          * Flushes the saved file and then its folder to disk. For the few writes that must survive a power
          * cut. True only when both flushes succeeded; a folder that cannot be flushed here is a failure.
          */
-        fun sync(): Boolean = synchronized(lock) {
+        fun sync(): Boolean = exclusive {
             ensureLoaded()
             runCatching {
                 java.nio.channels.FileChannel.open(file, java.nio.file.StandardOpenOption.WRITE).use { it.force(true) }
@@ -161,27 +177,31 @@ internal object DesktopStorage {
             putString(key, json.encodeToString(values.toList()))
         }
 
-        fun remove(key: String) = synchronized(lock) {
-            ensureLoaded()
-            if (properties.remove(key) != null) persist()
-        }
+        fun remove(key: String) = change { properties.remove(key) != null }
 
-        fun removeAll(keys: Iterable<String>) = synchronized(lock) {
-            ensureLoaded()
+        fun removeAll(keys: Iterable<String>) = change {
             var changed = false
-            keys.forEach { key ->
-                if (properties.remove(key) != null) changed = true
-            }
-            if (changed) persist()
+            keys.forEach { key -> if (properties.remove(key) != null) changed = true }
+            changed
         }
 
-        fun clearInMemory() = synchronized(lock) {
+        fun clearInMemory() = local {
             properties.clear()
             loaded = false
         }
 
+        /** Under the lock: the file is read again, [apply] changes only its own keys, and the result is saved. */
+        private fun change(apply: () -> Boolean) = exclusive {
+            reload()
+            if (apply()) persist()
+        }
+
         private fun ensureLoaded() {
             if (loaded) return
+            reload()
+        }
+
+        private fun reload() {
             loaded = true
             properties.clear()
             if (!file.exists()) return
@@ -228,6 +248,61 @@ internal object DesktopStorage {
                     Files.copy(file, previousFile, StandardCopyOption.REPLACE_EXISTING)
                 }
             }
+        }
+    }
+
+    /**
+     * The lock of one store file: a lock inside this process (shared by every Store object of that file)
+     * and, while it is held at the outermost level, an OS lock on the lock file that other processes see.
+     */
+    internal class FileGate private constructor(private val lockFile: Path) {
+        private val inProcess = java.util.concurrent.locks.ReentrantLock()
+        private var depth = 0
+        private var channel: java.nio.channels.FileChannel? = null
+        private var osLock: java.nio.channels.FileLock? = null
+
+        inline fun <T> local(block: () -> T): T {
+            lockLocal()
+            try {
+                return block()
+            } finally {
+                unlockLocal()
+            }
+        }
+
+        fun lockLocal() = inProcess.lock()
+        fun unlockLocal() = inProcess.unlock()
+
+        fun <T> exclusive(block: () -> T): T = local {
+            if (depth++ == 0) acquireOs()
+            try {
+                block()
+            } finally {
+                if (--depth == 0) releaseOs()
+            }
+        }
+
+        private fun acquireOs() {
+            runCatching {
+                Files.createDirectories(lockFile.parent)
+                val opened = java.nio.channels.FileChannel.open(lockFile, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE)
+                channel = opened
+                // Blocks until another copy of the app lets go.
+                osLock = opened.lock()
+            }
+        }
+
+        private fun releaseOs() {
+            runCatching { osLock?.release() }
+            runCatching { channel?.close() }
+            osLock = null
+            channel = null
+        }
+
+        companion object {
+            private val gates = java.util.concurrent.ConcurrentHashMap<Path, FileGate>()
+
+            fun of(lockFile: Path): FileGate = gates.computeIfAbsent(lockFile.toAbsolutePath().normalize()) { FileGate(it) }
         }
     }
 }

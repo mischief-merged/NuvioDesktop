@@ -64,6 +64,11 @@ object DownloadsRepository {
     // The profile whose list is in memory. Null until a list was loaded.
     private var loadedProfileId: Int? = null
 
+    // The list as it was last read from or written to storage, and its revision there. Another copy of
+    // the app may save in between; a save then merges this copy's own changes onto what is stored.
+    private var baseline: List<DownloadItem> = emptyList()
+    private var baseRevision: Long = 0L
+
     fun ensureLoaded(): Unit = synchronized(stateLock) {
         if (hasLoaded) return
         loadFromDisk()
@@ -83,6 +88,8 @@ object DownloadsRepository {
         transfers.forEach(ActiveTransfer::cancel)
         hasLoaded = false
         loadedProfileId = null
+        baseline = emptyList()
+        baseRevision = 0L
         _hasUnseenCompleted.value = false
         _uiState.value = DownloadsUiState()
         notifyLiveStatusPlatform()
@@ -493,6 +500,8 @@ object DownloadsRepository {
             return
         }
         loadedPayload = decoded
+        baseline = decoded.items
+        baseRevision = DownloadsCodec.revisionOf(payload)
 
         var shouldPersistNormalized = false
         val normalized = decoded.items
@@ -898,9 +907,38 @@ object DownloadsRepository {
         }
     }
 
+    /**
+     * Saves the list. Where another copy of the app may have saved since (desktop), it is done under the
+     * lock across processes: the stored list is read again and, when it is newer, this copy's own changes
+     * since its last read are merged onto it, field by field, instead of overwriting it.
+     */
     private fun persist() {
         if (savingIsUnsafe) return
-        backend.savePayload(DownloadsCodec.encode(_uiState.value.items, loadedPayload))
+        backend.withListLock {
+            val revision = if (backend.rereadsPayload) mergeNewerStored() ?: return@withListLock else null
+            backend.savePayload(DownloadsCodec.encode(_uiState.value.items, loadedPayload, revision))
+            baseline = _uiState.value.items
+            if (revision != null) baseRevision = revision
+        }
+    }
+
+    /**
+     * Under the list lock: when the stored list is newer than the one this copy read, merges this copy's
+     * changes onto it and publishes the result. The revision to save next, or null when the stored list
+     * is newer and cannot be read (nothing may be saved over it then).
+     */
+    private fun mergeNewerStored(): Long? {
+        val stored = runCatching { backend.loadFreshPayload() }.getOrNull()?.trim().orEmpty()
+        val storedRevision = if (stored.isEmpty()) 0L else DownloadsCodec.revisionOf(stored)
+        if (storedRevision > baseRevision) {
+            val decoded = DownloadsCodec.decode(stored) ?: return null
+            val merged = DownloadsCodec.merge(decoded.items, baseline, _uiState.value.items)
+            loadedPayload = decoded
+            baseline = decoded.items
+            baseRevision = storedRevision
+            publish(merged)
+        }
+        return maxOf(storedRevision, baseRevision) + 1
     }
 
     /** The profile whose list is in memory, or null before one was loaded. */
@@ -935,17 +973,38 @@ object DownloadsRepository {
         matches: (DownloadItem) -> Boolean,
         relocate: (DownloadItem) -> DownloadItem,
     ): RelocateResult = synchronized(stateLock) {
+        // From the read to the flush, under the lock every save of a list takes, across processes.
+        backend.withListLock { relocateLocked(profileId, downloadId, lists, matches, relocate) }
+    }
+
+    private fun relocateLocked(
+        profileId: Int,
+        downloadId: String,
+        lists: ProfileLists,
+        matches: (DownloadItem) -> Boolean,
+        relocate: (DownloadItem) -> DownloadItem,
+    ): RelocateResult {
         val inMemory = hasLoaded && loadedProfileId == profileId
         if (inMemory && savingIsUnsafe) return RelocateResult.NotDurable
+        // The list in memory first takes in whatever another copy of the app saved since.
+        val revision = if (inMemory) {
+            if (backend.rereadsPayload) mergeNewerStored() ?: return RelocateResult.ListUnreadable else baseRevision + 1
+        } else {
+            DownloadsCodec.revisionOf(runCatching { lists.load(profileId) }.getOrNull().orEmpty()) + 1
+        }
         val (items, base) = listFor(profileId, lists) ?: return RelocateResult.ListUnreadable
         val current = items.firstOrNull { it.id == downloadId } ?: return RelocateResult.RecordGone
         if (!matches(current)) return RelocateResult.RecordChanged
         val updated = items.map { if (it.id == downloadId) relocate(it) else it }
-        val saved = runCatching { lists.saveDurably(profileId, DownloadsCodec.encode(updated, base)) }.getOrDefault(false)
+        val saved = runCatching { lists.saveDurably(profileId, DownloadsCodec.encode(updated, base, revision)) }.getOrDefault(false)
         // Not confirmed: the in-memory list is left as it was. Nothing may depend on the new record.
         if (!saved) return RelocateResult.NotDurable
-        if (inMemory) publish(updated)
-        RelocateResult.Confirmed
+        if (inMemory) {
+            publish(updated)
+            baseline = updated
+            baseRevision = revision
+        }
+        return RelocateResult.Confirmed
     }
 
     /**
@@ -1043,6 +1102,15 @@ internal interface DownloadsBackend {
 
     /** Keeps a payload that could not be read, apart from the one [savePayload] writes. */
     fun saveUnreadablePayload(payload: String, atEpochMs: Long) = Unit
+
+    /** Whether [loadFreshPayload] reads the stored list again (another copy of the app may have saved). */
+    val rereadsPayload: Boolean get() = false
+
+    /** The stored list as it is now. Null where it is not read again. */
+    fun loadFreshPayload(): String? = null
+
+    /** Runs [block] holding the lock every save of a list takes, across processes where there is one. */
+    fun <T> withListLock(block: () -> T): T = block()
     fun restoreItem(item: DownloadItem): DownloadItem
     fun start(
         request: DownloadPlatformRequest,
@@ -1158,6 +1226,12 @@ private object PlatformDownloadsBackend : DownloadsBackend {
 
     override fun saveUnreadablePayload(payload: String, atEpochMs: Long) =
         DownloadsStorage.saveUnreadablePayload(payload, atEpochMs)
+
+    override val rereadsPayload: Boolean get() = DownloadsStorage.rereadsPayload
+
+    override fun loadFreshPayload(): String? = DownloadsStorage.loadFreshPayload()
+
+    override fun <T> withListLock(block: () -> T): T = DownloadsStorage.withListLock(block)
 
     override fun restoreItem(item: DownloadItem): DownloadItem = DownloadsPlatformDownloader.restoreItem(item)
 
@@ -1291,7 +1365,42 @@ internal object DownloadsCodec {
      * because it did not know it. A record that could not be read because its id was taken is
      * dropped once the download with that id is gone, so it does not come back in its place.
      */
-    fun encode(items: Collection<DownloadItem>, loaded: Decoded?): String {
+    /** The revision a stored list carries; 0 for one written without it. */
+    fun revisionOf(payload: String): Long =
+        ((runCatching { json.parseToJsonElement(payload) }.getOrNull() as? JsonObject)?.get("revision") as? JsonPrimitive)
+            ?.contentOrNull?.toLongOrNull() ?: 0L
+
+    /**
+     * This copy's changes since [base], put onto the newer [stored] list: a record this copy removed goes,
+     * one it added is added, and in a record both have, each field this copy changed takes this copy's
+     * value while every other field keeps the stored one. Records added or changed elsewhere are kept.
+     */
+    fun merge(stored: List<DownloadItem>, base: List<DownloadItem>, ours: List<DownloadItem>): List<DownloadItem> {
+        val baseById = base.associateBy { it.id }
+        val oursById = ours.associateBy { it.id }
+        val storedIds = stored.mapTo(mutableSetOf()) { it.id }
+        val merged = stored.mapNotNull { s ->
+            val b = baseById[s.id]
+            val o = oursById[s.id]
+            when {
+                o == null -> if (b != null) null else s
+                b == null || o == b -> s
+                else -> mergeFields(s, b, o)
+            }
+        }
+        return merged + ours.filter { it.id !in baseById && it.id !in storedIds }
+    }
+
+    private fun mergeFields(stored: DownloadItem, base: DownloadItem, ours: DownloadItem): DownloadItem {
+        val s = json.encodeToJsonElement(stored) as JsonObject
+        val b = json.encodeToJsonElement(base) as JsonObject
+        val o = json.encodeToJsonElement(ours) as JsonObject
+        val fields = (s.keys + o.keys).associateWith { key -> if (o[key] != b[key]) o[key] else s[key] }
+            .filterValues { it != null }.mapValues { it.value!! }
+        return json.decodeFromJsonElement(DownloadItem.serializer(), JsonObject(fields))
+    }
+
+    fun encode(items: Collection<DownloadItem>, loaded: Decoded?, revision: Long? = null): String {
         val ids = items.mapTo(mutableSetOf()) { it.id }
         val written = items.map { item ->
             val fields = json.encodeToJsonElement(item) as JsonObject
@@ -1302,7 +1411,8 @@ internal object DownloadsCodec {
             val id = ((element as? JsonObject)?.get("id") as? JsonPrimitive)?.contentOrNull
             id != null && id in loaded?.records.orEmpty() && id !in ids
         }
-        return JsonObject(loaded?.root.orEmpty() + ("items" to JsonArray(written + unreadable))).toString()
+        val root = loaded?.root.orEmpty() + ("items" to JsonArray(written + unreadable))
+        return JsonObject(if (revision != null) root + ("revision" to JsonPrimitive(revision)) else root).toString()
     }
 }
 

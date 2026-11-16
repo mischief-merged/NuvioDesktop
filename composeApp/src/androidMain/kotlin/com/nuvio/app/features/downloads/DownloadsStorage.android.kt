@@ -33,4 +33,11 @@ internal actual object DownloadsStorage {
             ?.putString("${ProfileScopedKey.of(unreadablePayloadKey)}_$atEpochMs", payload)
             ?.apply()
     }
+
+    // One copy of the app per device here: nothing to re-read and no lock across processes.
+    actual val rereadsPayload: Boolean = false
+
+    actual fun loadFreshPayload(): String? = null
+
+    actual fun <T> withListLock(block: () -> T): T = block()
 }

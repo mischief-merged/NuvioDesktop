@@ -46,21 +46,25 @@ internal interface DownloadsHooks {
 internal object DesktopProfileLists : ProfileLists {
     private val store get() = DesktopStorage.store("nuvio_downloads")
 
-    override fun load(profileId: Int): String? = store.getString(ProfileScopedKey.of("downloads", profileId))
+    // Read again from the file under its lock: another copy of the app may have saved since.
+    override fun load(profileId: Int): String? = store.getFreshString(ProfileScopedKey.of("downloads", profileId))
 
-    override fun saveDurably(profileId: Int, payload: String): Boolean {
+    override fun saveDurably(profileId: Int, payload: String): Boolean = store.exclusive {
         store.putString(ProfileScopedKey.of("downloads", profileId), payload)
-        return store.sync()
+        store.sync()
     }
 }
 
 /** The records of every profile's stored list. Null when one of them cannot be read. */
-internal fun storedRecordsOfAllProfiles(store: DesktopStorage.Store): List<RecordRef>? =
-    store.keys().mapNotNull { key -> key.removePrefix("downloads_").takeIf { key.startsWith("downloads_") && it.isNotEmpty() && it.all(Char::isDigit) }?.toIntOrNull()?.let { it to key } }
+internal fun storedRecordsOfAllProfiles(store: DesktopStorage.Store): List<RecordRef>? {
+    // As the file is now, read again under its lock.
+    val entries = store.freshEntries()
+    return entries.keys.mapNotNull { key -> key.removePrefix("downloads_").takeIf { key.startsWith("downloads_") && it.isNotEmpty() && it.all(Char::isDigit) }?.toIntOrNull()?.let { it to key } }
         .flatMap { (profileId, key) ->
-            val items = decodeStoredDownloads(store.getString(key).orEmpty()) ?: return null
+            val items = decodeStoredDownloads(entries[key].orEmpty()) ?: return null
             items.map { RecordRef.of(profileId, it) }
         }
+}
 
 internal object RepositoryDownloadsHooks : DownloadsHooks {
     override fun items(): List<DownloadItem> {
