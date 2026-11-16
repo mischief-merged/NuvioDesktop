@@ -22,7 +22,8 @@ class LegacyAddressMigrationTest {
         val file = world.appFolder.createDirectories().resolve("a.mp4").writeVideo(1)
         val item = legacy("a", Files.size(file))
 
-        assertEquals(file.toUri().toString(), legacyAddressFor(item, 1, world.locations, listOf(RecordRef.of(1, item))))
+        val address = legacyAddressFor(item, 1, world.locations, listOf(RecordRef.of(1, item)))
+        assertEquals(file.toFile(), DownloadLocations.fileOfUri(address!!))
     }
 
     @Test

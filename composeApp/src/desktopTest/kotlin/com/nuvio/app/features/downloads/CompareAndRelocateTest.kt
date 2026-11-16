@@ -5,7 +5,6 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** The one way a record is re-pointed: one step, in the list of the record's own profile, confirmed on disk. */
@@ -45,10 +44,12 @@ class CompareAndRelocateTest {
         world.close()
     }
 
-    private fun load(vararg items: DownloadItem) {
+    /** Loads [items] and returns them as the repository holds them (it fills in the location of each on load). */
+    private fun load(vararg items: DownloadItem): List<DownloadItem> {
         backend.payload = storedPayload(items.toList())
         DownloadsRepository.clearLocalState()
         DownloadsRepository.ensureLoaded()
+        return DownloadsRepository.uiState.value.items
     }
 
     private val drive by lazy { world.driveLocation("Archive") }
@@ -65,21 +66,20 @@ class CompareAndRelocateTest {
     fun a_record_of_another_profile_is_changed_in_that_profiles_list_and_never_in_the_active_one() {
         val mine = film("x", "mine.mp4")
         val theirs = film("x", "theirs.mp4")
-        load(mine)
+        val loaded = load(mine).single()
         lists.stored[other] = storedPayload(listOf(theirs))
 
         assertEquals(RelocateResult.Confirmed, relocate(other, "x", theirs))
 
         assertEquals(listOf(other), lists.saved)
-        assertEquals(mine, DownloadsRepository.uiState.value.items.single())
+        assertEquals(loaded, DownloadsRepository.uiState.value.items.single())
         assertEquals(drive.id, decodeStoredDownloads(lists.stored.getValue(other))!!.single().locationId)
         assertEquals(drive.id, DownloadsRepository.recordOf(other, "x", lists)?.locationId)
     }
 
     @Test
     fun a_record_of_the_loaded_profile_is_changed_in_memory_and_saved_under_that_profiles_key() {
-        val mine = film("x")
-        load(mine)
+        val mine = load(film("x")).single()
 
         assertEquals(RelocateResult.Confirmed, relocate(active, "x", mine))
 
@@ -90,19 +90,18 @@ class CompareAndRelocateTest {
     @Test
     fun a_record_that_changed_since_the_move_planned_is_not_touched_and_nothing_is_saved() {
         val mine = film("x")
-        load(mine.copy(localFileUri = world.appFolder.resolve("somewhere-else.mp4").toUri().toString()))
+        val loaded = load(mine.copy(localFileUri = world.appFolder.resolve("somewhere-else.mp4").toUri().toString())).single()
 
         assertEquals(RelocateResult.RecordChanged, relocate(active, "x", mine))
         assertEquals(RelocateResult.RecordGone, relocate(active, "gone", mine))
 
         assertTrue(lists.saved.isEmpty())
-        assertNull(DownloadsRepository.uiState.value.items.single().locationId)
+        assertEquals(loaded, DownloadsRepository.uiState.value.items.single())
     }
 
     @Test
     fun a_save_whose_flush_fails_is_not_confirmed_and_the_list_in_memory_stays_as_it_was() {
-        val mine = film("x")
-        load(mine)
+        val mine = load(film("x")).single()
         lists.flushes = false
 
         assertEquals(RelocateResult.NotDurable, relocate(active, "x", mine))

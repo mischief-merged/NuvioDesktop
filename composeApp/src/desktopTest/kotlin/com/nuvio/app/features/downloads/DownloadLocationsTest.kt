@@ -104,7 +104,10 @@ class DownloadLocationsTest {
         val updated = world.locations.location(drive.id)!!
         assertEquals(FolderAvailability.Available, world.locations.availability(updated))
         assertEquals(world.volumes.resolve("Archive 1/Movies"), updated.path)
-        assertIs<FileLookup.Found>(world.locations.locate(drive.id, null, "d.mp4"))
+        // The recorded address on the old mount point is read at the same path on the new one; never by name.
+        val moved = assertIs<FileLookup.Found>(world.locations.locate(drive.id, file.toUri().toString(), "d.mp4"))
+        assertEquals(world.volumes.resolve("Archive 1/Movies/d.mp4"), DownloadLocations.fileOfUri(moved.uri)!!.toPath())
+        assertEquals(FileLookup.Missing, world.locations.locate(drive.id, null, "d.mp4"))
         assertTrue(file.name == "d.mp4")
     }
 

@@ -339,7 +339,7 @@ class DownloadLocationsRepositoryTest {
         val oldFields = record.filterKeys { it != "locationId" && it != "pausedByFolder" }
         val readByOldBuild = json.decodeFromJsonElement(DownloadItem.serializer(), kotlinx.serialization.json.JsonObject(oldFields))
 
-        assertEquals(item.localFileUri, readByOldBuild.localFileUri)
+        assertEquals(DownloadLocations.fileOfUri(item.localFileUri!!), DownloadLocations.fileOfUri(readByOldBuild.localFileUri!!))
         assertEquals(DownloadStatus.Completed, readByOldBuild.status)
         assertTrue(record.containsKey("locationId"))
     }

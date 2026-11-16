@@ -314,7 +314,11 @@ internal class DesktopDownloadFolders(
                         moveItems += MoveItem(profile, item.id, item.locationId, item.localFileUri, item.fileName, true, newUri, entries)
                     }
                     is FileLookup.Unreachable -> unreachable++
-                    FileLookup.Missing -> failures += MoveFailure(item.fileName, MoveFailureReason.CouldNotRead)
+                    // A link at the recorded address is never followed or moved; anything else missing cannot be read.
+                    FileLookup.Missing -> failures += MoveFailure(
+                        item.fileName,
+                        if (item.localFileUri?.let(DownloadLocations::fileOfUri)?.toPath()?.let(Files::isSymbolicLink) == true) MoveFailureReason.Symlink else MoveFailureReason.CouldNotRead,
+                    )
                 }
             } else {
                 val owner = locations.ownerOf(item.locationId, item.localFileUri)
