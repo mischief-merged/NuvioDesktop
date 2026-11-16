@@ -273,10 +273,15 @@ internal class DesktopDownloadFolders(
      * a destination path, that another record of any profile owns stops that item; without it (null) every
      * item stops, unless [forSizeOnly].
      */
-    private fun plan(ready: List<DownloadItem>, destination: DesktopDownloadLocation, ownership: DownloadOwnership?, forSizeOnly: Boolean = false): Planned {
+    private fun plan(
+        ready: List<DownloadItem>,
+        destination: DesktopDownloadLocation,
+        ownership: DownloadOwnership?,
+        profile: Int,
+        forSizeOnly: Boolean = false,
+    ): Planned {
         val moveItems = mutableListOf<MoveItem>()
         val failures = mutableListOf<MoveFailure>()
-        val profile = hooks.profileId()
         var unreachable = 0
         ready.forEach { item ->
             if (ownership == null && !forSizeOnly) {
@@ -347,7 +352,7 @@ internal class DesktopDownloadFolders(
         val destination = runCatching { Paths.get(destinationPath).toAbsolutePath().normalize() }.getOrNull() ?: return 0L
         val known = locations.all().firstOrNull { DownloadLocations.samePath(it.path, destination) } ?: DesktopDownloadLocation("?", destination)
         val items = hooks.items().filter { it.id in itemIds }
-        return plan(items, known, null, forSizeOnly = true).items.flatMap { it.entries }.sumOf { it.size }
+        return plan(items, known, null, hooks.profileId(), forSizeOnly = true).items.flatMap { it.entries }.sumOf { it.size }
     }
 
     private fun acquireWriterToken(id: String): Boolean {
@@ -361,7 +366,7 @@ internal class DesktopDownloadFolders(
     }
 
     /** What the mover asks of the lists: answered from each item's own profile, never from the active one. */
-    private val records = object : MoveRecords {
+    internal val records: MoveRecords = object : MoveRecords {
         override fun relocate(item: MoveItem, destinationId: String): RelocateResult =
             hooks.compareAndRelocate(item.profileId, item.itemId, { it.isAsPlanned(item) }) { record ->
                 record.copy(
@@ -434,8 +439,10 @@ internal class DesktopDownloadFolders(
             }
             movingNow = tokens.toSet()
             _state.value = _state.value.copy(moving = true, movingIds = movingNow)
+            // The list is the started profile's only while that profile is active; otherwise nothing is planned.
+            val list = if (hooks.profileId() == startedProfile) hooks.items().takeIf { hooks.profileId() == startedProfile }.orEmpty() else emptyList()
             val ownership = hooks.allRecords()?.let { DownloadOwnership(locations, it) }
-            val planned = plan(hooks.items().filter { it.id in movingNow }, destination, ownership)
+            val planned = plan(list.filter { it.id in movingNow }, destination, ownership, startedProfile)
             val report = mover.run(
                 plan = MovePlan(destination.id, name, planned.items),
                 isCancelled = { cancelRequested.get() || hooks.profileId() != startedProfile },

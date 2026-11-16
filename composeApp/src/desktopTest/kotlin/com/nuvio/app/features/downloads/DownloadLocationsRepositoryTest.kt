@@ -329,7 +329,8 @@ class DownloadLocationsRepositoryTest {
         val drive = world.driveLocation("Archive")
         val item = episodeIn(drive, "tt1", 1)
         load(item)
-        DownloadsRepository.relocateDownload(item.id, drive.id, item.localFileUri)
+        // Any change saves the list again, as this build writes it.
+        DownloadsRepository.setPreferredAudioLanguage(item.id, "en")
 
         // An older build knows neither field. It reads the record by the fields it has, keeping the address.
         val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; coerceInputValues = true }

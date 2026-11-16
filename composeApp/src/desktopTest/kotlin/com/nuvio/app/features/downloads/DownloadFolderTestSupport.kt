@@ -53,26 +53,31 @@ internal class FolderWorld(val root: Path = Files.createTempDirectory("nuvio-fol
         locations.location(id)?.takeIf { locations.availability(it) == FolderAvailability.Available }?.path
     }
 
+    /** The Trash of this world: what the mover sends there is kept, never deleted. */
+    val trash = TestTrash(root.resolve("Trash"))
+
     /** A mover over these locations. Journals go to a folder of their own. */
     fun mover(
         checkpoint: (String) -> Unit = {},
         copy: (Path, Path, (Long) -> Unit, () -> Boolean) -> String = DownloadMover::copyFile,
-        sameStore: (Path, Path) -> Boolean = { _, _ -> false },
         syncDirectory: (Path) -> Boolean = { true },
-        deleteFile: (Path) -> Unit = { Files.delete(it) },
         createLink: (Path, Path) -> Unit = { link, existing -> Files.createLink(link, existing) },
         randomName: () -> String = { DownloadMover.randomHex(8) },
         txId: () -> String = { DownloadMover.randomHex(16) },
         beforeJournalWrite: (MoveJournal) -> Unit = {},
         fileKey: (Path) -> String? = DownloadMover::identityOf,
+        hashOf: (Path) -> String = DownloadMover::sha256Of,
+        trash: (Path) -> Boolean = this.trash::send,
+        resolve: (String) -> Path? = resolver(),
     ) = DownloadMover(
         journalDir = root.resolve("moves"),
-        resolve = resolver(),
+        resolve = resolve,
+        trash = trash,
+        locationPath = { id -> locations.location(id)?.path },
         checkpoint = checkpoint,
         copy = copy,
-        sameStore = sameStore,
+        hashOf = hashOf,
         syncDirectory = syncDirectory,
-        deleteFile = deleteFile,
         createLink = createLink,
         randomName = randomName,
         txIdFactory = txId,
@@ -80,16 +85,9 @@ internal class FolderWorld(val root: Path = Files.createTempDirectory("nuvio-fol
         fileKeyOf = fileKey,
     )
 
-    /** An item to move from the app folder to [destinationId]: the video, then files of its sidecar folder. */
-    fun moveItem(id: String, video: Path, destinationId: String, vararg sidecar: Path, profile: Int = 1): MoveItem {
-        fun entry(path: Path, dstRel: String, kind: MoveKind) =
-            MoveEntry(DownloadLocations.AppId, appFolder.relativize(path).toString(), destinationId, dstRel, kind, Files.size(path))
-        return MoveItem(
-            profile, id, null, video.fileName.toString(),
-            listOf(entry(video, video.fileName.toString(), MoveKind.File)) +
-                sidecar.map { entry(it, appFolder.relativize(it).toString(), MoveKind.Companion) },
-        )
-    }
+    /** The temporary files of any move left in [folder]. */
+    fun tempsIn(folder: Path): List<Path> =
+        if (!Files.isDirectory(folder)) emptyList() else Files.list(folder).use { s -> s.filter { it.fileName.toString().startsWith(".nuvio-") && it.fileName.toString().endsWith(".tmp") }.toList() }
 
     fun close() {
         root.toFile().deleteRecursively()
@@ -223,3 +221,95 @@ internal fun storedPayload(items: List<DownloadItem>): String {
     val json = kotlinx.serialization.json.Json { encodeDefaults = true }
     return """{"items":[${items.joinToString(",") { json.encodeToString(DownloadItem.serializer(), it) }}]}"""
 }
+
+/** A Trash for tests: files and folders are moved into it under unique names and never deleted. */
+internal class TestTrash(private val dir: Path) {
+    @Volatile var fails = false
+    private val counter = java.util.concurrent.atomic.AtomicInteger()
+    val sent = java.util.Collections.synchronizedList(mutableListOf<Pair<Path, Path>>())
+
+    fun send(path: Path): Boolean {
+        if (fails) return false
+        Files.createDirectories(dir)
+        val target = dir.resolve("${counter.incrementAndGet()}-${path.fileName}")
+        return runCatching { Files.move(path, target) }.onSuccess { sent += path to target }.isSuccess
+    }
+
+    /** Every regular file in the Trash, at any depth. */
+    fun files(): List<Path> = if (!Files.isDirectory(dir)) emptyList() else Files.walk(dir).use { s -> s.filter { Files.isRegularFile(it) }.toList() }
+
+    fun holds(bytes: ByteArray): Boolean = files().any { Files.size(it) == bytes.size.toLong() && Files.readAllBytes(it).contentEquals(bytes) }
+}
+
+/**
+ * The lists of downloads of several profiles, with the compare-and-relocate semantics of the repository:
+ * one profile is active; a record is re-pointed only in its own profile's list, in one synchronized step.
+ */
+internal open class ProfileHooks(lists: Map<Int, List<DownloadItem>>, @Volatile var profile: Int = 1) : DownloadsHooks {
+    private val lock = Any()
+    private val lists = lists.toMutableMap()
+    val log = java.util.Collections.synchronizedList(mutableListOf<String>())
+    @Volatile var stopFails = false
+    @Volatile var saveFails = false
+    @Volatile var unreadable = false
+    /** Called just before each compare-and-relocate, outside the lock. */
+    @Volatile var onRelocate: (String) -> Unit = {}
+    @Volatile var onResume: (String) -> Unit = {}
+
+    constructor(items: List<DownloadItem>) : this(mapOf(1 to items))
+
+    var items: List<DownloadItem>
+        get() = list(profile)
+        set(value) = synchronized(lock) { lists[profile] = value }
+
+    fun list(profileId: Int): List<DownloadItem> = synchronized(lock) { lists[profileId].orEmpty() }
+
+    fun setList(profileId: Int, items: List<DownloadItem>) = synchronized(lock) { lists[profileId] = items }
+
+    fun update(profileId: Int, change: (List<DownloadItem>) -> List<DownloadItem>) = synchronized(lock) { lists[profileId] = change(lists[profileId].orEmpty()) }
+
+    override fun items() = items
+    override fun profileId() = profile
+
+    override fun pauseAndWait(downloadId: String): Boolean {
+        log += "pause $downloadId"
+        if (stopFails) return false
+        update(profile) { list -> list.map { if (it.id == downloadId) it.copy(status = DownloadStatus.Paused) else it } }
+        return true
+    }
+
+    override fun resume(downloadId: String) {
+        log += "resume $downloadId"
+        onResume(downloadId)
+    }
+
+    override fun resumeHeld() {
+        log += "resumeHeld"
+    }
+
+    override fun allRecords(): List<RecordRef>? =
+        if (unreadable) null else synchronized(lock) { lists.flatMap { (pid, list) -> list.map { RecordRef.of(pid, it) } } }
+
+    override fun recordOf(profileId: Int, downloadId: String): DownloadItem? = list(profileId).firstOrNull { it.id == downloadId }
+
+    override fun compareAndRelocate(
+        profileId: Int,
+        downloadId: String,
+        matches: (DownloadItem) -> Boolean,
+        relocate: (DownloadItem) -> DownloadItem,
+    ): RelocateResult {
+        onRelocate(downloadId)
+        return synchronized(lock) {
+            val list = lists[profileId].orEmpty()
+            val current = list.firstOrNull { it.id == downloadId } ?: return@synchronized RelocateResult.RecordGone
+            if (!matches(current)) return@synchronized RelocateResult.RecordChanged
+            if (saveFails) return@synchronized RelocateResult.NotDurable
+            lists[profileId] = list.map { if (it.id == downloadId) relocate(it) else it }
+            log += "relocate $downloadId"
+            RelocateResult.Confirmed
+        }
+    }
+}
+
+/** A simulated crash: an Error, so that nothing in the mover handles it, as nothing would run after a real one. */
+internal class Crash(at: String) : Error("crash at $at")

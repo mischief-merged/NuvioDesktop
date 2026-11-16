@@ -7,6 +7,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -19,40 +20,12 @@ class DesktopDownloadFoldersTest {
     @AfterTest
     fun clean_up() = world.close()
 
-    private class Hooks(var items: List<DownloadItem>) : DownloadsHooks {
-        val log = mutableListOf<String>()
-        var onRelocate: (String) -> Unit = {}
-        override fun items() = items
-        var stopFails = false
-        var profile = 1
-        var otherProfileRecords: List<Pair<String?, String?>> = emptyList()
-        override fun profileId() = profile
-        override fun recordsOfAllProfiles() = items.map { it.locationId to it.localFileUri } + otherProfileRecords
-        override fun pauseAndWait(downloadId: String): Boolean {
-            log += "pause $downloadId"
-            if (stopFails) return false
-            items = items.map { if (it.id == downloadId) it.copy(status = DownloadStatus.Paused) else it }
-            return true
-        }
-        override fun resume(downloadId: String) {
-            log += "resume $downloadId"
-        }
-        override fun relocate(downloadId: String, locationId: String, localFileUri: String?) {
-            log += "relocate $downloadId"
-            onRelocate(downloadId)
-            items = items.map {
-                if (it.id == downloadId) it.copy(locationId = locationId, localFileUri = localFileUri ?: it.localFileUri) else it
-            }
-        }
-        override fun resumeHeld() {
-            log += "resumeHeld"
-        }
-    }
+    private class Hooks(items: List<DownloadItem>) : ProfileHooks(items)
 
     private fun controller(hooks: Hooks, crashAt: String? = null) = DesktopDownloadFolders(
         locations = world.locations,
         validator = world.validator,
-        mover = world.mover(checkpoint = { if (it == crashAt) throw IllegalStateException("crash at $it") }),
+        mover = world.mover(checkpoint = { if (it == crashAt) throw Crash(it) }),
         hooks = hooks,
     )
 
@@ -255,7 +228,7 @@ class DesktopDownloadFoldersTest {
     }
 
     @Test
-    fun a_move_cut_short_by_a_crash_leaves_both_files_and_finishes_only_the_record_from_the_journal() {
+    fun a_move_cut_short_by_a_crash_keeps_both_files_changes_no_record_and_lists_the_leftover() {
         val done = episode("A", 1)
         val running = episodeItem("A", 9, status = DownloadStatus.Downloading, bytes = 5_000L)
         Files.createDirectories(world.appFolder)
@@ -263,32 +236,23 @@ class DesktopDownloadFoldersTest {
         val drive = world.driveLocation("Archive")
         val original = Files.readAllBytes(fileOf(done))
         val hooks = Hooks(listOf(done, running))
-        var crashed = false
-        try {
-            controller(hooks, crashAt = "published").move(setOf(done.id, running.id), drive.path.toString())
-        } catch (_: IllegalStateException) {
-            crashed = true
-        }
-        assertTrue(crashed)
+        assertFailsWith<Crash> { controller(hooks, crashAt = "published").move(setOf(done.id, running.id), drive.path.toString()) }
 
-        val restarted = Hooks(listOf(done, running.copy(status = DownloadStatus.Paused)))
+        val restarted = Hooks(hooks.items)
         val folders = controller(restarted)
-        // At start, before the list is loaded, only the move's own temporary files can go.
-        val first = assertNotNull(folders.recoverInterrupted())
-        assertEquals(0, first.recordsFinished)
-        assertTrue(fileOf(done).exists())
+        val report = assertNotNull(folders.recoverInterrupted())
 
-        // With the list loaded the journal proves where the file went, and the record is pointed there.
-        val second = folders.settleInterrupted(withRecords = true)
-
-        assertEquals(1, second.recordsFinished)
-        assertTrue("relocate ${done.id}" in restarted.log)
-        assertEquals(drive.id, restarted.items.first { it.id == done.id }.locationId)
-        // Nothing was deleted: the original and the copy both stay, and the user is told.
+        // Recovery touches no user file and re-points no record: it lists what it found.
+        assertEquals(1, report.leftovers)
+        assertEquals(0, report.unresolved)
+        assertEquals(null, restarted.items.first { it.id == done.id }.locationId)
         assertContentEquals(original, Files.readAllBytes(fileOf(done)))
         assertContentEquals(original, Files.readAllBytes(drive.path.resolve(done.fileName)))
+        assertTrue(world.tempsIn(drive.path).isEmpty(), "a temporary file of the move was left")
         folders.refresh()
         assertEquals(1, folders.state.value.leftovers.size)
+        // A leftover does not block the next move.
+        assertTrue(world.mover().unresolvedJournals().isEmpty())
     }
 
     @Test
@@ -296,19 +260,20 @@ class DesktopDownloadFoldersTest {
         val done = episode("A", 1)
         val drive = world.driveLocation("Archive")
         val hooks = Hooks(listOf(done))
-        try {
-            controller(hooks, crashAt = "published").move(setOf(done.id), drive.path.toString())
-        } catch (_: IllegalStateException) {
-        }
+        val bytes = Files.readAllBytes(fileOf(done))
+        assertFailsWith<Crash> { controller(hooks, crashAt = "published").move(setOf(done.id), drive.path.toString()) }
         val folders = controller(hooks)
+        folders.recoverInterrupted()
         folders.refresh()
         val leftover = folders.state.value.leftovers.single()
 
         assertEquals(done.fileName, leftover.name)
         assertEquals(LeftoverOutcome.Removed, folders.removeExtraCopy(leftover.id))
 
+        // The record points at the original, so the copy is the extra one: it goes to the Trash, not away.
         assertTrue(fileOf(done).exists())
         assertFalse(drive.path.resolve(done.fileName).exists())
+        assertTrue(world.trash.holds(bytes))
         assertEquals(0, folders.state.value.leftovers.size)
     }
 
@@ -455,12 +420,12 @@ class DesktopDownloadFoldersTest {
         val folders = controller(hooks)
         folders.move(setOf(item.id), first.path.toString())
         // Another profile's stored list has a download in the first location.
-        hooks.otherProfileRecords = listOf(first.id to first.path.resolve("x.mp4").toUri().toString())
+        hooks.setList(2, listOf(movieItem("x", locationId = first.id, file = first.path.resolve("x.mp4").writeVideo(9))))
 
         folders.move(setOf(item.id), second.path.toString())
 
         assertTrue(first.id in world.locations.all().map { it.id }, "forgotten although another profile uses it")
-        hooks.otherProfileRecords = emptyList()
+        hooks.setList(2, emptyList())
         folders.refresh()
         folders.move(setOf(item.id), first.path.toString())
         assertTrue(second.id !in world.locations.all().map { it.id } || second.path != world.locations.defaultLocation().path)
@@ -483,17 +448,14 @@ class DesktopDownloadFoldersTest {
     }
 
     @Test
-    fun a_move_inside_one_volume_needs_no_free_space_and_a_copy_across_volumes_needs_its_size() {
+    fun a_move_counts_every_byte_on_every_volume_because_it_always_copies() {
         val item = episode("A", 1)
         val drive = world.driveLocation("Archive")
         val size = Files.size(fileOf(item))
-        val sameVolume = DesktopDownloadFolders(
-            world.locations, world.validator, world.mover(), Hooks(listOf(item)),
-        )
+        val folders = DesktopDownloadFolders(world.locations, world.validator, world.mover(), Hooks(listOf(item)))
 
-        // The temporary folders share one volume here, so a rename carries nothing.
-        assertEquals(0L, sameVolume.bytesToCopy(setOf(item.id), drive.path.toString()))
-        assertTrue(size > 0L)
+        // The temporary folders share one volume here: the copy still needs its size, and the original stays in the Trash.
+        assertEquals(size, folders.bytesToCopy(setOf(item.id), drive.path.toString()))
     }
 
     @Test

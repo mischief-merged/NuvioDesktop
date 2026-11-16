@@ -51,13 +51,7 @@ class DownloadFolderBehaviourTest {
     @Test
     fun the_downloader_pauses_a_download_whose_location_is_away_and_writes_nothing() {
         val drive = world.driveLocation("Archive")
-        val folders = DesktopDownloadFolders(world.locations, world.validator, world.mover(), object : DownloadsHooks {
-            override fun items() = emptyList<DownloadItem>()
-            override fun pauseAndWait(downloadId: String) = true
-            override fun resume(downloadId: String) = Unit
-            override fun relocate(downloadId: String, locationId: String, localFileUri: String?) = Unit
-            override fun resumeHeld() = Unit
-        })
+        val folders = DesktopDownloadFolders(world.locations, world.validator, world.mover(), ProfileHooks(emptyList()))
         DesktopDownloads.replaceForTest(folders)
         world.unplug("Archive")
         val paused = CountDownLatch(1)
@@ -81,13 +75,7 @@ class DownloadFolderBehaviourTest {
     @Test
     fun free_space_is_read_on_the_volume_of_the_location_the_download_goes_to() {
         val drive = world.driveLocation("Archive")
-        val folders = DesktopDownloadFolders(world.locations, world.validator, world.mover(), object : DownloadsHooks {
-            override fun items() = emptyList<DownloadItem>()
-            override fun pauseAndWait(downloadId: String) = true
-            override fun resume(downloadId: String) = Unit
-            override fun relocate(downloadId: String, locationId: String, localFileUri: String?) = Unit
-            override fun resumeHeld() = Unit
-        })
+        val folders = DesktopDownloadFolders(world.locations, world.validator, world.mover(), ProfileHooks(emptyList()))
 
         val onDrive = folders.freeBytesOf(item.copy(locationId = drive.id))
         val inApp = folders.freeBytesOf(item)

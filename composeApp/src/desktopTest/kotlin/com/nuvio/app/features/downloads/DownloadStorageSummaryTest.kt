@@ -137,13 +137,7 @@ class DownloadStorageSummaryTest {
         world.appFolder.createDirectories()
         val auto = episodeItem("A", 1, ruleKey = "rule", bytes = 5).copy(fileName = "a.mp4")
         val file = world.appFolder.resolve("a.mp4").also { Files.write(it, ByteArray(2_048)) }
-        val hooks = object : DownloadsHooks {
-            override fun items() = listOf(auto.copy(localFileUri = file.toUri().toString()))
-            override fun pauseAndWait(downloadId: String) = true
-            override fun resume(downloadId: String) = Unit
-            override fun relocate(downloadId: String, locationId: String, localFileUri: String?) = Unit
-            override fun resumeHeld() = Unit
-        }
+        val hooks = ProfileHooks(listOf(auto.copy(localFileUri = file.toUri().toString())))
         val folders = DesktopDownloadFolders(world.locations, world.validator, world.mover(), hooks)
         assertFalse(folders.state.value.usageMeasured)
 
