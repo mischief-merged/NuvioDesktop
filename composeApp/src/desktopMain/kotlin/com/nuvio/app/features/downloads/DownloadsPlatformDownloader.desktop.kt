@@ -18,6 +18,7 @@ import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withTimeoutOrNull
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.downloads_error_not_enough_space
+import nuvio.composeapp.generated.resources.downloads_error_not_durable
 import nuvio.composeapp.generated.resources.downloads_error_private_address
 import org.jetbrains.compose.resources.getString
 import java.awt.Desktop
@@ -127,8 +128,15 @@ internal actual object DownloadsPlatformDownloader {
                     }
                     if (transfer.digestMatched == true) request.onDigestVerified()
 
-                    // Never over a file this download did not create: a taken name gets " (2)", " (3)", ...
-                    val published = publishWithoutReplacing(tempFile.toPath(), destination.toPath()).toFile()
+                    // Reported finished only once the file is on disk under its final name, which never replaces
+                    // a file this download did not create (a taken name gets " (2)", " (3)", ...).
+                    val published = try {
+                        publishDurably(tempFile.toPath(), destination.toPath()).toFile()
+                    } catch (_: DownloadNotDurable) {
+                        // The partial file keeps its name: the download is not finished and goes on from it.
+                        onFailure(runBlocking { getString(Res.string.downloads_error_not_durable) })
+                        return@launch
+                    }
 
                     val finalSize = published.length()
                     onSuccess(published.toURI().toString(), totalBytes ?: finalSize)
@@ -517,46 +525,84 @@ private fun parseContentRangeTotal(headerValue: String?): Long? {
     return totalPart.toLongOrNull()?.takeIf { it > 0L }
 }
 
+/** The finished file could not be confirmed on disk: the download is not marked finished and keeps its partial file. */
+internal class DownloadNotDurable(message: String) : IOException(message)
+
+/** Whether folders can be flushed here at all. Windows does not let a folder be opened for it. */
+private val foldersCanBeFlushed = !System.getProperty("os.name").orEmpty().lowercase().contains("win")
+
 /**
- * Gives the finished partial file [part] the name [destination] without replacing anything: a hard link
- * under the first free name (`name.ext`, then `name (2).ext`, ...), after which the partial name goes;
- * where links are not supported, a copy into a file created with create-new. The name used is returned.
+ * Gives the finished partial file [part] its final name, durably and without replacing anything:
+ * 1. its contents are forced to disk;
+ * 2. a hard link is made under the first free name (`name.ext`, then `name (2).ext`, ...), or, where links
+ *    are not supported, a copy into a file created with create-new, forced; a copy that fails half way is
+ *    removed while it is still the file this call created, so nothing piles up beside the partial file;
+ * 3. the folder is flushed; when that fails, the new name is removed again (it is this call's own) and
+ *    [DownloadNotDurable] is thrown with the partial file still under its name;
+ * 4. only then does the partial name go. The final name is returned.
+ * Where the platform cannot flush folders at all (Windows), step 3 is skipped and completion rests on the
+ * forced file contents.
  */
-internal fun publishWithoutReplacing(
+internal fun publishDurably(
     part: java.nio.file.Path,
     destination: java.nio.file.Path,
+    flushFolder: (java.nio.file.Path) -> Boolean = { folder -> !foldersCanBeFlushed || DownloadMover.flushDirectory(folder) },
     link: (java.nio.file.Path, java.nio.file.Path) -> Unit = { name, existing -> Files.createLink(name, existing) },
+    copy: (java.nio.channels.FileChannel, java.nio.channels.FileChannel) -> Unit = { input, out ->
+        var position = 0L
+        val size = input.size()
+        while (position < size) position += input.transferTo(position, size - position, out)
+    },
 ): java.nio.file.Path {
+    val nofollow = java.nio.file.LinkOption.NOFOLLOW_LINKS
+    java.nio.channels.FileChannel.open(part, java.nio.file.StandardOpenOption.WRITE, nofollow).use { it.force(true) }
+    val partKey = DownloadMover.identityOf(part) ?: throw IOException("The partial file cannot be read")
     val name = destination.fileName.toString()
     val base = name.substringBeforeLast('.', name)
     val extension = name.substringAfterLast('.', "").let { if (it.isEmpty() || it == name) "" else ".$it" }
     for (n in 1..999) {
         val candidate = if (n == 1) destination else destination.resolveSibling("$base ($n)$extension")
-        try {
+        val createdKey: String = try {
             link(candidate, part)
+            partKey
         } catch (_: java.nio.file.FileAlreadyExistsException) {
             continue
         } catch (_: Exception) {
-            try {
-                java.nio.channels.FileChannel.open(
-                    candidate,
-                    java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE, java.nio.file.LinkOption.NOFOLLOW_LINKS,
-                ).use { out ->
-                    java.nio.channels.FileChannel.open(part, java.nio.file.StandardOpenOption.READ, java.nio.file.LinkOption.NOFOLLOW_LINKS).use { input ->
-                        var position = 0L
-                        val size = input.size()
-                        while (position < size) position += input.transferTo(position, size - position, out)
-                    }
-                    out.force(true)
-                }
+            val out = try {
+                java.nio.channels.FileChannel.open(candidate, java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE, nofollow)
             } catch (_: java.nio.file.FileAlreadyExistsException) {
                 continue
             }
+            val key = DownloadMover.identityOf(candidate)
+            try {
+                out.use { channel ->
+                    java.nio.channels.FileChannel.open(part, java.nio.file.StandardOpenOption.READ, nofollow).use { input -> copy(input, channel) }
+                    channel.force(true)
+                }
+            } catch (error: IOException) {
+                removeIfStill(candidate, key)
+                throw error
+            }
+            key ?: run {
+                removeIfStill(candidate, key)
+                throw IOException("The finished file cannot be read")
+            }
+        }
+        if (!flushFolder(candidate.parent)) {
+            removeIfStill(candidate, createdKey)
+            throw DownloadNotDurable("The folder of the download could not be flushed")
         }
         Files.deleteIfExists(part)
+        flushFolder(candidate.parent)
         return candidate
     }
     throw IOException("No free name for $name")
+}
+
+/** Removes [path] only while it is still the file with [key], which this download created. */
+private fun removeIfStill(path: java.nio.file.Path, key: String?) {
+    if (key == null) return
+    runCatching { if (!Files.isSymbolicLink(path) && DownloadMover.identityOf(path) == key) Files.delete(path) }
 }
 
 /**

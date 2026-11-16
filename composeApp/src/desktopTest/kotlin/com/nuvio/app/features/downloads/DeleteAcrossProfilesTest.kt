@@ -161,7 +161,7 @@ class DeleteAcrossProfilesTest {
         val existing = folder.resolve("film.mp4").also { Files.writeString(it, "someone's film") }
         val part = folder.resolve("film.mp4.part").also { Files.writeString(it, "the new download") }
 
-        val published = publishWithoutReplacing(part, existing)
+        val published = publishDurably(part, existing, flushFolder = { true })
 
         assertEquals(folder.resolve("film (2).mp4"), published)
         assertEquals("someone's film", Files.readString(existing))
@@ -169,7 +169,7 @@ class DeleteAcrossProfilesTest {
         assertFalse(part.exists())
 
         val part2 = folder.resolve("film.mp4.part").also { Files.writeString(it, "a third one") }
-        val noLinks = publishWithoutReplacing(part2, existing) { _, _ -> throw UnsupportedOperationException() }
+        val noLinks = publishDurably(part2, existing, flushFolder = { true }, link = { _, _ -> throw UnsupportedOperationException() })
         assertEquals(folder.resolve("film (3).mp4"), noLinks)
         assertContentEquals("a third one".toByteArray(), Files.readAllBytes(noLinks))
         assertEquals("someone's film", Files.readString(existing))
