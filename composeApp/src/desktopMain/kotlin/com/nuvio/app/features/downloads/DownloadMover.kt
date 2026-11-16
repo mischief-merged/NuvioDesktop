@@ -109,6 +109,12 @@ internal data class MoveItem(
     /** The compare-and-relocate confirmed the record now points at the destination. */
     val recorded: Boolean = false,
     val outcome: ItemOutcome? = null,
+    /**
+     * The sidecar folder this move created at the destination (its name), and its identity. Only a folder this
+     * transaction created holds anything of this move, the mark included; it is removed again, when empty.
+     */
+    val createdDir: String = "",
+    val createdDirKey: String? = null,
 ) {
     val displayName: String get() = recordFileName.ifBlank { itemId }
     val main: MoveEntry? get() = entries.firstOrNull { it.kind != MoveKind.Companion }
@@ -430,6 +436,13 @@ internal class DownloadMover(
                     if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) throw ItemFailure(MoveFailureReason.CouldNotRead)
                     val target = destination.resolve(e.dstRel)
                     if (e.dstLocationId != plan.destinationId || existsIgnoringCase(target)) throw ItemFailure(MoveFailureReason.NameTaken)
+                    // A folder of the sidecar's name already there, of any kind, is not this move's: nothing goes into it.
+                    if (e.kind == MoveKind.Companion) {
+                        val folder = destination.resolve(Path.of(e.dstRel).getName(0).toString())
+                        if (Files.exists(folder, LinkOption.NOFOLLOW_LINKS) || existsIgnoringCase(folder)) {
+                            throw ItemFailure(MoveFailureReason.NameTaken, "a folder with that name is already there")
+                        }
+                    }
                     (records.otherOwner(planned, source) ?: records.otherOwner(planned, target))
                         ?.let { throw ItemFailure(MoveFailureReason.OwnedByAnother, it) }
                     fileKeyOf(source) ?: throw ItemFailure(MoveFailureReason.CouldNotRead)
@@ -552,7 +565,7 @@ internal class DownloadMover(
             val temp = destination.resolve(e.temp)
             val target = destination.resolve(e.dstRel)
             if (existsIgnoringCase(target)) return MoveFailureReason.NameTaken
-            target.parent?.let { Files.createDirectories(it) }
+            prepareParent(index, destination, target)?.let { return it }
             try {
                 createLink(target, temp)
             } catch (_: FileAlreadyExistsException) {
@@ -591,7 +604,7 @@ internal class DownloadMover(
             // A taken name: nothing was created, so the entry is not left looking as if it might have been.
             val taken = { updateEntry(index, ei) { it.copy(state = EntryState.Planned, direct = false) }; MoveFailureReason.NameTaken }
             if (existsIgnoringCase(target)) return taken()
-            target.parent?.let { Files.createDirectories(it) }
+            prepareParent(index, destination, target)?.let { return it }
             val owned = createOwned(target) ?: return taken()
             try {
                 updateEntry(index, ei) { it.copy(finalKey = owned.key) }
@@ -605,6 +618,31 @@ internal class DownloadMover(
             updateEntry(index, ei) { it.copy(hash = hash) }
             checkpoint("published-unflushed")
             return finishPublishing(index, ei, destination, target)
+        }
+
+        /**
+         * The folder of a companion: the sidecar folder is created by this move with createDirectory, which fails
+         * when anything is already at that name, and its identity journalled; folders inside it are this move's too.
+         */
+        private fun prepareParent(index: Int, destination: Path, target: Path): MoveFailureReason? {
+            val parent = target.parent ?: return null
+            if (parent == destination) return null
+            val rootName = destination.relativize(target).getName(0).toString()
+            val root = destination.resolve(rootName)
+            val item = journal.items[index]
+            if (item.createdDir == rootName && item.createdDirKey != null) {
+                if (Files.isSymbolicLink(root) || fileKeyOf(root) != item.createdDirKey) return MoveFailureReason.NameTaken
+            } else {
+                try {
+                    Files.createDirectory(root)
+                } catch (_: FileAlreadyExistsException) {
+                    return MoveFailureReason.NameTaken
+                }
+                val key = fileKeyOf(root) ?: return MoveFailureReason.CouldNotWrite
+                updateItem(index) { it.copy(createdDir = rootName, createdDirKey = key) }
+            }
+            if (parent != root) Files.createDirectories(parent)
+            return null
         }
 
         /** Every folder from the file up to the location, so that no folder made here can be lost; then Published. */
@@ -784,10 +822,24 @@ internal class DownloadMover(
                 if (key != null && (key == e.tempKey || key == e.finalKey) || e.direct && e.finalKey == null || e.state >= EntryState.Published) leftover = true
             }
         }
+        // The sidecar folder this move created goes again when nothing is left in it, and only while it is that folder.
+        if (item.createdDir.isNotEmpty() && item.createdDirKey != null) {
+            resolve(item.entries.firstOrNull()?.dstLocationId ?: "")?.resolve(item.createdDir)?.let { removeEmptyFolders(it, item.createdDirKey) }
+        }
         return when {
             unsettled -> null
             leftover -> ItemOutcome.Leftover
             else -> ItemOutcome.Aborted
+        }
+    }
+
+    /** Removes [root] and the folders inside it, bottom up, only those that are empty; never a file. Only while [root] has [key]. */
+    private fun removeEmptyFolders(root: Path, key: String) {
+        runCatching {
+            if (Files.isSymbolicLink(root) || fileKeyOf(root) != key) return
+            Files.walk(root).use { it.toList() }.sortedByDescending { it.nameCount }
+                .filter { Files.isDirectory(it, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(it) }
+                .forEach { folder -> runCatching { if (Files.list(folder).use { s -> !s.findAny().isPresent }) Files.delete(folder) } }
         }
     }
 
