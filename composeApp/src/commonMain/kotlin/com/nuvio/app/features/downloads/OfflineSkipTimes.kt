@@ -59,6 +59,27 @@ internal sealed interface SkipFetchResult {
 
 internal fun interface SkipTimesFetcher {
     suspend fun fetch(request: SkipTimesRequest): SkipFetchResult
+
+    /**
+     * Whether any service could be asked about this title at all in this build and these settings.
+     * When none can, nothing is looked up, nothing is recorded, and it is no failure.
+     */
+    fun canLookUp(request: SkipTimesRequest): Boolean = true
+}
+
+/**
+ * Which lookups can be made with the services that are set up. The main service (IntroDB) needs its
+ * address set when the app is built; Simkl, which turns an IMDb or Kitsu id into the ids the anime
+ * services use, needs a client id set when the app is built; AniSkip is open and needs only a MAL id.
+ */
+internal fun skipLookupPossible(request: SkipTimesRequest, introDbConfigured: Boolean, simklConfigured: Boolean): Boolean {
+    if (request.isMovie) return introDbConfigured
+    return when (resolveSkipIntervalLookup(request.videoId, request.season, request.episode)) {
+        null -> false
+        is SkipIntervalLookup.Imdb -> introDbConfigured || simklConfigured
+        is SkipIntervalLookup.Mal -> true
+        is SkipIntervalLookup.Kitsu -> simklConfigured || (introDbConfigured && request.imdbId != null)
+    }
 }
 
 /**
@@ -70,9 +91,12 @@ internal object ServiceSkipTimesFetcher : SkipTimesFetcher {
     /** A lookup that takes longer than this is given up and counts as failed. */
     const val LOOKUP_TIMEOUT_MS = 25_000L
 
+    override fun canLookUp(request: SkipTimesRequest): Boolean =
+        skipLookupPossible(request, SkipIntroRepository.introDbConfigured, SimklConfig.CLIENT_ID.isNotBlank())
+
     override suspend fun fetch(request: SkipTimesRequest): SkipFetchResult {
-        // With no service configured nothing was asked, so "none found" would be untrue.
-        if (!SkipIntroRepository.introDbConfigured && SimklConfig.CLIENT_ID.isBlank()) return SkipFetchResult.Failed
+        // With no service to ask, nothing was asked, so "none found" would be untrue.
+        if (!canLookUp(request)) return SkipFetchResult.Failed
         val report = SkipLookupReport()
         val intervals = try {
             withTimeoutOrNull(LOOKUP_TIMEOUT_MS) { withContext(report) { lookup(request) } }
@@ -159,7 +183,8 @@ internal class OfflineSkipTimes(
     override val name: String get() = "skip times"
 
     /** Backfill and the end of a download fill gaps. A download that has intervals is left to be refreshed when played. */
-    override fun isDue(item: DownloadItem, localVideoUri: String): Boolean = needsBackfill(SkipTimesSidecar.read(localVideoUri))
+    override fun isDue(item: DownloadItem, localVideoUri: String): Boolean =
+        fetcher.canLookUp(item.toSkipTimesRequest()) && needsBackfill(SkipTimesSidecar.read(localVideoUri))
 
     override suspend fun run(item: DownloadItem, localVideoUri: String): CompanionOutcome =
         lookup(item.toSkipTimesRequest(), localVideoUri) { needsBackfill(it) }.outcome
@@ -190,6 +215,7 @@ internal class OfflineSkipTimes(
         withContext(io) { lookupOnIo(request, uri, eligible) }
 
     private suspend fun lookupOnIo(request: SkipTimesRequest, uri: String, eligible: (SavedSkipTimesRead) -> Boolean): Attempt {
+        if (!fetcher.canLookUp(request)) return Attempt(CompanionOutcome.Busy)
         if (!isOnline()) return Attempt(CompanionOutcome.Failed)
         if (!eligible(SkipTimesSidecar.read(uri))) return Attempt(CompanionOutcome.Busy)
         if (inCooldown(uri)) return Attempt(CompanionOutcome.Busy)
