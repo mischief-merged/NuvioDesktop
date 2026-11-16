@@ -255,6 +255,9 @@ internal object DesktopStorage {
      * The lock of one store file: a lock inside this process (shared by every Store object of that file)
      * and, while it is held at the outermost level, an OS lock on the lock file that other processes see.
      */
+    /** The lock of a store file could not be taken: nothing was read or written under it. */
+    internal class StoreLockUnavailable(lockFile: Path, cause: Throwable) : java.io.IOException("Cannot lock $lockFile", cause)
+
     internal class FileGate private constructor(private val lockFile: Path) {
         private val inProcess = java.util.concurrent.locks.ReentrantLock()
         private var depth = 0
@@ -273,8 +276,10 @@ internal object DesktopStorage {
         fun lockLocal() = inProcess.lock()
         fun unlockLocal() = inProcess.unlock()
 
+        /** Runs [block] holding the lock across processes. When that lock cannot be had, [block] does not run and this throws. */
         fun <T> exclusive(block: () -> T): T = local {
-            if (depth++ == 0) acquireOs()
+            if (depth == 0) acquireOs()
+            depth++
             try {
                 block()
             } finally {
@@ -283,12 +288,15 @@ internal object DesktopStorage {
         }
 
         private fun acquireOs() {
-            runCatching {
+            try {
                 Files.createDirectories(lockFile.parent)
                 val opened = java.nio.channels.FileChannel.open(lockFile, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE)
                 channel = opened
                 // Blocks until another copy of the app lets go.
                 osLock = opened.lock()
+            } catch (error: Exception) {
+                releaseOs()
+                throw StoreLockUnavailable(lockFile, error)
             }
         }
 

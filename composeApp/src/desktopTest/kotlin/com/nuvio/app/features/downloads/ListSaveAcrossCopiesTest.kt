@@ -84,6 +84,23 @@ class ListSaveAcrossCopiesTest {
     }
 
     @Test
+    fun a_store_whose_lock_cannot_be_taken_writes_nothing_and_says_so() {
+        // The lock file's place is taken by a folder, so the lock cannot be opened.
+        val file = world.root.resolve("locked.properties")
+        Files.createDirectories(world.root.resolve("locked.properties.lock"))
+        val store = DesktopStorage.Store(file)
+        var ran = false
+
+        val failure = runCatching { store.exclusive { ran = true } }.exceptionOrNull()
+        val put = runCatching { store.putString("downloads_1", "x") }
+
+        assertTrue(failure is DesktopStorage.StoreLockUnavailable, "$failure")
+        assertFalse(ran, "the block ran without the lock")
+        assertTrue(put.isFailure)
+        assertFalse(Files.exists(file))
+    }
+
+    @Test
     fun only_one_copy_of_the_app_holds_the_app_data_folder() {
         val folder = Files.createDirectories(world.root.resolve("app-data-lock"))
         val first = assertNotNull(DesktopSingleInstance.tryAcquire(folder))

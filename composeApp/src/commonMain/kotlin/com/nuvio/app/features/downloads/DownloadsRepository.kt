@@ -931,14 +931,18 @@ object DownloadsRepository {
      * lock across processes: the stored list is read again and, when it is newer, this copy's own changes
      * since its last read are merged onto it, field by field, instead of overwriting it.
      */
-    private fun persist() {
-        if (savingIsUnsafe) return
-        backend.withListLock {
-            val revision = if (backend.rereadsPayload) mergeNewerStored() ?: return@withListLock else null
-            backend.savePayload(DownloadsCodec.encode(_uiState.value.items, loadedPayload, revision))
-            baseline = _uiState.value.items
-            if (revision != null) baseRevision = revision
-        }
+    private fun persist(durably: Boolean = false): Boolean {
+        if (savingIsUnsafe) return false
+        // A lock that cannot be had, or a save that fails, is a save not done: false, and nothing is assumed saved.
+        return runCatching {
+            backend.withListLock {
+                val revision = if (backend.rereadsPayload) mergeNewerStored() ?: return@withListLock false else null
+                backend.savePayload(DownloadsCodec.encode(_uiState.value.items, loadedPayload, revision))
+                baseline = _uiState.value.items
+                if (revision != null) baseRevision = revision
+                !durably || backend.syncPayload()
+            }
+        }.getOrDefault(false)
     }
 
     /**
@@ -1122,6 +1126,9 @@ internal interface DownloadsBackend {
     /** Keeps a payload that could not be read, apart from the one [savePayload] writes. */
     fun saveUnreadablePayload(payload: String, atEpochMs: Long) = Unit
 
+    /** Flushes the saved list (file and folder) to disk. True where there is nothing more to do. */
+    fun syncPayload(): Boolean = true
+
     /** Whether another record of any profile uses [fileUri]. Null where only this list is known. */
     fun ownershipOf(item: DownloadItem, fileUri: String): FileOwnership? = null
 
@@ -1253,6 +1260,8 @@ private object PlatformDownloadsBackend : DownloadsBackend {
         DownloadsStorage.saveUnreadablePayload(payload, atEpochMs)
 
     override val rereadsPayload: Boolean get() = DownloadsStorage.rereadsPayload
+
+    override fun syncPayload(): Boolean = DownloadsStorage.syncPayload()
 
     override fun ownershipOf(item: DownloadItem, fileUri: String): FileOwnership? =
         DownloadFolders.controller.ownershipOf(item, fileUri)

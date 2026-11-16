@@ -26,4 +26,6 @@ internal actual object DownloadsStorage {
     actual fun loadFreshPayload(): String? = store.getFreshString(ProfileScopedKey.of("downloads"))
 
     actual fun <T> withListLock(block: () -> T): T = store.exclusive(block)
+
+    actual fun syncPayload(): Boolean = store.sync()
 }

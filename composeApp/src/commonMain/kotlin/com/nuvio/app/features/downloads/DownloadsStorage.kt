@@ -16,6 +16,9 @@ internal expect object DownloadsStorage {
     /** The payload as it is kept now, read again; null where the platform does not re-read. */
     fun loadFreshPayload(): String?
 
+    /** Flushes the saved list to disk, file and folder. True where the platform has nothing more to do. */
+    fun syncPayload(): Boolean
+
     /** Runs [block] holding the lock every save of the list takes, across processes where the platform has one. */
     fun <T> withListLock(block: () -> T): T
 }

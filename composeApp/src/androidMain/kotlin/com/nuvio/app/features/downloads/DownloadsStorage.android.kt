@@ -39,5 +39,7 @@ internal actual object DownloadsStorage {
 
     actual fun loadFreshPayload(): String? = null
 
+    actual fun syncPayload(): Boolean = true
+
     actual fun <T> withListLock(block: () -> T): T = block()
 }
