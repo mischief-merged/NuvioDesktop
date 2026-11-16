@@ -22,7 +22,6 @@ import nuvio.composeapp.generated.resources.downloads_error_private_address
 import org.jetbrains.compose.resources.getString
 import java.awt.Desktop
 import java.io.File
-import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.file.Files
 import java.security.MessageDigest
@@ -313,7 +312,7 @@ internal actual object DownloadsPlatformDownloader {
                     }
                 }
                 try {
-                    FileOutputStream(tempFile, appendToTemp).use { output ->
+                    openPartial(tempFile.toPath(), appendToTemp).use { output ->
                         val buffer = ByteArray(ReadBufferBytes)
                         var nextLimitCheckAtBytes = downloadedBytes + LimitCheckIntervalBytes
                         while (true) {
@@ -558,4 +557,18 @@ internal fun publishWithoutReplacing(
         return candidate
     }
     throw IOException("No free name for $name")
+}
+
+/**
+ * The partial file of a download, opened for writing without following a link: appended to when the
+ * download resumes it, created with create-new when it starts it (the old one was removed just before),
+ * so a link or another file put at that name is never written through or cut short.
+ */
+internal fun openPartial(path: java.nio.file.Path, append: Boolean): java.io.OutputStream {
+    val options: Array<java.nio.file.OpenOption> = if (append) {
+        arrayOf(java.nio.file.StandardOpenOption.WRITE, java.nio.file.StandardOpenOption.APPEND, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+    } else {
+        arrayOf(java.nio.file.StandardOpenOption.WRITE, java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+    }
+    return java.nio.channels.Channels.newOutputStream(java.nio.channels.FileChannel.open(path, *options))
 }

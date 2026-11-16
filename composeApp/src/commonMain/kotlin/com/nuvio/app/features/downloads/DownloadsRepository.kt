@@ -214,7 +214,11 @@ object DownloadsRepository {
         if (existing != null) {
             replacedExisting = true
             activeTransfers.remove(existing.id)?.cancel()
-            backend.removeFile(playableLocalFileUri(existing) ?: existing.localFileUri)
+            val oldUri = playableLocalFileUri(existing) ?: existing.localFileUri
+            // The old file goes the way a cancel sends it (the Trash on desktop), and only when no other
+            // record of any profile uses it; where that cannot be told it stays where it is.
+            val keep = oldUri != null && backend.ownershipOf(existing, oldUri).let { it == FileOwnership.Owned || it == FileOwnership.Unknown }
+            if (!keep) backend.discardFile(oldUri)
             backend.removePartialOf(existing)
             currentItems.removeAll { it.id == existing.id }
         }

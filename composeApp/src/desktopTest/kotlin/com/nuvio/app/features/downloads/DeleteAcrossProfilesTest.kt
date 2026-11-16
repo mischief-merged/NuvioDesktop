@@ -100,6 +100,29 @@ class DeleteAcrossProfilesTest {
     }
 
     @Test
+    fun downloading_the_same_content_again_never_deletes_the_old_file_outright_or_one_another_profile_uses() {
+        val item = film("a")
+        load(item)
+        backend.owners = FileOwnership.Owned
+        enqueueAgain(item)
+        assertTrue(backend.discarded.isEmpty() && backend.inner.removedOutright.isEmpty())
+
+        load(item)
+        backend.owners = FileOwnership.Free
+        enqueueAgain(item)
+        assertEquals(listOf(item.localFileUri), backend.discarded)
+        assertTrue(backend.inner.removedOutright.isEmpty())
+    }
+
+    private fun enqueueAgain(item: DownloadItem) {
+        DownloadsRepository.enqueueFromStream(
+            contentType = item.contentType, videoId = item.videoId, parentMetaId = item.parentMetaId, parentMetaType = item.parentMetaType,
+            title = item.title, logo = null, poster = null, background = null, seasonNumber = null, episodeNumber = null,
+            episodeTitle = null, episodeThumbnail = null, stream = testStream(item.sourceUrl),
+        )
+    }
+
+    @Test
     fun the_desktop_tells_a_file_another_profile_or_its_sidecar_uses_and_fails_closed_on_unreadable_lists() {
         val mine = film("a")
         val hooks = ProfileHooks(mapOf(1 to listOf(mine), 2 to listOf(mine.copy(id = "theirs"))))
