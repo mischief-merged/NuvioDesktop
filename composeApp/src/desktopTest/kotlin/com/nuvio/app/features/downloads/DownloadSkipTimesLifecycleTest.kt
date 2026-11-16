@@ -150,7 +150,7 @@ class DownloadSkipTimesLifecycleTest {
         assertTrue(trash.moveAway(video.toURI().toString()))
 
         assertEquals(listOf("Show.S01E01.mkv", "Show.S01E01.mkv.subtitles"), trashed.map { it.name })
-        assertEquals(emptyList(), folder.list().orEmpty().toList())
+        assertEquals(emptyList(), folder.list().orEmpty().filterNot { it == SidecarOwnership.MarkerName })
     }
 
     @Test
@@ -171,7 +171,7 @@ class DownloadSkipTimesLifecycleTest {
         savedBeside("Show.S01E01.mkv")
 
         assertEquals(emptyList(), DownloadsRepository.uiState.value.items)
-        assertEquals(setOf("Show.S01E01.mkv", "Show.S01E01.mkv.subtitles"), folder.list().orEmpty().toSet())
+        assertEquals(setOf("Show.S01E01.mkv", "Show.S01E01.mkv.subtitles"), folder.list().orEmpty().filterNot { it == SidecarOwnership.MarkerName }.toSet())
     }
 
     @Test
@@ -181,7 +181,7 @@ class DownloadSkipTimesLifecycleTest {
         DownloadSubtitleStorage(uri).write("manifest.json", "{}")
         SkipTimesSidecar.write(uri, SavedSkipTimes(2L, listOf(intro)))
 
-        assertEquals(setOf("manifest.json", "skip-times.json"), File(folder, "Show.S01E01.mkv.subtitles").list().orEmpty().toSet())
+        assertEquals(setOf("manifest.json", "skip-times.json"), File(folder, "Show.S01E01.mkv.subtitles").list().orEmpty().filterNot { it == SidecarOwnership.MarkerName }.toSet())
 
         DownloadSubtitleStorage(uri).remove()
         assertEquals(SavedSkipTimesRead.Missing, SkipTimesSidecar.read(uri))

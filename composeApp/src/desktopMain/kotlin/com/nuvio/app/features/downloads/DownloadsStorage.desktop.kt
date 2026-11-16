@@ -19,4 +19,13 @@ internal actual object DownloadsStorage {
     actual fun saveUnreadablePayload(payload: String, atEpochMs: Long) {
         store.putString("${ProfileScopedKey.of("downloads_unreadable")}_$atEpochMs", payload)
     }
+
+    // Another copy of the app may have saved since this one read the list: it is read again under the lock.
+    actual val rereadsPayload: Boolean = true
+
+    actual fun loadFreshPayload(): String? = store.getFreshString(ProfileScopedKey.of("downloads"))
+
+    actual fun <T> withListLock(block: () -> T): T = store.exclusive(block)
+
+    actual fun syncPayload(): Boolean = store.sync()
 }

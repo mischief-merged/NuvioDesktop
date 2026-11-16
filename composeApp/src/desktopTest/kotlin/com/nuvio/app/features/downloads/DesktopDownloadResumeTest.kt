@@ -121,12 +121,14 @@ class DesktopDownloadResumeTest {
         val fileName = "nuvio-relaunch-test-${System.nanoTime()}.mkv"
         val downloadsDir = DesktopStorage.rootDir.resolve("downloads").toFile().also { it.mkdirs() }
         File(downloadsDir, "$fileName.part").writeBytes(payload.copyOfRange(0, alreadyThere))
+        // The download created this partial file in an earlier run and recorded its identity then.
+        val partialKey = DownloadMover.identityOf(File(downloadsDir, "$fileName.part").toPath())
         val completed = CountDownLatch(1)
         var successUri: String? = null
 
         try {
             DownloadsPlatformDownloader.start(
-                request = DownloadPlatformRequest(testItem("http://127.0.0.1:${server.address.port}/video.mkv", fileName)),
+                request = DownloadPlatformRequest(testItem("http://127.0.0.1:${server.address.port}/video.mkv", fileName).copy(partialFileKey = partialKey)),
                 onProgress = { _, _ -> },
                 onSuccess = { uri, _ ->
                     successUri = uri
@@ -288,6 +290,8 @@ class DesktopDownloadResumeTest {
         val fileName = "nuvio-digest-test-${System.nanoTime()}.mkv"
         val downloadsDir = DesktopStorage.rootDir.resolve("downloads").toFile().also { it.mkdirs() }
         if (partialBytes > 0) File(downloadsDir, "$fileName.part").writeBytes(body.copyOfRange(0, partialBytes))
+        // The download created this partial file in an earlier run and recorded its identity then.
+        val partialKey = if (partialBytes > 0) DownloadMover.identityOf(File(downloadsDir, "$fileName.part").toPath()) else null
         val done = CountDownLatch(1)
         var successUri: String? = null
         var failure: String? = null
@@ -295,7 +299,7 @@ class DesktopDownloadResumeTest {
         try {
             DownloadsPlatformDownloader.start(
                 request = DownloadPlatformRequest(
-                    testItem("http://127.0.0.1:${server.address.port}/video.mkv", fileName),
+                    testItem("http://127.0.0.1:${server.address.port}/video.mkv", fileName).copy(partialFileKey = partialKey),
                     onDigestVerified = { digestVerified = true },
                 ),
                 onProgress = { _, _ -> },

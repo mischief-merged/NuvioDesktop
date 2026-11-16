@@ -69,7 +69,8 @@ class SkipTimesSidecarTest {
 
     @Test
     fun a_corrupt_file_is_ignored_and_may_be_replaced() {
-        sidecar.parentFile.mkdirs()
+        // A corrupt file in the app's own (marked) folder; in a folder that is not the app's, nothing is replaced.
+        assertTrue(SidecarOwnership.ensureOwned(sidecar.parentFile.toPath(), sidecar.parentFile.name.removeSuffix(".subtitles")))
         sidecar.writeText("{ not json")
         assertEquals(SavedSkipTimesRead.Unusable, SkipTimesSidecar.read(uri))
 

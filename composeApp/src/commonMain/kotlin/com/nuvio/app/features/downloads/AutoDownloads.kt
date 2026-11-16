@@ -29,6 +29,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.downloads_auto_delete_failed_toast
+import nuvio.composeapp.generated.resources.downloads_auto_delete_not_connected_toast
+import nuvio.composeapp.generated.resources.downloads_delete_moving_toast
 import nuvio.composeapp.generated.resources.downloads_auto_delete_playing_toast
 import nuvio.composeapp.generated.resources.downloads_auto_deleted_toast
 import nuvio.composeapp.generated.resources.downloads_auto_keep
@@ -155,6 +157,7 @@ internal object AutoDownloads : AutoDownloadController {
         nowEpochMs = { DownloadsClock.nowEpochMs() },
         autoDownloadBytes = { DownloadsRepository.autoDownloadBytes() },
         resumeDownload = DownloadsRepository::resumeDownload,
+        locationAway = { rule -> DownloadsRepository.showLocationIsAway(rule.parentMetaId) },
     )
 
     // The local file the player has open, if any.
@@ -303,11 +306,17 @@ internal object AutoDownloads : AutoDownloadController {
                 AutoDownloadRemovalOutcome.Removed -> Res.string.downloads_auto_deleted_toast
                 AutoDownloadRemovalOutcome.Playing -> Res.string.downloads_auto_delete_playing_toast
                 AutoDownloadRemovalOutcome.NotMoved -> Res.string.downloads_auto_delete_failed_toast
+                AutoDownloadRemovalOutcome.NotReachable -> Res.string.downloads_auto_delete_not_connected_toast
+                AutoDownloadRemovalOutcome.Moving -> Res.string.downloads_delete_moving_toast
                 AutoDownloadRemovalOutcome.LastEpisode, AutoDownloadRemovalOutcome.Cancelled, null -> null
             }
             if (message != null) NuvioToastController.show(getString(message))
         }
     }
+
+    /** Whether the player has the file of [item] open. A download that is playing is not moved. */
+    fun isPlaying(item: DownloadItem): Boolean =
+        playingFileUri.value?.let { DownloadsRepository.findCompletedDownloadByLocalFile(it)?.id == item.id } == true
 
     /** The player opened or closed a local file. A download that is open is not removed. */
     fun onLocalFileOpened(localFileUri: String) {

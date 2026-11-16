@@ -13,15 +13,18 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withTimeoutOrNull
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.downloads_error_not_enough_space
+import nuvio.composeapp.generated.resources.downloads_error_not_durable
 import nuvio.composeapp.generated.resources.downloads_error_private_address
 import org.jetbrains.compose.resources.getString
 import java.awt.Desktop
 import java.io.File
-import java.io.FileOutputStream
 import java.io.IOException
+import java.nio.file.Files
 import java.security.MessageDigest
 import nuvio.composeapp.generated.resources.downloads_error_file_checksum
 import java.net.Inet6Address
@@ -41,7 +44,8 @@ private val desktopDownloadHttpClient: HttpClient = HttpClient.newBuilder()
     .build()
 
 internal actual object DownloadsPlatformDownloader {
-    private val downloadsDir: File
+    /** The folder of the app's own downloads, and the one the "open" button shows when the default is away. */
+    private val appDownloadsDir: File
         get() = File(DesktopStorage.rootDir.resolve("downloads").also { it.createDirectories() }.toUri())
 
     /**
@@ -53,10 +57,14 @@ internal actual object DownloadsPlatformDownloader {
     internal var isOffline: suspend () -> Boolean = { !NetworkStatusRepository.isInternetReachable() }
 
     /** Free space on the volume of the downloads folder, or null when the system does not tell. Replaced in tests. */
-    internal var freeBytesProvider: () -> Long? = {
-        val directory = File(DesktopStorage.rootDir.resolve("downloads").also { it.createDirectories() }.toUri())
-        directory.usableSpace.takeIf { it > 0L || directory.totalSpace > 0L }
-    }
+    internal var freeBytesProvider: () -> Long? = UsePerLocationFreeSpace
+
+    /** Free space on the volume of the location the item goes to, unless a test replaced [freeBytesProvider]. */
+    private fun freeBytesFor(item: DownloadItem): Long? =
+        if (freeBytesProvider !== UsePerLocationFreeSpace) freeBytesProvider() else DesktopDownloads.folders.freeBytesOf(item)
+
+    /** How often the repository is told how far a transfer has come. The stored list is written each time. */
+    internal var progressIntervalMs: Long = ProgressIntervalMs
 
     internal var waitBeforeRetry: suspend (delayMs: Long) -> Unit = { delay(it) }
 
@@ -66,6 +74,10 @@ internal actual object DownloadsPlatformDownloader {
     /** Subtitles tried at the start of a transfer are given up after this long. */
     internal const val StartSubtitlesTimeoutMs = 60_000L
 
+    /**
+     * A file is found only where its record says. Nothing is adopted by name or size: a finished record
+     * without an address shows "File not found", and only the user can point it at a file ("Locate the file…").
+     */
     actual fun restoreItem(item: DownloadItem): DownloadItem = item
 
     actual fun start(
@@ -77,10 +89,50 @@ internal actual object DownloadsPlatformDownloader {
     ): DownloadsTaskHandle {
         val job = SupervisorJob()
         val scope = CoroutineScope(job + Dispatchers.IO)
+        val handle = DesktopDownloadsTaskHandle(job)
 
         scope.launch {
-            val destination = File(downloadsDir, request.destinationFileName)
-            val tempFile = File(downloadsDir, "${request.destinationFileName}.part")
+            // A download goes to the location of its record. When that is away, or a move is
+            // carrying the item, it waits and goes on by itself when it can.
+            val folders = DesktopDownloads.folders
+            if (folders.heldByFolder(request.item)) {
+                onPaused()
+                return@launch
+            }
+            // One writer per download. One that was paused may still be closing its file: it is waited for.
+            if (!WriterTokens.acquire(request.item.id, WriterTokens.Kind.Writer, WriterWaitMs)) {
+                onPaused()
+                return@launch
+            }
+            try {
+            val location = folders.locations.locationOfRecord(request.item.locationId, null)
+            val downloadsDir = File(location.path.also { if (location.id == DownloadLocations.AppId) it.createDirectories() }.toUri())
+            var request = request
+            var destination = File(downloadsDir, request.destinationFileName)
+            var tempFile = File(downloadsDir, "${request.destinationFileName}.part")
+            // The partial file is resumed, cut back or removed only when it is this download's own, proven by the
+            // identity recorded when it was created. A file of that name that is not: left alone, and this download
+            // takes a name that is free.
+            val partial = OwnedPartial(request.item.partialFileKey, onCreated = { key -> request.onPartialCreated(key) })
+            fun takeFreeName() {
+                val name = freeDownloadName(downloadsDir.toPath(), request.destinationFileName)
+                request = request.copy(item = request.item.copy(fileName = name, partialFileKey = null))
+                request.onFileNameChanged(name)
+                destination = File(downloadsDir, name)
+                tempFile = File(downloadsDir, "$name.part")
+                partial.key = null
+            }
+            // A partial file from before identities were recorded is adopted once, only when it is provably this
+            // download's (see legacyPartialKey); adoption records its identity and changes nothing else.
+            if (partial.key == null && Files.exists(tempFile.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                val profileId = com.nuvio.app.features.profiles.ProfileRepository.activeProfileId
+                runCatching { legacyPartialKey(request.item, profileId, tempFile.toPath(), folders.locations, RepositoryDownloadsHooks.allRecords()) }
+                    .getOrNull()?.let { key ->
+                        partial.key = key
+                        request.onPartialCreated(key)
+                    }
+            }
+            if (Files.exists(tempFile.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS) && !partial.proven(tempFile.toPath())) takeFreeName()
 
             // Subtitles are tried now, beside the transfer, so that a partly watched file has them.
             // What cannot be fetched now is tried again when the file is done (DownloadCompanions).
@@ -97,25 +149,34 @@ internal actual object DownloadsPlatformDownloader {
             while (true) {
                 val bytesBeforeAttempt = tempFile.partialLength()
                 try {
-                    val transfer = transferToTempFile(request, tempFile, onProgress)
+                    val transfer = try {
+                        transferToTempFile(request, tempFile, onProgress, partial = partial)
+                    } catch (_: PartialNotOurs) {
+                        takeFreeName()
+                        continue
+                    }
                     val totalBytes = transfer.totalBytes
                     if (transfer.digestMatched == false) {
-                        // Not the body the server said it sent. Nothing of it is worth resuming.
-                        tempFile.delete()
+                        // Not the body the server said it sent. Nothing of it is worth resuming: removed only while it is ours.
+                        partial.removeIfOurs(tempFile.toPath())
                         error(runBlocking { getString(Res.string.downloads_error_file_checksum) })
                     }
                     if (transfer.digestMatched == true) request.onDigestVerified()
 
-                    if (destination.exists()) {
-                        destination.delete()
-                    }
-                    if (!tempFile.renameTo(destination)) {
-                        tempFile.copyTo(destination, overwrite = true)
-                        tempFile.delete()
+                    // Reported finished only once the file is on disk under its final name, which never replaces
+                    // a file this download did not create (a taken name gets " (2)", " (3)", ...).
+                    val published = try {
+                        publishDurably(tempFile.toPath(), destination.toPath()).toFile()
+                    } catch (_: DownloadNotDurable) {
+                        // The partial file keeps its name: the download is not finished and goes on from it.
+                        onFailure(runBlocking { getString(Res.string.downloads_error_not_durable) })
+                        return@launch
                     }
 
-                    val finalSize = destination.length()
-                    onSuccess(destination.toURI().toString(), totalBytes ?: finalSize)
+                    val finalSize = published.length()
+                    // Remembered, so that a file found bad right after this can be removed only while it is still this one.
+                    DownloadMover.identityOf(published.toPath())?.let { publishedKeys[published.toURI().toString()] = it }
+                    onSuccess(published.toURI().toString(), totalBytes ?: finalSize)
                     return@launch
                 } catch (error: CancellationException) {
                     onPaused()
@@ -138,9 +199,26 @@ internal actual object DownloadsPlatformDownloader {
                     return@launch
                 }
             }
+            } finally {
+                // Only now, with the file closed, can anything else write or move it.
+                WriterTokens.release(request.item.id)
+            }
         }
 
-        return DesktopDownloadsTaskHandle(job)
+        return handle
+    }
+
+    /** The identity of each file this downloader published in this run, by address. */
+    private val publishedKeys = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** Removes a file this downloader just published, only while it still has the identity it had then. */
+    fun removeJustPublished(localFileUri: String): Boolean {
+        val key = publishedKeys.remove(localFileUri) ?: return false
+        val path = localFileUri.toLocalFileOrNull()?.toPath() ?: return false
+        return runCatching {
+            if (!Files.isSymbolicLink(path) && DownloadMover.identityOf(path) == key) Files.delete(path)
+            !Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+        }.getOrDefault(false)
     }
 
     actual fun removeFile(localFileUri: String?): Boolean {
@@ -150,28 +228,31 @@ internal actual object DownloadsPlatformDownloader {
     }
 
     actual fun removePartialFile(destinationFileName: String): Boolean {
+        // Without a record to say where, only the app's own folder: never a file of that name elsewhere.
         // Subtitles saved at the start of a download that never became a file go with it. Never when the file exists.
-        val video = File(downloadsDir, destinationFileName)
+        val video = File(appDownloadsDir, destinationFileName)
         if (!video.exists()) runCatching { DownloadSubtitleStorage(video.toURI().toString()).remove() }
-        val tempFile = File(downloadsDir, "$destinationFileName.part")
-        if (!tempFile.exists()) return true
-        return runCatching { tempFile.delete() }.getOrDefault(false)
+        val tempFile = File(appDownloadsDir, "$destinationFileName.part")
+        return !tempFile.exists() || runCatching { tempFile.delete() }.getOrDefault(false)
     }
 
+    /** The recorded address when a file is there. Never a file found by its name instead. */
     actual fun resolveLocalFileUri(localFileUri: String?, destinationFileName: String): String? {
         localFileUri
             ?.toLocalFileOrNull()
-            ?.takeIf { it.exists() }
+            ?.takeIf { it.isFile }
             ?.let { return it.toURI().toString() }
-
-        val fileName = destinationFileName.trim().takeIf { it.isNotBlank() }
-            ?: localFileUri?.toLocalFileOrNull()?.name?.takeIf { it.isNotBlank() }
-            ?: return null
-        return File(downloadsDir, fileName).takeIf { it.exists() }?.toURI()?.toString()
+        return (DesktopDownloads.folders.locations.locate(null, localFileUri, "") as? FileLookup.Found)?.uri
     }
 
     actual fun openDownloadsDirectory(): Boolean {
-        val directory = downloadsDir
+        val folders = DesktopDownloads.folders
+        val defaultLocation = folders.locations.defaultLocation()
+        val directory = if (folders.locations.availability(defaultLocation) == FolderAvailability.Available) {
+            defaultLocation.path.also { runCatching { it.createDirectories() } }.toFile()
+        } else {
+            appDownloadsDir
+        }
         val desktop = runCatching { Desktop.getDesktop() }.getOrNull()
 
         if (desktop != null && Desktop.isDesktopSupported() && desktop.isSupported(Desktop.Action.OPEN)) {
@@ -199,7 +280,10 @@ internal actual object DownloadsPlatformDownloader {
         tempFile: File,
         onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
         limiter: DownloadSpeedLimiter = DownloadBandwidth.limiter.also { DownloadBandwidth.applyStoredLimit() },
+        /** Which partial file is this transfer's own. Callers that made the file themselves may trust it. */
+        partial: OwnedPartial = OwnedPartial.trustingCaller(),
     ): Transferred {
+        if (Files.exists(tempFile.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS) && !partial.proven(tempFile.toPath())) throw PartialNotOurs()
         // The address check at queue time reads only the text of the URL. Here the name is resolved.
         if (request.item.autoDownloadRuleKey != null && !resolvesToPublicAddresses(request.sourceUrl)) {
             error(runBlocking { getString(Res.string.downloads_error_private_address) })
@@ -211,7 +295,7 @@ internal actual object DownloadsPlatformDownloader {
 
         if (attemptedRangeRequest && response.statusCode() == 416) {
             response.body().close()
-            tempFile.delete()
+            if (!partial.removeIfOurs(tempFile.toPath())) throw PartialNotOurs()
             resumeFromBytes = 0L
             attemptedRangeRequest = false
             response = sendDownloadRequest(request, null)
@@ -229,9 +313,10 @@ internal actual object DownloadsPlatformDownloader {
         val isPartialResume = attemptedRangeRequest && statusCode == 206 && resumeFromBytes > 0L
         val appendToTemp = isPartialResume
         val startingBytes = if (appendToTemp) resumeFromBytes else 0L
-        if (!appendToTemp && tempFile.exists()) {
-            tempFile.delete()
-        }
+        // An earlier partial that cannot be continued is discarded only after the checks below have
+        // passed, so a download that is refused for lack of room keeps what it already has.
+        val discardPartial = !appendToTemp && tempFile.exists()
+        val reclaimedBytes = if (discardPartial) tempFile.partialLength() else 0L
 
         val totalBytes = resolveTotalBytes(
             startingBytes = startingBytes,
@@ -240,10 +325,11 @@ internal actual object DownloadsPlatformDownloader {
             contentLength = response.headers().firstValue("Content-Length").orElse(null)?.toLongOrNull(),
         )
         var downloadedBytes = startingBytes
+        val reporter = ThrottledProgress(progressIntervalMs, System::nanoTime) { bytes -> onProgress(bytes, totalBytes) }
         // Checked before anything of the body is written, for every download: a file announced as
         // larger than the room on the disk fails with a plain message instead of a system error.
         if (totalBytes != null) {
-            val free = downloadsFreeBytes()
+            val free = freeBytesFor(request.item)?.plus(reclaimedBytes)
             if (free != null && totalBytes - startingBytes > free) {
                 response.body().close()
                 error(runBlocking { getString(Res.string.downloads_error_not_enough_space) })
@@ -252,9 +338,13 @@ internal actual object DownloadsPlatformDownloader {
         // Checked before anything of the body is written: a file that is announced as too large for
         // the limits of an automatic download is not started.
         val limits = request.limits
-        limits?.stopBeforeBody(downloadedBytes, totalBytes, downloadsFreeBytes())?.let { reason ->
+        limits?.stopBeforeBody(downloadedBytes, totalBytes, freeBytesFor(request.item)?.plus(reclaimedBytes))?.let { reason ->
             response.body().close()
             throw TransferStoppedByLimit(reason)
+        }
+        if (discardPartial && !partial.removeIfOurs(tempFile.toPath())) {
+            response.body().close()
+            throw PartialNotOurs()
         }
         onProgress(downloadedBytes, totalBytes)
         val expectedDigest = if (statusCode == 200 && !appendToTemp) {
@@ -270,6 +360,15 @@ internal actual object DownloadsPlatformDownloader {
                 // ends it, and the transfer is then tried again like any other dropped connection.
                 val lastReadAtNanos = AtomicLong(System.nanoTime())
                 val stalled = AtomicBoolean(false)
+                // Cancelling the transfer closes the body, which ends a read that is blocked on a
+                // silent connection, so a pause or a move does not wait for data that never comes.
+                val closer = launch {
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        runCatching { input.close() }
+                    }
+                }
                 val stallWatch = launch {
                     val timeoutMs = stallTimeoutMs
                     while (true) {
@@ -282,18 +381,18 @@ internal actual object DownloadsPlatformDownloader {
                     }
                 }
                 try {
-                    FileOutputStream(tempFile, appendToTemp).use { output ->
-                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    openPartial(tempFile.toPath(), appendToTemp).also { if (!appendToTemp) partial.created(tempFile.toPath()) }.use { output ->
+                        val buffer = ByteArray(ReadBufferBytes)
                         var nextLimitCheckAtBytes = downloadedBytes + LimitCheckIntervalBytes
                         while (true) {
                             currentCoroutineContext().ensureActive()
-                            val read = input.read(buffer)
+                            val read = input.read(buffer, 0, readChunkSize(limiter.bytesPerSecond))
                             if (read <= 0) break
                             lastReadAtNanos.set(System.nanoTime())
                             output.write(buffer, 0, read)
                             digest?.update(buffer, 0, read)
                             downloadedBytes += read.toLong()
-                            onProgress(downloadedBytes, totalBytes)
+                            reporter.offer(downloadedBytes)
                             limiter.throttle(read)
                             // Waiting for the speed limit is not a connection that went silent.
                             lastReadAtNanos.set(System.nanoTime())
@@ -301,7 +400,7 @@ internal actual object DownloadsPlatformDownloader {
                             // caught here, as is free space that other writers used up meanwhile.
                             if (limits != null && downloadedBytes >= nextLimitCheckAtBytes) {
                                 nextLimitCheckAtBytes = downloadedBytes + LimitCheckIntervalBytes
-                                limits.stopFor(downloadedBytes, totalBytes, downloadsFreeBytes())?.let { reason ->
+                                limits.stopFor(downloadedBytes, totalBytes, freeBytesFor(request.item))?.let { reason ->
                                     output.flush()
                                     throw TransferStoppedByLimit(reason)
                                 }
@@ -310,9 +409,14 @@ internal actual object DownloadsPlatformDownloader {
                         output.flush()
                     }
                 } catch (error: IOException) {
+                    // A read that ended because the transfer was cancelled is a cancellation, not a dropped connection.
+                    currentCoroutineContext().ensureActive()
                     throw if (stalled.get()) IOException("Connection stalled") else error
                 } finally {
                     stallWatch.cancel()
+                    closer.cancel()
+                    // The last value is always reported, whether the transfer ended, failed or was stopped.
+                    reporter.flush(downloadedBytes)
                 }
                 if (stalled.get()) throw IOException("Connection stalled")
             }
@@ -328,10 +432,7 @@ internal actual object DownloadsPlatformDownloader {
         )
     }
 
-    /** Free space on the volume of the downloads folder, or null when the system does not tell. */
-    private fun downloadsFreeBytes(): Long? = freeBytesProvider()
-
-    private fun sendDownloadRequest(
+    private suspend fun sendDownloadRequest(
         request: DownloadPlatformRequest,
         rangeStart: Long?,
     ): HttpResponse<java.io.InputStream> {
@@ -347,7 +448,10 @@ internal actual object DownloadsPlatformDownloader {
         if (rangeStart != null && rangeStart > 0L) {
             builder.header("Range", "bytes=$rangeStart-")
         }
-        return desktopDownloadHttpClient.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream())
+        // Interrupted when the transfer is cancelled, so that waiting for a server does not hold it.
+        return runInterruptible(Dispatchers.IO) {
+            desktopDownloadHttpClient.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream())
+        }
     }
 }
 
@@ -386,7 +490,60 @@ private class DesktopDownloadsTaskHandle(
     override fun cancel() {
         job.cancel()
     }
+
+    override fun cancelAndWait(timeoutMs: Long): Boolean {
+        job.cancel()
+        return runBlocking { withTimeoutOrNull(timeoutMs) { job.children.toList().forEach { it.join() } } } != null
+    }
 }
+
+/** How long a new transfer waits for a writer that was paused and is still closing its file. */
+internal const val WriterWaitMs = 30_000L
+
+/** The bytes read from the connection at a time. */
+internal const val ReadBufferBytes = 256 * 1024
+
+/** The least time between two reports of progress. */
+internal const val ProgressIntervalMs = 250L
+
+/**
+ * Passes progress on at most once every [intervalMs], and the last value always, through [flush].
+ * Without it every read would reach the stored list.
+ */
+internal class ThrottledProgress(
+    private val intervalMs: Long,
+    private val nanoTime: () -> Long,
+    private val report: (Long) -> Unit,
+) {
+    private var lastReportedNanos = Long.MIN_VALUE
+    private var lastReportedBytes = -1L
+
+    fun offer(bytes: Long) {
+        val now = nanoTime()
+        if (lastReportedNanos == Long.MIN_VALUE || now - lastReportedNanos >= intervalMs * 1_000_000L) {
+            lastReportedNanos = now
+            lastReportedBytes = bytes
+            report(bytes)
+        }
+    }
+
+    fun flush(bytes: Long) {
+        if (bytes != lastReportedBytes) {
+            lastReportedBytes = bytes
+            report(bytes)
+        }
+    }
+}
+
+/**
+ * How much to read at a time. A low limit gets small reads, so that the wait for the limit is spread
+ * over the transfer and not paid in one long pause after a large chunk.
+ */
+internal fun readChunkSize(limitBytesPerSecond: Long?): Int =
+    if (limitBytesPerSecond == null) ReadBufferBytes
+    else (limitBytesPerSecond / 10).coerceIn(4 * 1024L, ReadBufferBytes.toLong()).toInt()
+
+private val UsePerLocationFreeSpace: () -> Long? = { null }
 
 private class TransferStoppedByLimit(val reason: AutoDownloadStop) : RuntimeException()
 
@@ -427,4 +584,145 @@ private fun parseContentRangeTotal(headerValue: String?): Long? {
     val totalPart = value.substring(slashIndex + 1).trim()
     if (totalPart == "*") return null
     return totalPart.toLongOrNull()?.takeIf { it > 0L }
+}
+
+/** The finished file could not be confirmed on disk: the download is not marked finished and keeps its partial file. */
+internal class DownloadNotDurable(message: String) : IOException(message)
+
+/** Whether folders can be flushed here at all. Windows does not let a folder be opened for it. */
+private val foldersCanBeFlushed = !System.getProperty("os.name").orEmpty().lowercase().contains("win")
+
+/**
+ * Gives the finished partial file [part] its final name, durably and without replacing anything:
+ * 1. its contents are forced to disk;
+ * 2. a hard link is made under the first free name (`name.ext`, then `name (2).ext`, ...), or, where links
+ *    are not supported, a copy into a file created with create-new, forced; a copy that fails half way is
+ *    removed while it is still the file this call created, so nothing piles up beside the partial file;
+ * 3. the folder is flushed; when that fails, the new name is removed again (it is this call's own) and
+ *    [DownloadNotDurable] is thrown with the partial file still under its name;
+ * 4. only then does the partial name go. The final name is returned.
+ * Where the platform cannot flush folders at all (Windows), step 3 is skipped and completion rests on the
+ * forced file contents.
+ */
+internal fun publishDurably(
+    part: java.nio.file.Path,
+    destination: java.nio.file.Path,
+    flushFolder: (java.nio.file.Path) -> Boolean = { folder -> !foldersCanBeFlushed || DownloadMover.flushDirectory(folder) },
+    link: (java.nio.file.Path, java.nio.file.Path) -> Unit = { name, existing -> Files.createLink(name, existing) },
+    copy: (java.nio.channels.FileChannel, java.nio.channels.FileChannel) -> Unit = { input, out ->
+        var position = 0L
+        val size = input.size()
+        while (position < size) position += input.transferTo(position, size - position, out)
+    },
+): java.nio.file.Path {
+    val nofollow = java.nio.file.LinkOption.NOFOLLOW_LINKS
+    java.nio.channels.FileChannel.open(part, java.nio.file.StandardOpenOption.WRITE, nofollow).use { it.force(true) }
+    val partKey = DownloadMover.identityOf(part) ?: throw IOException("The partial file cannot be read")
+    val name = destination.fileName.toString()
+    val base = name.substringBeforeLast('.', name)
+    val extension = name.substringAfterLast('.', "").let { if (it.isEmpty() || it == name) "" else ".$it" }
+    for (n in 1..999) {
+        val candidate = if (n == 1) destination else destination.resolveSibling("$base ($n)$extension")
+        val createdKey: String = try {
+            link(candidate, part)
+            partKey
+        } catch (_: java.nio.file.FileAlreadyExistsException) {
+            continue
+        } catch (_: Exception) {
+            val out = try {
+                java.nio.channels.FileChannel.open(candidate, java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE, nofollow)
+            } catch (_: java.nio.file.FileAlreadyExistsException) {
+                continue
+            }
+            val key = DownloadMover.identityOf(candidate)
+            try {
+                out.use { channel ->
+                    java.nio.channels.FileChannel.open(part, java.nio.file.StandardOpenOption.READ, nofollow).use { input -> copy(input, channel) }
+                    channel.force(true)
+                }
+            } catch (error: IOException) {
+                removeIfStill(candidate, key)
+                throw error
+            }
+            key ?: run {
+                removeIfStill(candidate, key)
+                throw IOException("The finished file cannot be read")
+            }
+        }
+        if (!flushFolder(candidate.parent)) {
+            removeIfStill(candidate, createdKey)
+            throw DownloadNotDurable("The folder of the download could not be flushed")
+        }
+        Files.deleteIfExists(part)
+        flushFolder(candidate.parent)
+        return candidate
+    }
+    throw IOException("No free name for $name")
+}
+
+/** Removes [path] only while it is still the file with [key], which this download created. */
+private fun removeIfStill(path: java.nio.file.Path, key: String?) {
+    if (key == null) return
+    runCatching { if (!Files.isSymbolicLink(path) && DownloadMover.identityOf(path) == key) Files.delete(path) }
+}
+
+/**
+ * The partial file of a download, opened for writing without following a link: appended to when the
+ * download resumes it, created with create-new when it starts it (the old one was removed just before),
+ * so a link or another file put at that name is never written through or cut short.
+ */
+internal fun openPartial(path: java.nio.file.Path, append: Boolean): java.io.OutputStream {
+    val options: Array<java.nio.file.OpenOption> = if (append) {
+        arrayOf(java.nio.file.StandardOpenOption.WRITE, java.nio.file.StandardOpenOption.APPEND, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+    } else {
+        arrayOf(java.nio.file.StandardOpenOption.WRITE, java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+    }
+    return java.nio.channels.Channels.newOutputStream(java.nio.channels.FileChannel.open(path, *options))
+}
+
+/** A partial file at a name that is not this download's own: it is left alone and another name is taken. */
+internal class PartialNotOurs : IOException("The partial file at that name is not this download's")
+
+/**
+ * Which partial file is a transfer's own: the one whose identity was recorded when this download created it.
+ * Nothing that cannot be proven this way is resumed, cut back or removed.
+ */
+internal class OwnedPartial(
+    @Volatile var key: String?,
+    private val onCreated: (String) -> Unit = {},
+    private val trustExisting: Boolean = false,
+) {
+    fun proven(path: java.nio.file.Path): Boolean =
+        trustExisting || (key != null && !Files.isSymbolicLink(path) && DownloadMover.identityOf(path) == key)
+
+    /** Records the identity of the partial file just created with create-new, and keeps it with the download. */
+    fun created(path: java.nio.file.Path) {
+        val identity = DownloadMover.identityOf(path) ?: return
+        key = identity
+        onCreated(identity)
+    }
+
+    /** Removes the partial file only while it is proven to be this download's. True when it is gone. */
+    fun removeIfOurs(path: java.nio.file.Path): Boolean {
+        if (!Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return true
+        if (!proven(path)) return false
+        return runCatching { Files.delete(path); true }.getOrDefault(false)
+    }
+
+    companion object {
+        /** For a caller that made the partial file itself (tests of the transfer). */
+        fun trustingCaller() = OwnedPartial(null, trustExisting = true)
+    }
+}
+
+/** The first of `name`, `name (2)`, `name (3)`, ... for which neither the file nor its partial file exists in [folder]. */
+internal fun freeDownloadName(folder: java.nio.file.Path, name: String): String {
+    val base = name.substringBeforeLast('.', name)
+    val extension = name.substringAfterLast('.', "").let { if (it.isEmpty() || it == name) "" else ".$it" }
+    for (n in 2..999) {
+        val candidate = "$base ($n)$extension"
+        val taken = listOf(candidate, "$candidate.part").any { Files.exists(folder.resolve(it), java.nio.file.LinkOption.NOFOLLOW_LINKS) }
+        if (!taken) return candidate
+    }
+    throw IOException("No free name for $name")
 }
