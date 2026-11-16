@@ -35,9 +35,17 @@ internal class DownloadOwnership(private val locations: DownloadLocations, recor
 
     private val claims: List<Claim> = records.flatMap(::claimsOf)
 
+    /** Records whose location is no longer known: their claim cannot be placed, so it holds every path with their file name. */
+    private val unplaced: List<Pair<RecordRef, String>> = records.filter { it.locationId != null && locations.location(it.locationId) == null }
+        .mapNotNull { r -> (r.localFileUri?.let(DownloadLocations::fileOfUri)?.name ?: r.fileName).takeIf { it.isNotBlank() }?.let { r to nameKey(it) } }
+
     private fun claimsOf(record: RecordRef): List<Claim> {
         val files: List<Path> = if (record.completed) {
-            listOfNotNull(record.localFileUri?.let(DownloadLocations::fileOfUri)?.toPath())
+            // The address as stored, and where it is now if its drive came back under another mount point.
+            listOfNotNull(
+                record.localFileUri?.let(DownloadLocations::fileOfUri)?.toPath(),
+                locations.recordedPath(record.locationId, record.localFileUri),
+            ).distinct()
         } else {
             val owner = locations.locationOfRecord(record.locationId, null).path
             if (record.fileName.isBlank()) emptyList() else listOf(owner.resolve(record.fileName + ".part"), owner.resolve(record.fileName))
@@ -50,6 +58,9 @@ internal class DownloadOwnership(private val locations: DownloadLocations, recor
     /** The record, other than [profileId]/[id], that owns [path], or null. */
     fun otherOwner(profileId: Int, id: String, path: Path): RecordRef? {
         val key = keyOf(path)
+        fun other(r: RecordRef) = !(r.profileId == profileId && r.id == id)
+        val names = generateSequence(path) { it.parent }.mapNotNull { it.fileName?.toString() }.map(::nameKey).toSet()
+        unplaced.firstOrNull { (r, name) -> other(r) && (name in names || names.any { it.startsWith("$name.subtitles") }) }?.let { return it.first }
         return claims.firstOrNull { claim ->
             !(claim.owner.profileId == profileId && claim.owner.id == id) &&
                 // The same path, a path inside the claimed one, or a folder that holds the claimed one.
@@ -58,6 +69,8 @@ internal class DownloadOwnership(private val locations: DownloadLocations, recor
     }
 
     companion object {
+        private fun nameKey(name: String) = Normalizer.normalize(name, Normalizer.Form.NFC).lowercase(Locale.ROOT)
+
         /** A comparable form of [path]: the links of its existing folders resolved, NFC, lower case, '/' separators. */
         fun keyOf(path: Path): String {
             val absolute = path.toAbsolutePath().normalize()

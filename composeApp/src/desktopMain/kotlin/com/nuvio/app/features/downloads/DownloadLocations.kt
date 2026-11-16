@@ -270,6 +270,18 @@ internal class DownloadLocations(
         }
     }
 
+    /**
+     * Where a recorded address is now, by the same rule [locate] uses and without looking at the disk: the
+     * address itself, or, when its drive came back under another mount point, the same path below the new
+     * one. Null when the record names a location that is not known.
+     */
+    fun recordedPath(locationId: String?, localFileUri: String?): Path? {
+        val recorded = localFileUri?.let(::fileOfUri)?.toPath()?.toAbsolutePath()?.normalize() ?: return null
+        val owner = ownerOf(locationId, localFileUri) ?: return null
+        if (locationContaining(recorded) != null) return recorded
+        return onRemountedDrive(owner, recorded) ?: recorded
+    }
+
     /** [recorded], an address on the mount point the drive of [owner] had before, at the same path on its mount point now. */
     private fun onRemountedDrive(owner: DesktopDownloadLocation, recorded: Path): Path? {
         val anchorNow = volumes.anchorOf(owner.path) ?: return null
