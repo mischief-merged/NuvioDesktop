@@ -142,19 +142,88 @@ internal class DownloadLocations(
 
     fun location(id: String?): DesktopDownloadLocation? = if (id == null) appLocation() else all().firstOrNull { it.id == id }
 
-    /** The location of [path], or a new one. The folder is not created here. */
-    fun register(path: Path): DesktopDownloadLocation = synchronized(lock) {
+    /** [registerChecked], for callers that have already checked the folder; throws when it is refused. */
+    fun register(path: Path): DesktopDownloadLocation =
+        registerChecked(path) ?: throw IllegalStateException("The folder has a file at the marker's name that is not ours")
+
+    /**
+     * The location of [path], or a new one. The folder is not created here. The marker is only ever
+     * created with create-new: a marker already there is read without following links and adopted when it
+     * is ours and no other location holds its id; anything else at that name (a file of the user's, a
+     * link, another location's marker) refuses the folder (null) and nothing is touched.
+     */
+    fun registerChecked(path: Path): DesktopDownloadLocation? = synchronized(lock) {
         val wanted = path.toAbsolutePath().normalize()
         all().firstOrNull { samePath(it.path, wanted) }?.let { existing ->
-            writeMarker(existing)
-            return existing
+            if (existing.id == AppId || !Files.isDirectory(wanted)) return existing
+            return when (val marker = markerAt(wanted)) {
+                Marker.Missing -> existing.takeIf { createMarker(wanted, existing.id) || markerAt(wanted) == Marker.Ours(existing.id) }
+                is Marker.Ours -> existing.takeIf { marker.id == existing.id }
+                Marker.Foreign -> null
+            }
         }
-        val location = DesktopDownloadLocation("loc-" + UUID.randomUUID().toString().take(8), wanted)
+        val id = when (val marker = if (Files.isDirectory(wanted)) markerAt(wanted) else Marker.Missing) {
+            Marker.Foreign -> return null
+            is Marker.Ours -> marker.id.takeIf { held -> all().none { it.id == held } } ?: return null
+            Marker.Missing -> "loc-" + UUID.randomUUID().toString().take(8)
+        }
+        if (Files.isDirectory(wanted) && markerAt(wanted) == Marker.Missing && !createMarker(wanted, id)) return null
+        val location = DesktopDownloadLocation(id, wanted)
         config.saveLocations(config.locations() + StoredLocation(location.id, wanted.toString()))
         cachedAll = null
-        writeMarker(location)
         location
     }
+
+    /** Whether [folder] could be registered: no marker, or a marker of ours that no other location holds. */
+    fun markerAllows(folder: Path): Boolean {
+        val wanted = folder.toAbsolutePath().normalize()
+        if (!Files.isDirectory(wanted)) return true
+        val known = all().firstOrNull { samePath(it.path, wanted) }
+        return when (val marker = markerAt(wanted)) {
+            Marker.Missing -> true
+            Marker.Foreign -> false
+            is Marker.Ours -> if (known != null) marker.id == known.id else all().none { it.id == marker.id }
+        }
+    }
+
+    private sealed interface Marker {
+        data object Missing : Marker
+        data class Ours(val id: String) : Marker
+
+        /** A link, a folder, or a file that is not a marker of this app. */
+        data object Foreign : Marker
+    }
+
+    private fun markerAt(folder: Path): Marker {
+        val file = folder.resolve(MarkerName)
+        if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) return Marker.Missing
+        val id = readMarker(file) ?: return Marker.Foreign
+        return Marker.Ours(id)
+    }
+
+    /** The id in a marker file, read without following a link; null when it is not a marker of this app. */
+    private fun readMarker(file: Path): String? = runCatching {
+        if (Files.isSymbolicLink(file) || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || Files.size(file) > 64) return null
+        val text = Files.newByteChannel(file, java.nio.file.StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS).use { channel ->
+            val buffer = java.nio.ByteBuffer.allocate(64)
+            while (channel.read(buffer) > 0) Unit
+            String(buffer.array(), 0, buffer.position(), Charsets.UTF_8).trim()
+        }
+        text.takeIf { MarkerId.matches(it) }
+    }.getOrNull()
+
+    /** Creates the marker with create-new; never over anything. False when something is already there or it failed. */
+    private fun createMarker(folder: Path, id: String): Boolean = runCatching {
+        java.nio.channels.FileChannel.open(
+            folder.resolve(MarkerName),
+            java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS,
+        ).use { channel ->
+            val bytes = java.nio.ByteBuffer.wrap(id.toByteArray(Charsets.UTF_8))
+            while (bytes.hasRemaining()) channel.write(bytes)
+            channel.force(true)
+        }
+        true
+    }.getOrDefault(false)
 
     fun setDefault(path: Path): DesktopDownloadLocation = synchronized(lock) {
         val location = register(path)
@@ -192,8 +261,7 @@ internal class DownloadLocations(
         }
     }
 
-    private fun markerIdOf(folder: Path): String? =
-        runCatching { Files.readString(folder.resolve(MarkerName)).trim() }.getOrNull()
+    private fun markerIdOf(folder: Path): String? = readMarker(folder.resolve(MarkerName))
 
     /**
      * Looks for a location whose drive came back under another name, on any other mounted drive, by
@@ -291,14 +359,12 @@ internal class DownloadLocations(
         return moved.takeIf { it.startsWith(owner.path) }
     }
 
-    private fun writeMarker(location: DesktopDownloadLocation) {
-        if (location.id == AppId || !Files.isDirectory(location.path)) return
-        runCatching { Files.writeString(location.path.resolve(MarkerName), location.id) }
-    }
-
     companion object {
         const val AppId = "app"
         const val MarkerName = ".nuvio-downloads"
+
+        /** What a marker of this app holds: a location id. */
+        private val MarkerId = Regex("""^loc-[0-9A-Za-z-]{1,40}$""")
 
         fun fileOfUri(value: String): File? = runCatching {
             if (value.startsWith("file:")) File(URI(value)) else File(value)
@@ -343,6 +409,8 @@ internal class DownloadFolderValidator(
             runCatching { Files.createDirectories(path) }.getOrElse { return FolderCheck.Problem(FolderProblem.CannotCreate) }
             if (!Files.isDirectory(path)) return FolderCheck.Problem(FolderProblem.CannotCreate)
         }
+        // A file already at the marker's name that is not a marker of ours: the folder is refused, the file untouched.
+        if (!locations.markerAllows(path)) return FolderCheck.Problem(FolderProblem.MarkerTaken)
         if (!canWrite(path)) return FolderCheck.Problem(FolderProblem.NotWritable)
         if (requiredBytes > 0L) {
             val free = freeBytes(path)
@@ -357,8 +425,10 @@ internal class DownloadFolderValidator(
         // A probe with a random name, created without replacing anything. If the name is taken it is left alone.
         repeat(5) {
             val probe = directory.resolve(".nuvio-write-test-${DownloadMover.randomHex(8)}")
+            var key: String? = null
             val created = try {
-                Files.newByteChannel(probe, java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE).use {
+                Files.newByteChannel(probe, java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS).use {
+                    key = DownloadMover.identityOf(probe)
                     it.write(java.nio.ByteBuffer.wrap(ByteArray(16) { b -> b.toByte() }))
                 }
                 true
@@ -368,7 +438,10 @@ internal class DownloadFolderValidator(
                 return false
             }
             if (created) {
-                runCatching { Files.deleteIfExists(probe) }
+                // Removed only while it is still the probe just created.
+                runCatching {
+                    if (key != null && !Files.isSymbolicLink(probe) && DownloadMover.identityOf(probe) == key) Files.delete(probe)
+                }
                 return true
             }
         }

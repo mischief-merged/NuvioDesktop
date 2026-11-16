@@ -207,6 +207,8 @@ internal class DesktopDownloadFolders(
     override fun setDefault(path: String): Boolean {
         val target = runCatching { Paths.get(path.trim()) }.getOrNull() ?: return false
         if (!Files.isDirectory(target)) return false
+        // A folder whose marker name is taken by something that is not ours is refused, and nothing is written.
+        if (locations.registerChecked(target) == null) return false
         locations.setDefault(target)
         refresh()
         return true
@@ -466,7 +468,8 @@ internal class DesktopDownloadFolders(
         val prefailed = mutableListOf<MoveFailure>()
         try {
             if (mover.unresolvedJournals().isNotEmpty()) return MoveReport(destinationPath, name, 0, problem = FolderProblem.PreviousMoveUnresolved)
-            val destination = locations.register(path)
+            val destination = locations.registerChecked(path)
+                ?: return MoveReport(destinationPath, name, 0, problem = FolderProblem.MarkerTaken)
             if (locations.availability(destination) != FolderAvailability.Available) {
                 return MoveReport(destinationPath, name, 0, problem = FolderProblem.NotConnected)
             }

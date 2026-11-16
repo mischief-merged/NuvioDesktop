@@ -43,6 +43,9 @@ internal enum class FolderProblem {
 
     /** An earlier move left something unresolved. */
     PreviousMoveUnresolved,
+
+    /** The folder holds a file at the marker's name that is not this app's. Nothing was changed. */
+    MarkerTaken,
 }
 
 internal sealed interface FolderCheck {

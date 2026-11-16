@@ -3176,6 +3176,7 @@
     <string name="download_folder_unresolved_row">An interrupted move could not be settled by itself: its drive is not connected, or its record could not be read. The record is kept at %1$s and nothing was deleted. New moves wait until it is set aside.</string>
     <string name="download_folder_unresolved_set_aside">Set aside</string>
     <string name="app_already_open">NuvioRoid is already open.</string>
+    <string name="download_folder_problem_marker_taken">That folder already has a file named .nuvio-downloads that is not this app's. Nothing was changed. Choose another folder.</string>
     <string name="downloads_status_file_not_found">File not found</string>
     <string name="downloads_announce_file_not_found">File not found</string>
     <string name="downloads_locate_file">Locate the file…</string>

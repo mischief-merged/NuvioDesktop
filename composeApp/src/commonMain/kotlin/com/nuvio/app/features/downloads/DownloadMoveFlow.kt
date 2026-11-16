@@ -95,6 +95,7 @@ internal fun folderProblemText(problem: FolderProblem, neededBytes: Long, freeBy
     FolderProblem.OverlapsDownloadFolder -> stringResource(Res.string.download_folder_problem_overlaps)
     FolderProblem.MoveInProgress -> stringResource(Res.string.download_folder_problem_move_in_progress)
     FolderProblem.PreviousMoveUnresolved -> stringResource(Res.string.download_folder_problem_previous_move)
+    FolderProblem.MarkerTaken -> stringResource(Res.string.download_folder_problem_marker_taken)
     FolderProblem.NotEnoughSpace -> stringResource(
         Res.string.download_folder_problem_not_enough_space,
         formatBytes(neededBytes),
