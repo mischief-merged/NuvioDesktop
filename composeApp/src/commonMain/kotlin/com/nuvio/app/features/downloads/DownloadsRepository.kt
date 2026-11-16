@@ -636,6 +636,8 @@ object DownloadsRepository {
                 item,
                 onDigestVerified = { transfer.digestVerified = true },
                 limits = autoTransferLimits(item, transfer),
+                onPartialCreated = { key -> ifCurrent(item.id, transfer) { mutateItem(item.id) { it.copy(partialFileKey = key) } } },
+                onFileNameChanged = { name -> ifCurrent(item.id, transfer) { mutateItem(item.id) { it.copy(fileName = name, partialFileKey = null) } } },
             ),
             { downloadedBytes, totalBytes ->
                 ifCurrent(item.id, transfer) {
@@ -745,7 +747,8 @@ object DownloadsRepository {
 
         ifCurrent(item.id, transfer) {
             activeTransfers.remove(item.id)
-            if (problem != null || framesProblem != null || placeholder != null) backend.removeFile(localFileUri)
+            // Only the file this transfer just published, proven by its identity; anything else stays.
+            if (problem != null || framesProblem != null || placeholder != null) backend.removeJustPublished(localFileUri)
             mutateItem(item.id) { current ->
                 if (current.status != DownloadStatus.Downloading) return@mutateItem current
                 if (problem != null) return@mutateItem current.failedBecauseOf(problem)
@@ -1407,6 +1410,9 @@ internal interface DownloadsBackend {
     /** Keeps a payload that could not be read, apart from the one [savePayload] writes. */
     fun saveUnreadablePayload(payload: String, atEpochMs: Long) = Unit
 
+    /** Removes a file the downloader just published that turned out bad. Only that file, where that can be proven. */
+    fun removeJustPublished(localFileUri: String): Boolean = removeFile(localFileUri)
+
     /** Flushes the saved list (file and folder) to disk. True where there is nothing more to do. */
     fun syncPayload(): Boolean = true
 
@@ -1543,6 +1549,9 @@ private object PlatformDownloadsBackend : DownloadsBackend {
     override val rereadsPayload: Boolean get() = DownloadsStorage.rereadsPayload
 
     override fun syncPayload(): Boolean = DownloadsStorage.syncPayload()
+
+    override fun removeJustPublished(localFileUri: String): Boolean =
+        DownloadFolders.controller.removeJustPublished(localFileUri) ?: removeFile(localFileUri)
 
     override fun ownershipOf(item: DownloadItem, fileUri: String): FileOwnership? =
         DownloadFolders.controller.ownershipOf(item, fileUri)

@@ -107,8 +107,22 @@ internal actual object DownloadsPlatformDownloader {
             try {
             val location = folders.locations.locationOfRecord(request.item.locationId, null)
             val downloadsDir = File(location.path.also { if (location.id == DownloadLocations.AppId) it.createDirectories() }.toUri())
-            val destination = File(downloadsDir, request.destinationFileName)
-            val tempFile = File(downloadsDir, "${request.destinationFileName}.part")
+            var request = request
+            var destination = File(downloadsDir, request.destinationFileName)
+            var tempFile = File(downloadsDir, "${request.destinationFileName}.part")
+            // The partial file is resumed, cut back or removed only when it is this download's own, proven by the
+            // identity recorded when it was created. A file of that name that is not: left alone, and this download
+            // takes a name that is free.
+            val partial = OwnedPartial(request.item.partialFileKey, onCreated = { key -> request.onPartialCreated(key) })
+            fun takeFreeName() {
+                val name = freeDownloadName(downloadsDir.toPath(), request.destinationFileName)
+                request = request.copy(item = request.item.copy(fileName = name, partialFileKey = null))
+                request.onFileNameChanged(name)
+                destination = File(downloadsDir, name)
+                tempFile = File(downloadsDir, "$name.part")
+                partial.key = null
+            }
+            if (Files.exists(tempFile.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS) && !partial.proven(tempFile.toPath())) takeFreeName()
 
             // Subtitles are tried now, beside the transfer, so that a partly watched file has them.
             // What cannot be fetched now is tried again when the file is done (DownloadCompanions).
@@ -125,11 +139,16 @@ internal actual object DownloadsPlatformDownloader {
             while (true) {
                 val bytesBeforeAttempt = tempFile.partialLength()
                 try {
-                    val transfer = transferToTempFile(request, tempFile, onProgress)
+                    val transfer = try {
+                        transferToTempFile(request, tempFile, onProgress, partial = partial)
+                    } catch (_: PartialNotOurs) {
+                        takeFreeName()
+                        continue
+                    }
                     val totalBytes = transfer.totalBytes
                     if (transfer.digestMatched == false) {
-                        // Not the body the server said it sent. Nothing of it is worth resuming.
-                        tempFile.delete()
+                        // Not the body the server said it sent. Nothing of it is worth resuming: removed only while it is ours.
+                        partial.removeIfOurs(tempFile.toPath())
                         error(runBlocking { getString(Res.string.downloads_error_file_checksum) })
                     }
                     if (transfer.digestMatched == true) request.onDigestVerified()
@@ -145,6 +164,8 @@ internal actual object DownloadsPlatformDownloader {
                     }
 
                     val finalSize = published.length()
+                    // Remembered, so that a file found bad right after this can be removed only while it is still this one.
+                    DownloadMover.identityOf(published.toPath())?.let { publishedKeys[published.toURI().toString()] = it }
                     onSuccess(published.toURI().toString(), totalBytes ?: finalSize)
                     return@launch
                 } catch (error: CancellationException) {
@@ -175,6 +196,19 @@ internal actual object DownloadsPlatformDownloader {
         }
 
         return handle
+    }
+
+    /** The identity of each file this downloader published in this run, by address. */
+    private val publishedKeys = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** Removes a file this downloader just published, only while it still has the identity it had then. */
+    fun removeJustPublished(localFileUri: String): Boolean {
+        val key = publishedKeys.remove(localFileUri) ?: return false
+        val path = localFileUri.toLocalFileOrNull()?.toPath() ?: return false
+        return runCatching {
+            if (!Files.isSymbolicLink(path) && DownloadMover.identityOf(path) == key) Files.delete(path)
+            !Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+        }.getOrDefault(false)
     }
 
     actual fun removeFile(localFileUri: String?): Boolean {
@@ -236,7 +270,10 @@ internal actual object DownloadsPlatformDownloader {
         tempFile: File,
         onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
         limiter: DownloadSpeedLimiter = DownloadBandwidth.limiter.also { DownloadBandwidth.applyStoredLimit() },
+        /** Which partial file is this transfer's own. Callers that made the file themselves may trust it. */
+        partial: OwnedPartial = OwnedPartial.trustingCaller(),
     ): Transferred {
+        if (Files.exists(tempFile.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS) && !partial.proven(tempFile.toPath())) throw PartialNotOurs()
         // The address check at queue time reads only the text of the URL. Here the name is resolved.
         if (request.item.autoDownloadRuleKey != null && !resolvesToPublicAddresses(request.sourceUrl)) {
             error(runBlocking { getString(Res.string.downloads_error_private_address) })
@@ -248,7 +285,7 @@ internal actual object DownloadsPlatformDownloader {
 
         if (attemptedRangeRequest && response.statusCode() == 416) {
             response.body().close()
-            tempFile.delete()
+            if (!partial.removeIfOurs(tempFile.toPath())) throw PartialNotOurs()
             resumeFromBytes = 0L
             attemptedRangeRequest = false
             response = sendDownloadRequest(request, null)
@@ -267,7 +304,7 @@ internal actual object DownloadsPlatformDownloader {
         val appendToTemp = isPartialResume
         val startingBytes = if (appendToTemp) resumeFromBytes else 0L
         if (!appendToTemp && tempFile.exists()) {
-            tempFile.delete()
+            if (!partial.removeIfOurs(tempFile.toPath())) throw PartialNotOurs()
         }
 
         val totalBytes = resolveTotalBytes(
@@ -329,7 +366,7 @@ internal actual object DownloadsPlatformDownloader {
                     }
                 }
                 try {
-                    openPartial(tempFile.toPath(), appendToTemp).use { output ->
+                    openPartial(tempFile.toPath(), appendToTemp).also { if (!appendToTemp) partial.created(tempFile.toPath()) }.use { output ->
                         val buffer = ByteArray(ReadBufferBytes)
                         var nextLimitCheckAtBytes = downloadedBytes + LimitCheckIntervalBytes
                         while (true) {
@@ -626,4 +663,51 @@ internal fun openPartial(path: java.nio.file.Path, append: Boolean): java.io.Out
         arrayOf(java.nio.file.StandardOpenOption.WRITE, java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.LinkOption.NOFOLLOW_LINKS)
     }
     return java.nio.channels.Channels.newOutputStream(java.nio.channels.FileChannel.open(path, *options))
+}
+
+/** A partial file at a name that is not this download's own: it is left alone and another name is taken. */
+internal class PartialNotOurs : IOException("The partial file at that name is not this download's")
+
+/**
+ * Which partial file is a transfer's own: the one whose identity was recorded when this download created it.
+ * Nothing that cannot be proven this way is resumed, cut back or removed.
+ */
+internal class OwnedPartial(
+    @Volatile var key: String?,
+    private val onCreated: (String) -> Unit = {},
+    private val trustExisting: Boolean = false,
+) {
+    fun proven(path: java.nio.file.Path): Boolean =
+        trustExisting || (key != null && !Files.isSymbolicLink(path) && DownloadMover.identityOf(path) == key)
+
+    /** Records the identity of the partial file just created with create-new, and keeps it with the download. */
+    fun created(path: java.nio.file.Path) {
+        val identity = DownloadMover.identityOf(path) ?: return
+        key = identity
+        onCreated(identity)
+    }
+
+    /** Removes the partial file only while it is proven to be this download's. True when it is gone. */
+    fun removeIfOurs(path: java.nio.file.Path): Boolean {
+        if (!Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return true
+        if (!proven(path)) return false
+        return runCatching { Files.delete(path); true }.getOrDefault(false)
+    }
+
+    companion object {
+        /** For a caller that made the partial file itself (tests of the transfer). */
+        fun trustingCaller() = OwnedPartial(null, trustExisting = true)
+    }
+}
+
+/** The first of `name`, `name (2)`, `name (3)`, ... for which neither the file nor its partial file exists in [folder]. */
+internal fun freeDownloadName(folder: java.nio.file.Path, name: String): String {
+    val base = name.substringBeforeLast('.', name)
+    val extension = name.substringAfterLast('.', "").let { if (it.isEmpty() || it == name) "" else ".$it" }
+    for (n in 2..999) {
+        val candidate = "$base ($n)$extension"
+        val taken = listOf(candidate, "$candidate.part").any { Files.exists(folder.resolve(it), java.nio.file.LinkOption.NOFOLLOW_LINKS) }
+        if (!taken) return candidate
+    }
+    throw IOException("No free name for $name")
 }

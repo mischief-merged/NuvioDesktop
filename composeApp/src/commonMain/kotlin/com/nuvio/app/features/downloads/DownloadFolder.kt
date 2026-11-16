@@ -266,6 +266,9 @@ internal interface DownloadFolderController {
     /** Sends a download's file and its sidecar folder to the Trash. Null where locations are not handled. */
     fun discardFile(localFileUri: String): Boolean? = null
 
+    /** Removes a file the downloader just published, only while it is that file. Null where locations are not handled. */
+    fun removeJustPublished(localFileUri: String): Boolean? = null
+
     /** Opens the native file picker. Blocks until it closes. Null when cancelled. */
     fun pickFile(): String? = null
 

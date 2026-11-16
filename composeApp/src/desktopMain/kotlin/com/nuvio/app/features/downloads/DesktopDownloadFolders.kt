@@ -546,6 +546,8 @@ internal class DesktopDownloadFolders(
         runCatching { refresh() }
     }
 
+    override fun removeJustPublished(localFileUri: String): Boolean = DownloadsPlatformDownloader.removeJustPublished(localFileUri)
+
     override fun pickFile(): String? = filePicker()
 
     override fun adoptFile(item: DownloadItem, path: String): Boolean {

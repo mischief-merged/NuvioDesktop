@@ -96,6 +96,12 @@ data class DownloadItem(
     val locationId: String? = null,
     /** Paused because its location cannot be reached or is being moved. It resumes by itself when it can. */
     val pausedByFolder: Boolean = false,
+    /**
+     * The identity of the partial file this download created, recorded when it was created, so that only
+     * that file is ever resumed, cut back or removed; a file of the same name that does not have it is not
+     * this download's. Null before a partial file was created.
+     */
+    val partialFileKey: String? = null,
 ) {
     val isEpisode: Boolean
         get() = seasonNumber != null && episodeNumber != null
