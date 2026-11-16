@@ -712,6 +712,19 @@ class DownloadMoverTest {
     }
 
     @Test
+    fun the_last_ownership_check_and_the_trash_call_happen_under_the_list_lock() {
+        val item = completed("film", 1, sidecar = listOf("en.srt"))
+        val drive = world.driveLocation("Archive")
+        val hooks = ProfileHooks(listOf(item))
+        val heldDuringTrash = mutableListOf<Boolean>()
+        val mover = world.mover(trash = { path -> heldDuringTrash += hooks.holdsListLock; world.trash.send(path) })
+
+        assertEquals(1, folders(hooks, mover).move(setOf(item.id), drive.path.toString()).moved)
+
+        assertEquals(listOf(true, true), heldDuringTrash)
+    }
+
+    @Test
     fun keeping_both_changes_only_the_journal() {
         val item = completed("film", 1)
         val drive = world.driveLocation("Archive")

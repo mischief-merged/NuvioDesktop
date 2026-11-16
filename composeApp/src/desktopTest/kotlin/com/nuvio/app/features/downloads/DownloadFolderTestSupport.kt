@@ -273,6 +273,20 @@ internal open class ProfileHooks(lists: Map<Int, List<DownloadItem>>, @Volatile 
     override fun items() = items
     override fun profileId() = profile
 
+    private val listLock = java.util.concurrent.locks.ReentrantLock()
+
+    /** Whether the calling thread holds the list lock now. */
+    val holdsListLock: Boolean get() = listLock.isHeldByCurrentThread
+
+    override fun <T> withListLock(block: () -> T): T {
+        listLock.lock()
+        try {
+            return block()
+        } finally {
+            listLock.unlock()
+        }
+    }
+
     override fun pauseAndWait(downloadId: String): Boolean {
         log += "pause $downloadId"
         if (stopFails) return false

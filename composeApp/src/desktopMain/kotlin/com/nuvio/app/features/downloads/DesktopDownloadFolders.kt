@@ -33,6 +33,9 @@ internal interface DownloadsHooks {
     /** The record [downloadId] in the list of [profileId], whichever profile is active. */
     fun recordOf(profileId: Int, downloadId: String): DownloadItem?
 
+    /** Runs [block] holding the lock every save of a list takes, across processes. */
+    fun <T> withListLock(block: () -> T): T = block()
+
     /** The one compare-and-relocate: see [DownloadsRepository.compareAndRelocate]. */
     fun compareAndRelocate(
         profileId: Int,
@@ -77,9 +80,12 @@ internal object RepositoryDownloadsHooks : DownloadsHooks {
     override fun resumeHeld() = DownloadsRepository.resumeHeldByFolder()
     override fun profileId(): Int = ProfileRepository.activeProfileId
 
+    override fun <T> withListLock(block: () -> T): T = DownloadsStorage.withListLock(block)
+
+    // Without the repository's state lock: the mover asks this while it holds the list lock.
     override fun allRecords(): List<RecordRef>? {
-        val inMemory = items()
         val loaded = DownloadsRepository.loadedProfile() ?: return null
+        val inMemory = DownloadsRepository.uiState.value.items
         val stored = storedRecordsOfAllProfiles(DesktopStorage.store("nuvio_downloads")) ?: return null
         return inMemory.map { RecordRef.of(loaded, it) } + stored.filter { it.profileId != loaded }
     }
@@ -440,6 +446,8 @@ internal class DesktopDownloadFolders(
                 else -> RecordSide.Missing
             }
         }
+
+        override fun <T> underListLock(block: () -> T): T = hooks.withListLock(block)
 
         override fun otherOwner(item: MoveItem, path: Path): String? {
             val all = hooks.allRecords() ?: return "the downloads of another profile could not be read"

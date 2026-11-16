@@ -143,6 +143,13 @@ internal interface MoveRecords {
 
     /** A record of any profile, other than [item]'s, that owns [path]: its name, or null. */
     fun otherOwner(item: MoveItem, path: Path): String?
+
+    /**
+     * Runs [block] holding the lock every save of a list takes, so that no record can claim a path between
+     * the last ownership check and the Trash call. Lock order: move lock, item locks, then this; never the
+     * repository's state lock inside it.
+     */
+    fun <T> underListLock(block: () -> T): T = block()
 }
 
 internal data class RecoveryReport(
@@ -627,13 +634,21 @@ internal class DownloadMover(
             when {
                 source == null -> keep("its location is not connected")
                 !Files.exists(source, LinkOption.NOFOLLOW_LINKS) -> mainGone = true
-                Files.isSymbolicLink(source) || fileKeyOf(source) != main.srcKey -> keep("it is not the file that was copied")
-                records.otherOwner(item, source) != null -> keep("another download uses it")
-                !sendToTrash(source) -> keep("the Trash did not take it")
-                else -> {
-                    checkpoint("trashed")
-                    updateEntry(index, mainIndex) { it.copy(state = EntryState.Trashed) }
-                    mainGone = true
+                else -> when (val problem = records.underListLock {
+                    // The last checks and the Trash call in one step under the list lock.
+                    when {
+                        Files.isSymbolicLink(source) || fileKeyOf(source) != main.srcKey -> "it is not the file that was copied"
+                        records.otherOwner(item, source) != null -> "another download uses it"
+                        !sendToTrash(source) -> "the Trash did not take it"
+                        else -> null
+                    }
+                }) {
+                    null -> {
+                        checkpoint("trashed")
+                        updateEntry(index, mainIndex) { it.copy(state = EntryState.Trashed) }
+                        mainGone = true
+                    }
+                    else -> keep(problem)
                 }
             }
             val companions = item.entries.withIndex().filter { it.value.kind == MoveKind.Companion }
@@ -642,13 +657,16 @@ internal class DownloadMover(
                 val folder = source.resolveSibling(DownloadCompanions.sidecarFolderName(source.fileName.toString()))
                 val root = resolve(main.srcLocationId)
                 val expected = companions.associate { it.value.srcRel to it.value.srcKey }
-                val now = if (root == null || Files.isSymbolicLink(folder)) null else listFiles(folder)?.associate { root.relativize(it).toString() to fileKeyOf(it) }
-                when {
-                    now == null || now != expected -> keep("its sidecar folder changed")
-                    records.otherOwner(item, folder) != null -> keep("another download uses its sidecar folder")
-                    !sendToTrash(folder) -> keep("the Trash did not take its sidecar folder")
-                    else -> updateItem(index) { it.copy(entries = it.entries.map { e -> if (e.kind == MoveKind.Companion) e.copy(state = EntryState.Trashed) else e }) }
+                val problem = records.underListLock {
+                    val now = if (root == null || Files.isSymbolicLink(folder)) null else listFiles(folder)?.associate { root.relativize(it).toString() to fileKeyOf(it) }
+                    when {
+                        now == null || now != expected -> "its sidecar folder changed"
+                        records.otherOwner(item, folder) != null -> "another download uses its sidecar folder"
+                        !sendToTrash(folder) -> "the Trash did not take its sidecar folder"
+                        else -> null
+                    }
                 }
+                if (problem != null) keep(problem) else updateItem(index) { it.copy(entries = it.entries.map { e -> if (e.kind == MoveKind.Companion) e.copy(state = EntryState.Trashed) else e }) }
             }
             return kept
         }
@@ -959,13 +977,14 @@ internal class DownloadMover(
             proofs += Proof(keep, keepKey, extra, extraKey, size)
         }
         for (proof in proofs) {
-            // Every proof again, immediately before this one removal; anything changed stops the rest.
-            val unchanged = !Files.isSymbolicLink(proof.extra) && fileKeyOf(proof.extra) == proof.extraKey &&
+            // Every proof again, immediately before this one removal and in one step with it under the list
+            // lock; anything changed stops the rest.
+            fun unchangedNow(proof: Proof) = !Files.isSymbolicLink(proof.extra) && fileKeyOf(proof.extra) == proof.extraKey &&
                 runCatching { Files.size(proof.extra) }.getOrNull() == proof.size &&
                 !Files.isSymbolicLink(proof.keep) && fileKeyOf(proof.keep) == proof.keepKey &&
                 runCatching { Files.size(proof.keep) }.getOrNull() == proof.size &&
                 records.otherOwner(item, proof.extra) == null && records.sideOf(item) == side
-            if (!unchanged || !sendToTrash(proof.extra)) return LeftoverOutcome.Refused
+            if (!records.underListLock { unchangedNow(proof) && sendToTrash(proof.extra) }) return LeftoverOutcome.Refused
         }
         settle(tx, withOutcome(journal, ii, ItemOutcome.Removed))
         return LeftoverOutcome.Removed

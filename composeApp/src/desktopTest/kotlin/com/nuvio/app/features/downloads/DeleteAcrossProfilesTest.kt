@@ -24,9 +24,12 @@ class DeleteAcrossProfilesTest {
         val inner = LocationsBackend(world)
         var owners: FileOwnership? = FileOwnership.Free
         val discarded = mutableListOf<String?>()
+        val events = mutableListOf<String>()
+        var syncWorks = true
         override fun loadPayload() = inner.payload
-        override fun savePayload(payload: String) { inner.payload = payload }
-        override fun trashFile(localFileUri: String): Boolean = inner.trashFile(localFileUri)
+        override fun savePayload(payload: String) { inner.payload = payload; events += "save ${decodeStoredDownloads(payload)!!.map { it.id }}" }
+        override fun syncPayload(): Boolean { events += "sync $syncWorks"; return syncWorks }
+        override fun trashFile(localFileUri: String): Boolean { events += "trash"; return inner.trashFile(localFileUri) }
         override fun removeFile(localFileUri: String?): Boolean = inner.removeFile(localFileUri)
         override fun ownershipOf(item: DownloadItem, fileUri: String): FileOwnership? = owners
         override fun discardFile(localFileUri: String?): Boolean {
@@ -59,6 +62,35 @@ class DeleteAcrossProfilesTest {
     }
 
     private fun film(id: String) = movieItem(id, file = world.appFolder.createDirectories().resolve("$id.mp4").writeVideo(1))
+
+    @Test
+    fun a_delete_saves_the_record_removal_durably_before_the_file_goes_and_keeps_both_when_that_save_fails() {
+        val item = film("a")
+        load(item)
+        backend.events.clear()
+
+        assertEquals(DownloadDeleteResult.Removed, DownloadsRepository.deleteDownload(item.id))
+        assertEquals(listOf("save []", "sync true", "trash"), backend.events.filter { it.startsWith("save") || it.startsWith("sync") || it == "trash" }.take(3))
+
+        load(item)
+        backend.events.clear()
+        backend.syncWorks = false
+        assertEquals(DownloadDeleteResult.NotMoved, DownloadsRepository.deleteDownload(item.id))
+        assertTrue("trash" !in backend.events, "the file went although the record removal was not on disk")
+        assertEquals(listOf(item.id), DownloadsRepository.uiState.value.items.map { it.id })
+    }
+
+    @Test
+    fun a_trash_that_fails_after_the_record_removal_puts_the_record_back() {
+        val item = film("a")
+        load(item)
+        backend.inner.trashSucceeds = false
+
+        assertEquals(DownloadDeleteResult.NotMoved, DownloadsRepository.deleteDownload(item.id))
+
+        assertEquals(listOf(item.id), DownloadsRepository.uiState.value.items.map { it.id })
+        assertEquals(listOf(item.id), decodeStoredDownloads(backend.inner.payload!!)!!.map { it.id })
+    }
 
     @Test
     fun a_file_another_profile_uses_is_kept_on_delete_and_on_permanent_delete() {

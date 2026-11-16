@@ -39,6 +39,7 @@ object DownloadsRepository {
     // The transfer that currently owns each download. A transfer that was paused, replaced or removed
     // is no longer in this map, so whatever it reports afterwards is ignored.
     private val activeTransfers = mutableMapOf<String, ActiveTransfer>()
+    @kotlin.concurrent.Volatile
     private var hasLoaded = false
 
     // Where items are persisted and transfers and files are handled. Always the platform in the app.
@@ -62,6 +63,7 @@ object DownloadsRepository {
     private var downloadsResumedAtLoad: Set<String> = emptySet()
 
     // The profile whose list is in memory. Null until a list was loaded.
+    @kotlin.concurrent.Volatile
     private var loadedProfileId: Int? = null
 
     // The list as it was last read from or written to storage, and its revision there. Another copy of
@@ -209,17 +211,13 @@ object DownloadsRepository {
         )
 
         var replacedExisting = false
+        var replaced: DownloadItem? = null
         val currentItems = _uiState.value.items.toMutableList()
         val existing = currentItems.firstOrNull { it.logicalContentKey == logicalKey }
         if (existing != null) {
             replacedExisting = true
             activeTransfers.remove(existing.id)?.cancel()
-            val oldUri = playableLocalFileUri(existing) ?: existing.localFileUri
-            // The old file goes the way a cancel sends it (the Trash on desktop), and only when no other
-            // record of any profile uses it; where that cannot be told it stays where it is.
-            val keep = oldUri != null && backend.ownershipOf(existing, oldUri).let { it == FileOwnership.Owned || it == FileOwnership.Unknown }
-            if (!keep) backend.discardFile(oldUri)
-            backend.removePartialOf(existing)
+            replaced = existing
             currentItems.removeAll { it.id == existing.id }
         }
 
@@ -278,7 +276,20 @@ object DownloadsRepository {
 
         currentItems.add(0, item)
         publish(currentItems)
-        persist()
+        // The list without the old record is on disk first; only then does its file go, so a crash or a
+        // failed save can leave a file without a record, never a record whose file is in the Trash.
+        val savedDurably = persist(durably = replaced != null)
+        replaced?.let { existing ->
+            val oldUri = playableLocalFileUri(existing) ?: existing.localFileUri
+            // The old file goes the way a cancel sends it (the Trash on desktop), and only when no other
+            // record of any profile uses it; where that cannot be told it stays where it is.
+            val keep = !savedDurably || oldUri != null &&
+                backend.ownershipOf(existing, oldUri).let { it == FileOwnership.Owned || it == FileOwnership.Unknown }
+            if (!keep) {
+                backend.discardFile(oldUri)
+                backend.removePartialOf(existing)
+            }
+        }
         startDownload(item)
 
         return if (replacedExisting) {
@@ -416,11 +427,13 @@ object DownloadsRepository {
                 val used = fileUri?.let { usedByAnother(item, _uiState.value.items, it) } ?: false
                 if (used == null) return@withListLock
                 activeTransfers.remove(downloadId)?.cancel()
-                if (fileUri != null && !used && !backend.discardFile(fileUri)) return@withListLock
+                // The record goes first, durably; then the file. A failure after that leaves a file, never a dangling record.
+                if (!removeRecordDurably(item)) return@withListLock
+                if (fileUri != null && !used && !backend.discardFile(fileUri)) {
+                    restoreRecord(item)
+                    return@withListLock
+                }
                 backend.removePartialOf(item)
-
-                publish(_uiState.value.items.filterNot { it.id == downloadId })
-                persist()
             }
         } finally {
             ItemLocks.release(downloadId)
@@ -457,16 +470,22 @@ object DownloadsRepository {
         val fileUri = (lookup as? FileLookup.Found)?.uri
         if (fileUri != null) {
             val usedByAnother = usedByAnother(item, items, fileUri) ?: return DownloadDeleteResult.NotMoved
+            activeTransfers.remove(downloadId)?.cancel()
+            // The record goes first, durably; then the file. A failure after that leaves a file, never a dangling record.
+            if (!removeRecordDurably(item)) return DownloadDeleteResult.NotMoved
             if (!usedByAnother) {
                 val gone = if (permanently) backend.removeFile(fileUri) else backend.trashFile(fileUri)
-                if (!gone) return DownloadDeleteResult.NotMoved
+                if (!gone) {
+                    restoreRecord(item)
+                    return DownloadDeleteResult.NotMoved
+                }
             }
+            backend.removePartialOf(item)
+            return DownloadDeleteResult.Removed
         }
         activeTransfers.remove(downloadId)?.cancel()
+        if (!removeRecordDurably(item)) return DownloadDeleteResult.NotMoved
         backend.removePartialOf(item)
-
-        publish(items.filterNot { it.id == downloadId })
-        persist()
         return DownloadDeleteResult.Removed
     }
 
@@ -856,12 +875,30 @@ object DownloadsRepository {
             val fileUri = (lookup as? FileLookup.Found)?.uri
             if (fileUri != null) {
                 val usedByAnother = usedByAnother(item, items, fileUri) ?: return AutoDownloadRemovalResult.NotMoved
-                if (!usedByAnother && !backend.trashFile(fileUri)) return AutoDownloadRemovalResult.NotMoved
+                if (!removeRecordDurably(item)) return AutoDownloadRemovalResult.NotMoved
+                if (!usedByAnother && !backend.trashFile(fileUri)) {
+                    restoreRecord(item)
+                    return AutoDownloadRemovalResult.NotMoved
+                }
+                return AutoDownloadRemovalResult.Removed
             }
-            publish(items.filterNot { it.id == downloadId })
-            persist()
+            if (!removeRecordDurably(item)) return AutoDownloadRemovalResult.NotMoved
             return AutoDownloadRemovalResult.Removed
         }
+    }
+
+    /** Removes [item]'s record and saves the list durably. False (and the record back in place) when that save failed. */
+    private fun removeRecordDurably(item: DownloadItem): Boolean {
+        publish(_uiState.value.items.filterNot { it.id == item.id })
+        if (persist(durably = true)) return true
+        restoreRecord(item)
+        return false
+    }
+
+    /** Puts [item]'s record back after its file could not be removed, so the record and the file stay together. */
+    private fun restoreRecord(item: DownloadItem) {
+        if (_uiState.value.items.none { it.id == item.id }) publish(_uiState.value.items + item)
+        persist()
     }
 
     /**
@@ -965,15 +1002,19 @@ object DownloadsRepository {
     }
 
     /** The profile whose list is in memory, or null before one was loaded. */
-    internal fun loadedProfile(): Int? = synchronized(stateLock) { loadedProfileId.takeIf { hasLoaded } }
+    internal fun loadedProfile(): Int? = loadedProfileId.takeIf { hasLoaded }
 
     /**
      * The record [downloadId] of [profileId], read from that profile's list: the one in memory when it is
      * that profile's, otherwise the stored one. Null when there is no such record or the list cannot be read.
      */
-    internal fun recordOf(profileId: Int, downloadId: String, lists: ProfileLists): DownloadItem? = synchronized(stateLock) {
-        listFor(profileId, lists)?.first?.firstOrNull { it.id == downloadId }
-    }
+    internal fun recordOf(profileId: Int, downloadId: String, lists: ProfileLists): DownloadItem? =
+        // Without the state lock: the mover asks this while it holds the list lock (lock order: state, then list).
+        if (hasLoaded && loadedProfileId == profileId) {
+            _uiState.value.items.firstOrNull { it.id == downloadId }
+        } else {
+            decodeStoredDownloads(runCatching { lists.load(profileId) }.getOrNull().orEmpty())?.firstOrNull { it.id == downloadId }
+        }
 
     private fun listFor(profileId: Int, lists: ProfileLists): Pair<List<DownloadItem>, DownloadsCodec.Decoded?>? {
         if (hasLoaded && loadedProfileId == profileId) return _uiState.value.items to loadedPayload
