@@ -90,3 +90,27 @@ internal class DownloadOwnership(private val locations: DownloadLocations, recor
         }
     }
 }
+
+/**
+ * The one-time adoption of a partial file created before downloads recorded the identity of their partial
+ * file: its identity, only when ALL hold: the record has none recorded; the file is a regular file (not a
+ * link) in the record's own location at exactly the record's own partial name; no other record of any
+ * profile claims it; and its size is exactly the record's stored downloaded bytes. Otherwise null, and the
+ * file is left as it is. Adoption only records; it deletes and cuts back nothing.
+ */
+internal fun legacyPartialKey(
+    item: DownloadItem,
+    profileId: Int,
+    partial: Path,
+    locations: DownloadLocations,
+    records: List<RecordRef>?,
+): String? {
+    if (item.partialFileKey != null || item.status == DownloadStatus.Completed || item.downloadedBytes <= 0L) return null
+    val own = locations.locationOfRecord(item.locationId, null).path.resolve(item.fileName + ".part").toAbsolutePath().normalize()
+    if (partial.toAbsolutePath().normalize() != own) return null
+    if (Files.isSymbolicLink(own) || !Files.isRegularFile(own, LinkOption.NOFOLLOW_LINKS)) return null
+    val known = records ?: return null
+    if (DownloadOwnership(locations, known).otherOwner(profileId, item.id, own) != null) return null
+    if (runCatching { Files.size(own) }.getOrNull() != item.downloadedBytes) return null
+    return DownloadMover.identityOf(own)
+}

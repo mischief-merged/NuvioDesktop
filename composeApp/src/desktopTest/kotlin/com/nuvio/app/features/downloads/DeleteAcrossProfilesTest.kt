@@ -177,7 +177,7 @@ class DeleteAcrossProfilesTest {
     fun the_desktop_sends_a_partial_file_to_the_trash_only_when_no_other_record_uses_it() {
         val app = world.appFolder.createDirectories()
         val part = app.resolve("ep.mp4.part").also { Files.write(it, ByteArray(100) { 1 }) }
-        val mine = movieItem("ep").copy(status = DownloadStatus.Paused, localFileUri = null)
+        val mine = movieItem("ep").copy(status = DownloadStatus.Paused, localFileUri = null, partialFileKey = DownloadMover.identityOf(part))
         val hooks = ProfileHooks(mapOf(1 to listOf(mine), 2 to listOf(mine.copy(id = "theirs"))))
         val folders = DesktopDownloadFolders(world.locations, world.validator, world.mover(), hooks, trashPath = world.trash::send)
 

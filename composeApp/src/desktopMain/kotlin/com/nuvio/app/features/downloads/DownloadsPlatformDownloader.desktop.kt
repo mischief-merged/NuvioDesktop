@@ -122,6 +122,16 @@ internal actual object DownloadsPlatformDownloader {
                 tempFile = File(downloadsDir, "$name.part")
                 partial.key = null
             }
+            // A partial file from before identities were recorded is adopted once, only when it is provably this
+            // download's (see legacyPartialKey); adoption records its identity and changes nothing else.
+            if (partial.key == null && Files.exists(tempFile.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                val profileId = com.nuvio.app.features.profiles.ProfileRepository.activeProfileId
+                runCatching { legacyPartialKey(request.item, profileId, tempFile.toPath(), folders.locations, RepositoryDownloadsHooks.allRecords()) }
+                    .getOrNull()?.let { key ->
+                        partial.key = key
+                        request.onPartialCreated(key)
+                    }
+            }
             if (Files.exists(tempFile.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS) && !partial.proven(tempFile.toPath())) takeFreeName()
 
             // Subtitles are tried now, beside the transfer, so that a partly watched file has them.

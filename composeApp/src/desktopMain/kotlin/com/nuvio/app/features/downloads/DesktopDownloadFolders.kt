@@ -180,6 +180,8 @@ internal class DesktopDownloadFolders(
         val partial = owner.path.resolve(item.fileName + ".part")
         if (!Files.exists(partial, LinkOption.NOFOLLOW_LINKS)) return true
         if (Files.isSymbolicLink(partial)) return false
+        // Only the partial file this download created, proven by the identity it recorded then.
+        if (item.partialFileKey == null || DownloadMover.identityOf(partial) != item.partialFileKey) return false
         if (ownershipOfPath(item, partial) != FileOwnership.Free) return false
         return runCatching { trashPath(partial) }.getOrDefault(false) && !Files.exists(partial, LinkOption.NOFOLLOW_LINKS)
     }
@@ -432,6 +434,13 @@ internal class DesktopDownloadFolders(
                 record.copy(
                     locationId = destinationId,
                     localFileUri = if (record.status == DownloadStatus.Completed) item.newUri else record.localFileUri,
+                    // A moved partial file is a new file: its identity is recorded with the same step, so the download
+                    // goes on from it instead of taking it for someone else's.
+                    partialFileKey = if (record.status == DownloadStatus.Completed) {
+                        record.partialFileKey
+                    } else {
+                        item.main?.takeIf { it.kind == MoveKind.Partial }?.let { it.finalKey ?: it.tempKey } ?: record.partialFileKey
+                    },
                 )
             }
 
