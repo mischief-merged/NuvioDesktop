@@ -144,28 +144,50 @@ internal fun planAutoDownload(
 internal val SeasonBatchEpisode.autoDownloadKey: String
     get() = autoDownloadEpisodeKey(seasonNumber, episodeNumber)
 
-/** The episodes of a show whose finished download is too small to be the video. */
+/**
+ * The episodes of a show whose only finished download is not the video: marked as not the real
+ * video, or too small to be one. An episode that also has a download that is not such a file, a good
+ * copy or one that is on its way, is not in the set: the marked file is kept beside it, as a problem
+ * for the user to deal with, and does not make the rule fetch again.
+ */
 private fun List<DownloadItem>.placeholderEpisodeKeys(parentMetaId: String, episodes: List<SeasonBatchEpisode>): Set<String> {
     val parent = parentMetaId.trim()
     val runtimes = episodes.associate { it.autoDownloadKey to it.runtimeMinutes }
-    return mapNotNullTo(mutableSetOf()) { item ->
-        val season = item.seasonNumber ?: return@mapNotNullTo null
-        val episode = item.episodeNumber ?: return@mapNotNullTo null
-        if (item.parentMetaId.trim() != parent || item.status != DownloadStatus.Completed) return@mapNotNullTo null
-        val key = autoDownloadEpisodeKey(season, episode)
-        // A file marked as not the real video is not the episode, whatever its size.
-        key.takeIf { item.isPlaceholder || item.finishedSizeBytes < minPlausibleVideoBytes(runtimes[key]) }
+    fun isNotTheVideo(item: DownloadItem, key: String) =
+        item.isPlaceholder || item.finishedSizeBytes < minPlausibleVideoBytes(runtimes[key])
+    val ofShow = mapNotNull { item ->
+        val season = item.seasonNumber ?: return@mapNotNull null
+        val episode = item.episodeNumber ?: return@mapNotNull null
+        if (item.parentMetaId.trim() != parent) return@mapNotNull null
+        autoDownloadEpisodeKey(season, episode) to item
+    }
+    return ofShow.groupBy({ it.first }, { it.second }).mapNotNullTo(mutableSetOf()) { (key, items) ->
+        val finished = items.filter { it.status == DownloadStatus.Completed }
+        val others = items.filter { it.status != DownloadStatus.Completed && it.status != DownloadStatus.Failed }
+        key.takeIf {
+            finished.isNotEmpty() && finished.all { isNotTheVideo(it, key) } && others.isEmpty()
+        }
     }
 }
 
+/**
+ * The status of each episode of a show. An episode with several downloads has the status of the one
+ * that stands for it: one that is downloading or paused, else a finished one that is not marked,
+ * else a marked or failed one.
+ */
 internal fun List<DownloadItem>.episodeStatuses(parentMetaId: String): Map<String, DownloadStatus> {
     val parent = parentMetaId.trim()
+    fun rank(item: DownloadItem) = when {
+        item.status == DownloadStatus.Downloading || item.status == DownloadStatus.Paused -> 0
+        item.status == DownloadStatus.Completed && !item.isPlaceholder -> 1
+        else -> 2
+    }
     return mapNotNull { item ->
         val season = item.seasonNumber ?: return@mapNotNull null
         val episode = item.episodeNumber ?: return@mapNotNull null
         if (item.parentMetaId.trim() != parent) return@mapNotNull null
-        autoDownloadEpisodeKey(season, episode) to item.status
-    }.toMap()
+        autoDownloadEpisodeKey(season, episode) to item
+    }.groupBy({ it.first }, { it.second }).mapValues { (_, items) -> items.minBy(::rank).status }
 }
 
 /** How long a rule waits before it tries an episode again: 1 hour, 3 hours, 12 hours, then daily. */

@@ -22,6 +22,7 @@ import nuvio.composeapp.generated.resources.downloads_choose_another_source
 import nuvio.composeapp.generated.resources.downloads_delete_description
 import nuvio.composeapp.generated.resources.downloads_placeholder_next_step
 import nuvio.composeapp.generated.resources.downloads_play_description
+import nuvio.composeapp.generated.resources.downloads_replace_with_new_copy
 import nuvio.composeapp.generated.resources.downloads_section_active
 import nuvio.composeapp.generated.resources.downloads_section_movies
 import nuvio.composeapp.generated.resources.downloads_status_problem_reason
@@ -61,8 +62,8 @@ class DownloadsPlaceholderScreenTest {
 
     private fun text(resource: StringResource, vararg arguments: Any) = runBlocking { getString(resource, *arguments) }
 
-    private fun stored(id: String, extra: String) =
-        """{"id":"$id","contentType":"movie","parentMetaType":"movie","videoId":"tt$id","parentMetaId":"tt$id","title":"Film $id",""" +
+    private fun stored(id: String, extra: String, meta: String = id) =
+        """{"id":"$id","contentType":"movie","parentMetaType":"movie","videoId":"tt$meta","parentMetaId":"tt$meta","title":"Film $id",""" +
             """"streamTitle":"1080p","providerName":"Addon","sourceUrl":"https://example.com/$id.mkv","fileName":"$id.mkv",""" +
             """"status":"Completed","createdAtEpochMs":1,"updatedAtEpochMs":1,"localFileUri":"file:/$id.mkv",""" +
             """"downloadedBytes":8509628,"totalBytes":8509628$extra}"""
@@ -161,5 +162,19 @@ class DownloadsPlaceholderScreenTest {
 
         compose.waitUntil(5_000) { looked.contains("a") }
         assertTrue("a" in looked)
+    }
+
+    @Test
+    fun a_marked_row_offers_to_replace_it_with_the_new_copy_only_when_the_new_copy_is_there() {
+        show(stored("a", marked))
+        compose.onNodeWithText(text(Res.string.downloads_replace_with_new_copy)).assertDoesNotExist()
+    }
+
+    @Test
+    fun a_marked_row_with_a_good_copy_beside_it_offers_to_replace_it() {
+        // The same title twice: the marked file and a finished good one.
+        show(stored("a", marked, meta = "x"), stored("b", ""","verifiedBy":"Size","framesCheck":"Passed"""", meta = "x"))
+
+        compose.onNodeWithText(text(Res.string.downloads_replace_with_new_copy)).assertIsDisplayed()
     }
 }

@@ -382,6 +382,8 @@ private fun LazyListScope.downloadsRootContent(
     }
 
     val activeItems = uiState.activeItems
+    // The titles that have a finished download that is the video.
+    val goodCopies = uiState.completedItems.mapTo(mutableSetOf()) { it.logicalContentKey }
     val completedMovies = uiState.completedItems.filterNot(DownloadItem::isEpisode)
     val completedShows = uiState.completedItems
         .filter(DownloadItem::isEpisode)
@@ -421,6 +423,7 @@ private fun LazyListScope.downloadsRootContent(
                 onDelete = { onDeleteDownload(item.id) },
                 episodeLinks = episodeLinks,
                 onCheckAgain = onCheckAgain,
+                newCopyReady = item.isPlaceholder && item.logicalContentKey in goodCopies,
             )
         }
     }
@@ -598,6 +601,8 @@ private fun DownloadRow(
     episodeLinks: DownloadEpisodeLinks? = null,
     /** Looks at the file again. Null where that is not offered. */
     onCheckAgain: ((DownloadItem) -> Unit)? = null,
+    /** A marked file has a good new copy beside it: offers to replace it with that copy (the file goes to the trash). */
+    newCopyReady: Boolean = false,
 ) {
     val rowStatus = downloadRowStatus(item, clock.nowEpochMs, clock.offline, runtimeMinutes = ::runtimeMinutesOfDownload)
     val skipTimesNote by produceState<DownloadCompanionsNote?>(null, item.localFileUri, item.status) {
@@ -783,6 +788,7 @@ private fun DownloadRow(
                     item = item,
                     onChooseAnotherSource = onChooseAnotherSource,
                     onCheckAgain = onCheckAgain,
+                    onReplaceWithNewCopy = onDelete.takeIf { newCopyReady },
                 )
             }
 
@@ -956,11 +962,14 @@ private fun PlaceholderDetails(
     item: DownloadItem,
     onChooseAnotherSource: ((DownloadItem) -> Unit)?,
     onCheckAgain: ((DownloadItem) -> Unit)?,
+    onReplaceWithNewCopy: (() -> Unit)?,
 ) {
     val name = item.nameForLabels()
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(
-            text = stringResource(Res.string.downloads_placeholder_next_step),
+            text = stringResource(
+                if (onReplaceWithNewCopy != null) Res.string.downloads_placeholder_next_step_new_copy else Res.string.downloads_placeholder_next_step,
+            ),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -972,6 +981,15 @@ private fun PlaceholderDetails(
                     onClick = { onChooseAnotherSource(item) },
                 ) {
                     Text(text = stringResource(Res.string.downloads_choose_another_source), style = MaterialTheme.typography.labelLarge)
+                }
+            }
+            if (onReplaceWithNewCopy != null) {
+                val replaceDescription = stringResource(Res.string.downloads_replace_with_new_copy_description, name)
+                TextButton(
+                    modifier = Modifier.semantics { contentDescription = replaceDescription },
+                    onClick = onReplaceWithNewCopy,
+                ) {
+                    Text(text = stringResource(Res.string.downloads_replace_with_new_copy), style = MaterialTheme.typography.labelLarge)
                 }
             }
             if (onCheckAgain != null) CheckAgainButton(item = item, onCheckAgain = onCheckAgain)

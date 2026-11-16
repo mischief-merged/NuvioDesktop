@@ -204,6 +204,8 @@ object DownloadsRepository {
         episodeThumbnail: String?,
         stream: StreamItem,
         autoDownloadRuleKey: String? = null,
+        /** The user picked this source for a title that has a finished download: it replaces that download's file. */
+        userChoseReplacement: Boolean = false,
     ): DownloadEnqueueResult = synchronized(stateLock) {
         ensureLoaded()
 
@@ -230,12 +232,18 @@ object DownloadsRepository {
 
         var replacedExisting = false
         val currentItems = _uiState.value.items.toMutableList()
-        val existing = currentItems.firstOrNull { it.logicalContentKey == logicalKey }
-        if (existing != null) {
+        // What is replaced: a download that has no finished file. A finished file, marked as not the
+        // real video or not, is a stored file of the user: it is replaced only when the user chose
+        // to ([userChoseReplacement]), and then a marked one goes to the trash. Anything automatic
+        // leaves it and its record where they are and fetches the new copy beside it, under a name
+        // and a record of its own.
+        val replaced = currentItems.filter { item ->
+            item.logicalContentKey == logicalKey && (userChoseReplacement || item.status != DownloadStatus.Completed)
+        }
+        replaced.forEach { existing ->
             replacedExisting = true
             activeTransfers.remove(existing.id)?.cancel()
             val replacedFile = playableLocalFileUri(existing) ?: existing.localFileUri
-            // A placeholder the user was shown is never removed by a replacement: it goes to the trash.
             if (existing.isPlaceholder) {
                 replacedFile?.let(backend::trashFile)
             } else {
@@ -292,16 +300,17 @@ object DownloadsRepository {
             createdAtEpochMs = now,
             updatedAtEpochMs = now,
             expectedVideoHash = stream.behaviorHints.videoHash.asVideoHash(),
-            // The size the source stated, else the one its text names ("[💾 9.53 GB] ..."); see SourceSizeClaim.
-            expectedSizeBytes = stream.behaviorHints.videoSize?.takeIf { it > 0L }
-                ?: claimedSizeFromSourceText(stream.streamLabel, stream.streamSubtitle),
             autoDownloadRuleKey = autoDownloadRuleKey,
         )
 
-        currentItems.add(0, item)
+        // The size the source claims for the selected file, where that is established (see SourceSizeClaim).
+        val claimed = usableSizeClaim(stream, item.isEpisode, runtimeMinutesOf(item))
+        val queued = item.copy(expectedSizeBytes = claimed)
+
+        currentItems.add(0, queued)
         publish(currentItems)
         persist()
-        startDownload(item)
+        startDownload(queued)
 
         return if (replacedExisting) {
             DownloadEnqueueResult.Replaced
@@ -622,7 +631,7 @@ object DownloadsRepository {
             (placeholderVerdict(
                 PlaceholderEvidence(
                     fileBytes = facts.sizeBytes,
-                    claimedBytes = item.claimedSizeBytes(),
+                    claimedBytes = item.claimedSizeBytes(runtimeMinutesOf(item)),
                     durationMs = facts.durationMs ?: samples?.durationMs,
                     runtimeMinutes = runtimeMinutesOf(item),
                 ),
@@ -675,12 +684,15 @@ object DownloadsRepository {
      */
     private fun failIfAnnouncedAsPlaceholder(item: DownloadItem, announcedBytes: Long?): Boolean {
         if (announcedBytes == null || announcedBytes <= 0L) return false
-        val claimed = item.claimedSizeBytes()
         val runtime = runtimeMinutesOf(item)
+        val claimed = item.claimedSizeBytes(runtime)
+        // No length is known yet at the start, so only what needs none decides: a total far below a
+        // claim that describes the file, or a total that is absurdly small for the running time. A low
+        // bitrate in between is judged on the finished file, whose own length can say it is complete.
         val reason = when {
             claimed != null && announcedSizeIsFarBelowClaim(announcedBytes, claimed) ->
                 PlaceholderReason.SizeBelowClaim(announcedBytes, claimed)
-            runtime != null && isTooSmallForRuntime(announcedBytes, runtime) ->
+            runtime != null && isAbsurdlySmallForRuntime(announcedBytes, runtime) ->
                 PlaceholderReason.TooSmallForRuntime(announcedBytes, runtime)
             else -> return false
         }
@@ -742,8 +754,8 @@ object DownloadsRepository {
             return RecheckOutcome.CouldNotLook
         }
 
-        val claimed = item.claimedSizeBytes()
         val runtime = runtimeMinutesOfDownload(item)
+        val claimed = item.claimedSizeBytes(runtime)
         fun evidence(durationMs: Long?, frames: DownloadedFramesProblem?) =
             PlaceholderEvidence(facts.sizeBytes, claimed, durationMs, runtime, frames)
 
@@ -963,7 +975,7 @@ object DownloadsRepository {
         ensureLoaded()
         val items = _uiState.value.items
         val item = items.firstOrNull { it.id == downloadId } ?: return AutoDownloadRemovalResult.Changed
-        if (item.autoDownloadRuleKey != ruleKey || item.status != DownloadStatus.Completed) {
+        if (item.autoDownloadRuleKey != ruleKey || item.status != DownloadStatus.Completed || item.isPlaceholder) {
             return AutoDownloadRemovalResult.Changed
         }
         if (!stillWanted()) return AutoDownloadRemovalResult.Changed

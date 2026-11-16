@@ -90,6 +90,8 @@ internal class DeleteAfterWatching(
             rule?.deleteAfterWatching != true ||
             item.autoDownloadRuleKey != removal.ruleKey ||
             item.status != DownloadStatus.Completed ||
+            // A file marked as not the real video is the user's to remove, never removed by this.
+            item.isPlaceholder ||
             store.isKept(profileId, item.id)
         ) {
             return cancel(profileId, removal)

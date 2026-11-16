@@ -121,12 +121,13 @@ class PlaceholderDownloadsTest {
         behaviorHints = StreamBehaviorHints(videoSize = videoSize),
     )
 
-    private fun enqueueMovie(stream: StreamItem) {
+    private fun enqueueMovie(stream: StreamItem, userChoseReplacement: Boolean = false) {
         DownloadsRepository.ensureLoaded()
         DownloadsRepository.enqueueFromStream(
             contentType = "movie", videoId = "tt1", parentMetaId = "tt1", parentMetaType = "movie", title = "Some Title",
             logo = null, poster = null, background = null, seasonNumber = null, episodeNumber = null, episodeTitle = null,
             episodeThumbnail = null, stream = stream,
+            userChoseReplacement = userChoseReplacement,
         )
     }
 
@@ -526,7 +527,8 @@ class PlaceholderDownloadsTest {
         loadOld()
         DownloadsRepository.recheckCompleted("a")
 
-        enqueueMovie(stream("https://example.com/other.mkv", description = null))
+        // The user picked a source for the title: that is a request to replace.
+        enqueueMovie(stream("https://example.com/other.mkv", description = null), userChoseReplacement = true)
 
         assertEquals(listOf(uri), backend.trashed)
         assertEquals(emptyList(), backend.removed)
@@ -714,5 +716,36 @@ class PlaceholderDownloadsTest {
         enqueueMovie(stream("https://example.com/a.mkv", description = null))
 
         assertEquals(DownloadStatus.Downloading, only().status)
+    }
+
+    @Test
+    fun the_new_copy_replaces_the_marked_file_only_when_the_user_deletes_it_to_the_trash() {
+        loadOld()
+        DownloadsRepository.recheckCompleted("a")
+        enqueueMovie(stream("https://example.com/other.mkv", description = null))
+        assertEquals(emptyList(), backend.trashed)
+
+        assertEquals(DownloadDeleteResult.Removed, DownloadsRepository.deleteDownload("a"))
+
+        assertEquals(listOf(uri), backend.trashed)
+        assertEquals(1, items().size)
+    }
+
+    @Test
+    fun a_season_sized_claim_is_not_plausible_for_one_episode_and_a_genuine_one_is() {
+        assertFalse(isPlausibleForOneEpisode(30_000_000_000L, 45))
+        assertTrue(isPlausibleForOneEpisode(1_000_000_000L, 45))
+        assertTrue(isPlausibleForOneEpisode(10_000_000_000L, 45))
+        assertFalse(isPlausibleForOneEpisode(30_000_000_000L, null))
+        assertTrue(isPlausibleForOneEpisode(1_000_000_000L, null))
+    }
+
+    @Test
+    fun a_size_kept_by_an_earlier_build_that_is_too_large_for_an_episode_is_not_a_claim() {
+        val episode = testDownload(1, DownloadStatus.Completed).copy(expectedSizeBytes = 30_000_000_000L)
+
+        assertNull(episode.claimedSizeBytes(45))
+        assertEquals(1_000_000_000L, episode.copy(expectedSizeBytes = 1_000_000_000L).claimedSizeBytes(45))
+        assertNull(episode.copy(expectedSizeBytes = 1_000_000_000L, streamSubtitle = "Show Season 1").claimedSizeBytes(45))
     }
 }

@@ -51,10 +51,12 @@ class PlaceholderVerdictTest {
 
     @Test
     fun the_bitrate_floor_is_strict() {
-        // 100 kbit/s over 100 minutes is 75,000,000 bytes.
-        assertFalse(flagged(verdict(file = 75_000_000L, runtime = 100)))
-        assertTrue(flagged(verdict(file = 74_999_999L, runtime = 100)))
+        // 100 kbit/s over 100 minutes is 75,000,000 bytes; with no length known, below it is one weak sign.
+        assertFalse(flagged(verdict(file = 75_000_000L, runtime = 100, frames = DownloadedFramesProblem.StillPicture)))
+        assertTrue(flagged(verdict(file = 74_999_999L, runtime = 100, frames = DownloadedFramesProblem.StillPicture)))
         assertTrue(isTooSmallForRuntime(8_509_628L, 120))
+        assertTrue(isAbsurdlySmallForRuntime(8_509_628L, 120))
+        assertFalse(isAbsurdlySmallForRuntime(40 * mb, 60))
         assertFalse(isTooSmallForRuntime(8_509_628L, null))
         assertFalse(isTooSmallForRuntime(8_509_628L, 0))
         assertFalse(isTooSmallForRuntime(null, 120))
