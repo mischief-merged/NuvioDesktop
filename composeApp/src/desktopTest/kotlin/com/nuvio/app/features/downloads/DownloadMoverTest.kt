@@ -694,6 +694,33 @@ class DownloadMoverTest {
     }
 
     @Test
+    fun a_temporary_file_that_cannot_be_removed_stays_tracked_until_recovery_removes_it() {
+        val item = completed("film", 1)
+        val drive = world.driveLocation("Archive")
+        // The copy fails, and the temporary file cannot be removed at that moment: its folder became read-only.
+        val writable = java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-xr-x")
+        val mover = world.mover(copy = { _, _, _, _ ->
+            Files.setPosixFilePermissions(drive.path, java.nio.file.attribute.PosixFilePermissions.fromString("r-xr-xr-x"))
+            throw java.io.IOException("read error")
+        })
+
+        val report = try {
+            folders(ProfileHooks(listOf(item)), mover).move(setOf(item.id), drive.path.toString())
+        } finally {
+            Files.setPosixFilePermissions(drive.path, writable)
+        }
+
+        assertEquals(MoveFailureReason.CouldNotWrite, report.failures.single().reason)
+        assertEquals(1, world.tempsIn(drive.path).size)
+        assertEquals(1, world.mover().unresolvedJournals().size)
+        val recovered = world.mover().recover()
+        assertEquals(1, recovered.tempsRemoved)
+        assertTrue(world.tempsIn(drive.path).isEmpty())
+        assertTrue(world.mover().journalFiles().isEmpty())
+        assertTrue(fileOf(item).exists())
+    }
+
+    @Test
     fun a_copy_that_does_not_read_back_the_same_is_never_published() {
         val item = completed("film", 1)
         val drive = world.driveLocation("Archive")

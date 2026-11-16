@@ -369,7 +369,13 @@ internal class DownloadMover(
                     Files.exists(target, LinkOption.NOFOLLOW_LINKS) && fileKeyOf(target).let { it != null && (it == e.tempKey || it == e.reservedKey) }
                 } != false
             }
-            val outcome = if (item.recorded || ours) ItemOutcome.Leftover else ItemOutcome.Aborted
+            // A temporary file that could not be removed keeps the item open, so that recovery tries again.
+            val tempsGone = item.entries.all { e -> e.temp.isEmpty() || path(e.dstLocationId, e.temp)?.let { !Files.exists(it, LinkOption.NOFOLLOW_LINKS) || fileKeyOf(it) != e.tempKey } == true }
+            val outcome = when {
+                item.recorded || ours -> ItemOutcome.Leftover
+                tempsGone -> ItemOutcome.Aborted
+                else -> return
+            }
             runCatching { updateItem(index) { it.copy(outcome = outcome) } }
         }
 
