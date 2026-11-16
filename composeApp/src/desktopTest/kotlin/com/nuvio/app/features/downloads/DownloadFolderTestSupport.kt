@@ -59,7 +59,7 @@ internal class FolderWorld(val root: Path = Files.createTempDirectory("nuvio-fol
     /** A mover over these locations. Journals go to a folder of their own. */
     fun mover(
         checkpoint: (String) -> Unit = {},
-        copy: (Path, Path, (Long) -> Unit, () -> Boolean) -> String = DownloadMover::copyFile,
+        copy: (Path, java.nio.channels.FileChannel, (Long) -> Unit, () -> Boolean) -> String = DownloadMover::copyFile,
         syncDirectory: (Path) -> Boolean = { true },
         createLink: (Path, Path) -> Unit = { link, existing -> Files.createLink(link, existing) },
         randomName: () -> String = { DownloadMover.randomHex(8) },

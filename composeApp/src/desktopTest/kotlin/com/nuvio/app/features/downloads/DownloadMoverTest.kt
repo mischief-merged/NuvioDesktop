@@ -366,22 +366,24 @@ class DownloadMoverTest {
     }
 
     @Test
-    fun a_crash_while_publishing_on_a_volume_without_hard_links_keeps_the_evidence_and_lists_it() {
+    fun a_crash_before_a_direct_copy_is_published_leaves_only_this_moves_own_file_which_recovery_removes() {
         val item = completed("film", 1)
         val drive = world.driveLocation("Archive")
-        val noLinks: (Path, Path) -> Unit = { _, _ -> throw UnsupportedOperationException("no links here") }
+        val noLinks: (Path, Path) -> Unit = { _, _ -> throw UnsupportedOperationException("no links") }
         val hooks = ProfileHooks(listOf(item))
         assertFailsWith<Crash> {
             folders(hooks, world.mover(createLink = noLinks, checkpoint = { if (it == "published-unflushed") throw Crash(it) })).move(setOf(item.id), drive.path.toString())
         }
+        assertTrue(drive.path.resolve("film.mp4").exists())
 
         val report = world.mover(createLink = noLinks).recover()
 
-        assertEquals(1, report.leftovers)
-        assertContentEquals(bytes(fileOf(item)), bytes(drive.path.resolve("film.mp4")))
-        val leftover = world.mover().leftovers().single()
-        assertEquals(drive.path.resolve("film.mp4").toString(), leftover.destinationPath)
-        assertEquals(1, world.mover().journalFiles().size)
+        // The copy at the final name was created by this move and never used by a record: it is removed, identity checked.
+        assertEquals(1, report.tempsRemoved)
+        assertFalse(drive.path.resolve("film.mp4").exists())
+        assertTrue(fileOf(item).exists())
+        assertEquals(item, hooks.items.single())
+        assertTrue(world.mover().journalFiles().isEmpty())
     }
 
     @Test
@@ -654,6 +656,59 @@ class DownloadMoverTest {
         assertTrue(world.trash.holds(originalBytes))
         assertTrue(fileOf(moved).exists())
         assertTrue(world.mover().journalFiles().isEmpty())
+    }
+
+    @Test
+    fun an_extra_copy_replaced_while_later_files_are_hashed_is_never_sent_to_the_trash_and_the_rest_stop() {
+        val item = completed("film", 1, sidecar = listOf("en.srt"))
+        val drive = world.driveLocation("Archive")
+        world.trash.fails = true
+        val hooks = ProfileHooks(listOf(item))
+        folders(hooks).move(setOf(item.id), drive.path.toString())
+        world.trash.fails = false
+        val original = fileOf(item)
+        val companion = world.appFolder.resolve("film.mp4.subtitles/en.srt")
+        val replacement = "another file, put there while the subtitles were read".toByteArray()
+        var swapped = false
+        val mover = world.mover(hashOf = { path ->
+            if (path == companion && !swapped) {
+                swapped = true
+                Files.move(original, world.root.resolve("aside.mp4"))
+                Files.write(original, replacement)
+            }
+            DownloadMover.sha256Of(path)
+        })
+        val removing = folders(hooks, mover)
+        removing.refresh()
+
+        val outcome = removing.removeExtraCopy(removing.state.value.leftovers.single().id)
+
+        assertTrue(swapped)
+        assertEquals(LeftoverOutcome.Refused, outcome)
+        assertContentEquals(replacement, bytes(original))
+        assertTrue(companion.exists(), "a later removal ran after an earlier proof failed")
+        assertTrue(world.trash.files().isEmpty())
+    }
+
+    @Test
+    fun an_extra_copy_that_another_profile_starts_to_use_before_its_removal_is_kept() {
+        val item = completed("film", 1)
+        val drive = world.driveLocation("Archive")
+        world.trash.fails = true
+        val hooks = ProfileHooks(listOf(item))
+        folders(hooks).move(setOf(item.id), drive.path.toString())
+        world.trash.fails = false
+        val original = fileOf(item)
+        val mover = world.mover(hashOf = { path ->
+            // While the copies are read, another profile adds a record of the original.
+            if (path == original) hooks.setList(2, listOf(item.copy(id = "theirs")))
+            DownloadMover.sha256Of(path)
+        })
+        val removing = folders(hooks, mover)
+        removing.refresh()
+
+        assertEquals(LeftoverOutcome.Refused, removing.removeExtraCopy(removing.state.value.leftovers.single().id))
+        assertTrue(original.exists())
     }
 
     @Test
