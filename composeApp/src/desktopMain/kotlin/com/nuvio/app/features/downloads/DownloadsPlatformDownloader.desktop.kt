@@ -76,18 +76,10 @@ internal actual object DownloadsPlatformDownloader {
      * that was cut short, follows the file.
      */
     /**
-     * A file is found only where its record says. Nothing is adopted from another location by name. A
-     * finished record written before addresses were kept is given its address once, only when the file
-     * is verifiably its own (see [legacyAddressFor]).
+     * A file is found only where its record says. Nothing is adopted by name or size: a finished record
+     * without an address shows "File not found", and only the user can point it at a file ("Locate the file…").
      */
-    actual fun restoreItem(item: DownloadItem): DownloadItem {
-        if (item.status != DownloadStatus.Completed || item.localFileUri != null) return item
-        val profileId = com.nuvio.app.features.profiles.ProfileRepository.activeProfileId
-        val address = runCatching {
-            legacyAddressFor(item, profileId, DesktopDownloads.folders.locations, storedRecordsOfAllProfiles(DesktopStorage.store("nuvio_downloads")))
-        }.getOrNull() ?: return item
-        return item.copy(localFileUri = address)
-    }
+    actual fun restoreItem(item: DownloadItem): DownloadItem = item
 
     actual fun start(
         request: DownloadPlatformRequest,
@@ -136,16 +128,11 @@ internal actual object DownloadsPlatformDownloader {
                     }
                     if (transfer.digestMatched == true) request.onDigestVerified()
 
-                    if (destination.exists()) {
-                        destination.delete()
-                    }
-                    if (!tempFile.renameTo(destination)) {
-                        tempFile.copyTo(destination, overwrite = true)
-                        tempFile.delete()
-                    }
+                    // Never over a file this download did not create: a taken name gets " (2)", " (3)", ...
+                    val published = publishWithoutReplacing(tempFile.toPath(), destination.toPath()).toFile()
 
-                    val finalSize = destination.length()
-                    onSuccess(destination.toURI().toString(), totalBytes ?: finalSize)
+                    val finalSize = published.length()
+                    onSuccess(published.toURI().toString(), totalBytes ?: finalSize)
                     return@launch
                 } catch (error: CancellationException) {
                     onPaused()
@@ -529,4 +516,46 @@ private fun parseContentRangeTotal(headerValue: String?): Long? {
     val totalPart = value.substring(slashIndex + 1).trim()
     if (totalPart == "*") return null
     return totalPart.toLongOrNull()?.takeIf { it > 0L }
+}
+
+/**
+ * Gives the finished partial file [part] the name [destination] without replacing anything: a hard link
+ * under the first free name (`name.ext`, then `name (2).ext`, ...), after which the partial name goes;
+ * where links are not supported, a copy into a file created with create-new. The name used is returned.
+ */
+internal fun publishWithoutReplacing(
+    part: java.nio.file.Path,
+    destination: java.nio.file.Path,
+    link: (java.nio.file.Path, java.nio.file.Path) -> Unit = { name, existing -> Files.createLink(name, existing) },
+): java.nio.file.Path {
+    val name = destination.fileName.toString()
+    val base = name.substringBeforeLast('.', name)
+    val extension = name.substringAfterLast('.', "").let { if (it.isEmpty() || it == name) "" else ".$it" }
+    for (n in 1..999) {
+        val candidate = if (n == 1) destination else destination.resolveSibling("$base ($n)$extension")
+        try {
+            link(candidate, part)
+        } catch (_: java.nio.file.FileAlreadyExistsException) {
+            continue
+        } catch (_: Exception) {
+            try {
+                java.nio.channels.FileChannel.open(
+                    candidate,
+                    java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE, java.nio.file.LinkOption.NOFOLLOW_LINKS,
+                ).use { out ->
+                    java.nio.channels.FileChannel.open(part, java.nio.file.StandardOpenOption.READ, java.nio.file.LinkOption.NOFOLLOW_LINKS).use { input ->
+                        var position = 0L
+                        val size = input.size()
+                        while (position < size) position += input.transferTo(position, size - position, out)
+                    }
+                    out.force(true)
+                }
+            } catch (_: java.nio.file.FileAlreadyExistsException) {
+                continue
+            }
+        }
+        Files.deleteIfExists(part)
+        return candidate
+    }
+    throw IOException("No free name for $name")
 }

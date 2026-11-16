@@ -90,28 +90,3 @@ internal class DownloadOwnership(private val locations: DownloadLocations, recor
         }
     }
 }
-
-/**
- * The one-time migration for a finished record written before addresses were kept (design, section 5.5):
- * the address of `<its location>/<fileName>`, only if that is a regular file, not a link, of exactly the
- * record's size, and no other record of any profile owns it. Otherwise null: nothing is substituted.
- */
-internal fun legacyAddressFor(
-    item: DownloadItem,
-    profileId: Int,
-    locations: DownloadLocations,
-    records: List<RecordRef>?,
-): String? {
-    if (item.status != DownloadStatus.Completed || item.localFileUri != null) return null
-    val name = item.fileName.trim()
-    if (name.isEmpty() || name.contains('/') || name.contains('\\') || name == "." || name == "..") return null
-    val known = records ?: return null
-    val size = item.totalBytes?.takeIf { it > 0L } ?: item.downloadedBytes.takeIf { it > 0L } ?: return null
-    val location = locations.location(item.locationId) ?: return null
-    if (locations.availability(location) != FolderAvailability.Available) return null
-    val file = location.path.resolve(name)
-    if (Files.isSymbolicLink(file) || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) return null
-    if (runCatching { Files.size(file) }.getOrNull() != size) return null
-    if (DownloadOwnership(locations, known).otherOwner(profileId, item.id, file) != null) return null
-    return file.toFile().toURI().toString()
-}

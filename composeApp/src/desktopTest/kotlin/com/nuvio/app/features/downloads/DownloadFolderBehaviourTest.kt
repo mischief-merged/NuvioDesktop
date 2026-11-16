@@ -75,14 +75,17 @@ class DownloadFolderBehaviourTest {
     @Test
     fun free_space_is_read_on_the_volume_of_the_location_the_download_goes_to() {
         val drive = world.driveLocation("Archive")
-        val folders = DesktopDownloadFolders(world.locations, world.validator, world.mover(), ProfileHooks(emptyList()))
+        world.appFolder.also { Files.createDirectories(it) }
+        // A fixed reading per folder: the real free space changes between two reads.
+        val asked = mutableListOf<File>()
+        val folders = DesktopDownloadFolders(
+            world.locations, world.validator, world.mover(), ProfileHooks(emptyList()),
+            freeSpaceOf = { f -> asked += f; if (f.toPath().startsWith(drive.path)) 111L else 222L },
+        )
 
-        val onDrive = folders.freeBytesOf(item.copy(locationId = drive.id))
-        val inApp = folders.freeBytesOf(item)
-
-        assertEquals(File(drive.path.toUri()).usableSpace, onDrive)
-        assertEquals(File(world.appFolder.also { Files.createDirectories(it) }.toUri()).usableSpace.takeIf { it > 0 }, inApp?.takeIf { it > 0 })
-        assertNotNull(onDrive)
+        assertEquals(111L, folders.freeBytesOf(item.copy(locationId = drive.id)))
+        assertEquals(222L, folders.freeBytesOf(item))
+        assertEquals(listOf(drive.path.toFile(), world.appFolder.toFile()), asked)
     }
 
     @Test

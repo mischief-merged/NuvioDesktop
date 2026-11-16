@@ -9,6 +9,8 @@ import nuvio.composeapp.generated.resources.downloads_announce_drive_not_connect
 import nuvio.composeapp.generated.resources.downloads_announce_moving
 import nuvio.composeapp.generated.resources.downloads_announce_folder_not_set_up
 import nuvio.composeapp.generated.resources.downloads_status_moving
+import nuvio.composeapp.generated.resources.downloads_status_file_not_found
+import nuvio.composeapp.generated.resources.downloads_announce_file_not_found
 import nuvio.composeapp.generated.resources.downloads_status_folder_not_set_up
 import nuvio.composeapp.generated.resources.downloads_announce_folder_not_found
 import nuvio.composeapp.generated.resources.downloads_announce_waiting_drive
@@ -74,6 +76,9 @@ internal enum class DownloadPhase(
     /** The drive is there but the folder is not. */
     FolderNotFound(Res.string.downloads_status_folder_not_found, showsSize = false, Res.string.downloads_announce_folder_not_found),
 
+    /** A finished download that has no recorded file. Only the user can say which file is its own. */
+    FileNotFound(Res.string.downloads_status_file_not_found, showsSize = false, Res.string.downloads_announce_file_not_found),
+
     /** The item is in the hands of a move. */
     Moving(Res.string.downloads_status_moving, showsSize = false, Res.string.downloads_announce_moving),
 
@@ -129,9 +134,14 @@ internal fun downloadRowStatus(
     location: FolderAvailability = FolderAvailability.Available,
     /** A move has the item. */
     moving: Boolean = false,
+    /** Where locations are handled: a finished item without a recorded file shows as not found, never as found by name. */
+    addressRequired: Boolean = false,
 ): DownloadRowStatus {
     val isAuto = item.autoDownloadRuleKey != null
     if (moving) return DownloadRowStatus(DownloadPhase.Moving, isAuto = isAuto)
+    if (addressRequired && item.status == DownloadStatus.Completed && item.localFileUri == null) {
+        return DownloadRowStatus(DownloadPhase.FileNotFound, isAuto = isAuto)
+    }
     if (location != FolderAvailability.Available && (item.status == DownloadStatus.Completed || item.pausedByFolder)) {
         val phase = when {
             item.status != DownloadStatus.Completed -> DownloadPhase.WaitingForDrive

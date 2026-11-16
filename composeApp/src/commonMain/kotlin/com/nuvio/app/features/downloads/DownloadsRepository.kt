@@ -406,12 +406,18 @@ object DownloadsRepository {
         // On a location that is away, or while a move has the item, nothing is cancelled or removed.
         if (!backend.isConnected(item) || !ItemLocks.tryAcquire(downloadId)) return
         try {
-            activeTransfers.remove(downloadId)?.cancel()
-            backend.removeFile(playableLocalFileUri(item) ?: item.localFileUri)
-            backend.removePartialOf(item)
+            backend.withListLock {
+                val fileUri = playableLocalFileUri(item) ?: item.localFileUri
+                // A file another record of any profile uses stays; one that cannot be told stays, and so does the entry.
+                val used = fileUri?.let { usedByAnother(item, _uiState.value.items, it) } ?: false
+                if (used == null) return@withListLock
+                activeTransfers.remove(downloadId)?.cancel()
+                if (fileUri != null && !used && !backend.discardFile(fileUri)) return@withListLock
+                backend.removePartialOf(item)
 
-            publish(_uiState.value.items.filterNot { it.id == downloadId })
-            persist()
+                publish(_uiState.value.items.filterNot { it.id == downloadId })
+                persist()
+            }
         } finally {
             ItemLocks.release(downloadId)
         }
@@ -432,7 +438,8 @@ object DownloadsRepository {
         // One thing changes an item at a time: a move has it, or something else is deleting it.
         if (!ItemLocks.tryAcquire(downloadId)) return DownloadDeleteResult.Moving
         try {
-            return deleteLocked(item, items, permanently)
+            // The ownership check, the file and the record change under the lock every save of a list takes.
+            return backend.withListLock { deleteLocked(item, items, permanently) }
         } finally {
             ItemLocks.release(downloadId)
         }
@@ -445,11 +452,7 @@ object DownloadsRepository {
         if (lookup is FileLookup.Unreachable) return DownloadDeleteResult.NotReachable
         val fileUri = (lookup as? FileLookup.Found)?.uri
         if (fileUri != null) {
-            val usedByAnother = items.any { other ->
-                other.id != item.id &&
-                    listOfNotNull(other.localFileUri, backend.resolveLocalFileUri(other.localFileUri, other.fileName))
-                        .any { backend.isSameFile(it, fileUri) }
-            }
+            val usedByAnother = usedByAnother(item, items, fileUri) ?: return DownloadDeleteResult.NotMoved
             if (!usedByAnother) {
                 val gone = if (permanently) backend.removeFile(fileUri) else backend.trashFile(fileUri)
                 if (!gone) return DownloadDeleteResult.NotMoved
@@ -834,7 +837,7 @@ object DownloadsRepository {
             // A move has the item: it stays scheduled and is looked at again later.
             if (!ItemLocks.tryAcquire(downloadId)) return AutoDownloadRemovalResult.Busy
             try {
-                return removeWatchedLocked(item, items)
+                return backend.withListLock { removeWatchedLocked(item, items) }
             } finally {
                 ItemLocks.release(downloadId)
             }
@@ -848,11 +851,7 @@ object DownloadsRepository {
             if (lookup is FileLookup.Unreachable) return AutoDownloadRemovalResult.NotReachable
             val fileUri = (lookup as? FileLookup.Found)?.uri
             if (fileUri != null) {
-                val usedByAnother = items.any { other ->
-                    other.id != item.id &&
-                        listOfNotNull(other.localFileUri, backend.resolveLocalFileUri(other.localFileUri, other.fileName))
-                            .any { backend.isSameFile(it, fileUri) }
-                }
+                val usedByAnother = usedByAnother(item, items, fileUri) ?: return AutoDownloadRemovalResult.NotMoved
                 if (!usedByAnother && !backend.trashFile(fileUri)) return AutoDownloadRemovalResult.NotMoved
             }
             publish(items.filterNot { it.id == downloadId })
@@ -860,6 +859,22 @@ object DownloadsRepository {
             return AutoDownloadRemovalResult.Removed
         }
     }
+
+    /**
+     * Whether another record uses [fileUri]: of any profile, sidecar folder included, where the platform can
+     * tell (desktop); otherwise of this list. Null when that cannot be told: then nothing may be removed.
+     */
+    private fun usedByAnother(item: DownloadItem, items: List<DownloadItem>, fileUri: String): Boolean? =
+        when (backend.ownershipOf(item, fileUri)) {
+            FileOwnership.Owned -> true
+            FileOwnership.Free -> false
+            FileOwnership.Unknown -> null
+            null -> items.any { other ->
+                other.id != item.id &&
+                    listOfNotNull(other.localFileUri, backend.resolveLocalFileUri(other.localFileUri, other.fileName))
+                        .any { backend.isSameFile(it, fileUri) }
+            }
+        }
 
     /** Runs [block] under the state lock, and only while [transfer] still owns the download. */
     private inline fun ifCurrent(downloadId: String, transfer: ActiveTransfer, block: () -> Unit) {
@@ -1103,6 +1118,12 @@ internal interface DownloadsBackend {
     /** Keeps a payload that could not be read, apart from the one [savePayload] writes. */
     fun saveUnreadablePayload(payload: String, atEpochMs: Long) = Unit
 
+    /** Whether another record of any profile uses [fileUri]. Null where only this list is known. */
+    fun ownershipOf(item: DownloadItem, fileUri: String): FileOwnership? = null
+
+    /** Gets rid of the file of a cancelled download: to the Trash where there is one, deleted where there is not. */
+    fun discardFile(localFileUri: String?): Boolean = removeFile(localFileUri)
+
     /** Whether [loadFreshPayload] reads the stored list again (another copy of the app may have saved). */
     val rereadsPayload: Boolean get() = false
 
@@ -1228,6 +1249,12 @@ private object PlatformDownloadsBackend : DownloadsBackend {
         DownloadsStorage.saveUnreadablePayload(payload, atEpochMs)
 
     override val rereadsPayload: Boolean get() = DownloadsStorage.rereadsPayload
+
+    override fun ownershipOf(item: DownloadItem, fileUri: String): FileOwnership? =
+        DownloadFolders.controller.ownershipOf(item, fileUri)
+
+    override fun discardFile(localFileUri: String?): Boolean =
+        localFileUri?.let { DownloadFolders.controller.discardFile(it) } ?: removeFile(localFileUri)
 
     override fun loadFreshPayload(): String? = DownloadsStorage.loadFreshPayload()
 

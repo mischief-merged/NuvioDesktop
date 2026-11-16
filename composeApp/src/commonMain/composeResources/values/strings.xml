@@ -3176,6 +3176,15 @@
     <string name="download_folder_unresolved_row">An interrupted move could not be settled by itself: its drive is not connected, or its record could not be read. The record is kept at %1$s and nothing was deleted. New moves wait until it is set aside.</string>
     <string name="download_folder_unresolved_set_aside">Set aside</string>
     <string name="app_already_open">NuvioRoid is already open.</string>
+    <string name="downloads_status_file_not_found">File not found</string>
+    <string name="downloads_announce_file_not_found">File not found</string>
+    <string name="downloads_locate_file">Locate the file…</string>
+    <string name="downloads_locate_file_description">Locate the file of %1$s</string>
+    <string name="downloads_locate_confirm_title">Use this file?</string>
+    <string name="downloads_locate_confirm_body">%1$s will point at %2$s. Nothing is moved, copied or deleted.</string>
+    <string name="downloads_locate_confirm">Use this file</string>
+    <string name="downloads_locate_adopted">The download now points at that file.</string>
+    <string name="downloads_locate_refused">That file was not used. It must be a file inside a download folder that no other download uses.</string>
     <string name="download_folder_unresolved_set_aside_description">Set aside the interrupted move record %1$s</string>
     <string name="download_folder_leftover_remove">Remove the extra copy</string>
     <string name="download_folder_leftover_remove_description">Remove the extra copy of %1$s</string>

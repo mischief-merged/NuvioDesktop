@@ -115,6 +115,12 @@ internal class DesktopDownloadFolders(
     internal val usage: DownloadStorageUsage = DownloadStorageUsage(locations),
     /** How long a move waits for a writer that was stopped and is still closing its file. */
     private val writerWaitMs: Long = 30_000L,
+    /** Sends one file or folder inside a location to the Trash. Never deletes. */
+    private val trashPath: (Path) -> Boolean = DownloadsTrash::moveToTrash,
+    /** The native file picker. Blocks until it closes. */
+    private val filePicker: () -> String? = { null },
+    /** The usable space of the volume of a folder. Replaced in tests, where the real one changes between two reads. */
+    private val freeSpaceOf: (File) -> Long? = { f -> f.usableSpace.takeIf { it > 0L || f.totalSpace > 0L } },
 ) : DownloadFolderController {
     override val supported: Boolean = true
 
@@ -158,14 +164,44 @@ internal class DesktopDownloadFolders(
     override fun placementFor(items: List<DownloadItem>, parentMetaId: String, isEpisode: Boolean): String =
         placementForNewDownload(items, parentMetaId, isEpisode, locations.defaultLocation().id) { locationIdOf(it) }
 
+    /**
+     * The partial file of this download, in its own location only, goes to the Trash, never deleted outright;
+     * only when no record of any profile other than this one uses it. A link is never followed.
+     */
     override fun removePartialOf(item: DownloadItem): Boolean {
         val owner = locations.ownerOf(item.locationId, item.localFileUri) ?: return false
         if (locations.availability(owner) != FolderAvailability.Available) return false
         val partial = owner.path.resolve(item.fileName + ".part")
-        // Only the partial file of this download in its own location. A link is never followed.
         if (!Files.exists(partial, LinkOption.NOFOLLOW_LINKS)) return true
         if (Files.isSymbolicLink(partial)) return false
-        return runCatching { Files.deleteIfExists(partial) }.isSuccess
+        if (ownershipOfPath(item, partial) != FileOwnership.Free) return false
+        return runCatching { trashPath(partial) }.getOrDefault(false) && !Files.exists(partial, LinkOption.NOFOLLOW_LINKS)
+    }
+
+    private fun ownershipOfPath(item: DownloadItem, path: Path): FileOwnership {
+        val all = hooks.allRecords() ?: return FileOwnership.Unknown
+        val ownership = DownloadOwnership(locations, all)
+        val profile = hooks.profileId()
+        val sidecar = path.resolveSibling(DownloadCompanions.sidecarFolderName(path.fileName.toString()))
+        return if (ownership.otherOwner(profile, item.id, path) != null || ownership.otherOwner(profile, item.id, sidecar) != null) {
+            FileOwnership.Owned
+        } else {
+            FileOwnership.Free
+        }
+    }
+
+    override fun ownershipOf(item: DownloadItem, fileUri: String): FileOwnership =
+        DownloadLocations.fileOfUri(fileUri)?.toPath()?.let { ownershipOfPath(item, it) } ?: FileOwnership.Unknown
+
+    /** A cancelled download's file and its sidecar folder go to the Trash. True when the file is out of its place. */
+    override fun discardFile(localFileUri: String): Boolean {
+        val file = DownloadLocations.fileOfUri(localFileUri)?.toPath() ?: return false
+        if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) return true
+        if (Files.isSymbolicLink(file)) return false
+        if (!(runCatching { trashPath(file) }.getOrDefault(false) && !Files.exists(file, LinkOption.NOFOLLOW_LINKS))) return false
+        file.resolveSibling(DownloadCompanions.sidecarFolderName(file.fileName.toString()))
+            .takeIf { Files.isDirectory(it, LinkOption.NOFOLLOW_LINKS) }?.let { runCatching { trashPath(it) } }
+        return true
     }
 
     override fun setDefault(path: String): Boolean {
@@ -181,7 +217,7 @@ internal class DesktopDownloadFolders(
         val location = locations.locationOfRecord(item.locationId, item.localFileUri)
         return existingAncestor(location.path)?.let { dir ->
             FsGuard.call(3_000L, null) {
-                File(dir.toUri()).let { f -> f.usableSpace.takeIf { it > 0L || f.totalSpace > 0L } }
+                freeSpaceOf(File(dir.toUri()))
             }
         }
     }
@@ -287,27 +323,27 @@ internal class DesktopDownloadFolders(
         val moveItems = mutableListOf<MoveItem>()
         val failures = mutableListOf<MoveFailure>()
         var unreachable = 0
-        ready.forEach { item ->
+        fun planOne(item: DownloadItem) {
             if (ownership == null && !forSizeOnly) {
                 failures += MoveFailure(item.fileName, MoveFailureReason.OwnedByAnother, "the downloads of another profile could not be read")
-                return@forEach
+                return
             }
             fun ownedBy(paths: List<Path>): String? = ownership?.let { o -> paths.firstNotNullOfOrNull { o.otherOwner(profile, item.id, it)?.label } }
             if (item.status == DownloadStatus.Completed) {
                 when (val found = locations.locate(item.locationId, item.localFileUri, item.fileName)) {
                     is FileLookup.Found -> if (found.locationId != destination.id) {
-                        val video = DownloadLocations.fileOfUri(found.uri)?.toPath() ?: return@forEach
-                        val root = locations.location(found.locationId)?.path ?: return@forEach
+                        val video = DownloadLocations.fileOfUri(found.uri)?.toPath() ?: return
+                        val root = locations.location(found.locationId)?.path ?: return
                         val companions = DownloadCompanions.of(video)
                         if (Files.isSymbolicLink(video) || companions.skippedLinks.isNotEmpty()) {
                             failures += MoveFailure(item.fileName, MoveFailureReason.Symlink)
-                            return@forEach
+                            return
                         }
                         val sources = listOf(video) + companions.files.map { it.path }
                         val targets = listOf(destination.path.resolve(video.fileName.toString())) + companions.files.map { destination.path.resolve(it.relativeName) }
                         ownedBy(sources + targets)?.let { other ->
                             failures += MoveFailure(item.fileName, MoveFailureReason.OwnedByAnother, other)
-                            return@forEach
+                            return
                         }
                         val entries = listOf(
                             MoveEntry(found.locationId.orEmpty(), rel(root, video), destination.id, video.fileName.toString(), MoveKind.File, Files.size(video)),
@@ -350,6 +386,14 @@ internal class DesktopDownloadFolders(
                         }
                     }
                 }
+            }
+        }
+        ready.forEach { item ->
+            // A file that goes away while it is looked at (a delete of an item no move holds) is reported, not thrown.
+            try {
+                planOne(item)
+            } catch (_: java.io.IOException) {
+                failures += MoveFailure(item.fileName, MoveFailureReason.CouldNotRead)
             }
         }
         return Planned(moveItems, unreachable, failures)
@@ -491,6 +535,23 @@ internal class DesktopDownloadFolders(
         runCatching { refresh() }
     }
 
+    override fun pickFile(): String? = filePicker()
+
+    override fun adoptFile(item: DownloadItem, path: String): Boolean {
+        val file = runCatching { Paths.get(path).toAbsolutePath().normalize() }.getOrNull() ?: return false
+        if (Files.isSymbolicLink(file) || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) return false
+        // Inside a download folder that can be used now, so that it can be moved and found like any other.
+        val location = locations.locationContaining(file)?.takeIf { locations.availability(it) == FolderAvailability.Available } ?: return false
+        if (file.parent?.let { DownloadFolderValidator.isTrash(it) } == true) return false
+        if (ownershipOfPath(item, file) != FileOwnership.Free) return false
+        val uri = file.toFile().toURI().toString()
+        return hooks.compareAndRelocate(
+            hooks.profileId(),
+            item.id,
+            { it.status == DownloadStatus.Completed && it.localFileUri == null && it.locationId == item.locationId },
+        ) { it.copy(localFileUri = uri, locationId = location.id) } == RelocateResult.Confirmed
+    }
+
     override fun setAside(leftoverId: String): Boolean = mover.setAside(leftoverId).also { runCatching { refresh() } }
 
     override fun cancelMove() {
@@ -545,6 +606,7 @@ internal object DesktopDownloads {
                 locationPath = { id -> locations.location(id)?.path },
             ),
             picker = { NativeFolderPicker.pick(isMac, locations.defaultLocation().path.toFile().takeIf { it.isDirectory }) },
+            filePicker = { NativeFolderPicker.pickFile(isMac, locations.defaultLocation().path.toFile().takeIf { it.isDirectory }) },
             isMac = isMac,
             onReturned = { runCatching { AutoDownloads.checkNow() } },
             isPlaying = { item -> AutoDownloads.isPlaying(item) },

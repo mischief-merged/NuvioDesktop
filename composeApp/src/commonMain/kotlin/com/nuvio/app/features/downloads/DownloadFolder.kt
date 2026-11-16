@@ -256,6 +256,33 @@ internal interface DownloadFolderController {
 
     /** Keeps an unresolved move record aside, without overwriting anything, so new moves can start. */
     fun setAside(leftoverId: String): Boolean = false
+
+    /** Whether a record of any profile other than [item]'s own uses [fileUri] or its sidecar folder. Null where locations are not handled. */
+    fun ownershipOf(item: DownloadItem, fileUri: String): FileOwnership? = null
+
+    /** Sends a download's file and its sidecar folder to the Trash. Null where locations are not handled. */
+    fun discardFile(localFileUri: String): Boolean? = null
+
+    /** Opens the native file picker. Blocks until it closes. Null when cancelled. */
+    fun pickFile(): String? = null
+
+    /**
+     * Points a finished download that has no recorded file at [path], which the user picked and confirmed.
+     * Refused unless it is a regular file inside a download folder that can be used and no other record of
+     * any profile uses it. Nothing is moved, copied or deleted.
+     */
+    fun adoptFile(item: DownloadItem, path: String): Boolean = false
+}
+
+internal enum class FileOwnership {
+    /** No other record of any profile uses it. */
+    Free,
+
+    /** Another record, of this or another profile, uses it or something inside its sidecar folder. */
+    Owned,
+
+    /** The lists of every profile could not be read: nothing may be removed. */
+    Unknown,
 }
 
 internal enum class LeftoverOutcome {

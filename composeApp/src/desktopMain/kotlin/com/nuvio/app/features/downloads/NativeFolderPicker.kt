@@ -3,6 +3,7 @@ package com.nuvio.app.features.downloads
 import kotlinx.coroutines.runBlocking
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.settings_download_folder_picker_title
+import nuvio.composeapp.generated.resources.downloads_locate_file
 import org.jetbrains.compose.resources.getString
 import java.awt.EventQueue
 import java.awt.FileDialog
@@ -55,6 +56,29 @@ internal object NativeFolderPicker {
                 isAcceptAllFileFilterUsed = false
             }
             if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) chosen = chooser.selectedFile?.absolutePath
+        }
+        if (EventQueue.isDispatchThread()) show() else EventQueue.invokeAndWait(show)
+        return chosen
+    }
+
+    /** A file the user chose, in the native panel on macOS (or a Swing chooser elsewhere), or null. Blocks until then. */
+    fun pickFile(isMac: Boolean, startAt: File? = null): String? {
+        val title = runBlocking { getString(Res.string.downloads_locate_file) }
+        var chosen: String? = null
+        val show = {
+            if (isMac) {
+                val dialog = FileDialog(null as Frame?, title, FileDialog.LOAD)
+                startAt?.takeIf { it.isDirectory }?.let { dialog.directory = it.absolutePath }
+                dialog.isVisible = true
+                val file = dialog.file
+                if (file != null) chosen = File(dialog.directory.orEmpty(), file).absolutePath
+            } else {
+                val chooser = JFileChooser(startAt?.takeIf { it.isDirectory }).apply {
+                    dialogTitle = title
+                    fileSelectionMode = JFileChooser.FILES_ONLY
+                }
+                if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) chosen = chooser.selectedFile?.absolutePath
+            }
         }
         if (EventQueue.isDispatchThread()) show() else EventQueue.invokeAndWait(show)
         return chosen

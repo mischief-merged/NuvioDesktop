@@ -18,6 +18,7 @@ import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -162,6 +163,9 @@ internal fun DownloadsScreenContent(
     var selectedIds by remember { mutableStateOf(emptySet<String>()) }
     var moveRequest by remember { mutableStateOf<MoveRequest?>(null) }
     var chooseLocationFor by remember { mutableStateOf<DownloadItem?>(null) }
+    // A file the user picked for a download without one, waiting for the user to confirm it.
+    var locatePick by remember { mutableStateOf<Pair<DownloadItem, String>?>(null) }
+    val locateScope = rememberCoroutineScope()
     var permanentDeletionId by remember { mutableStateOf<String?>(null) }
     // Looking at the volumes can take a while on a drive that is failing, so never on this thread.
     LaunchedEffect(folders) { if (folders.supported) withContext(Dispatchers.Default) { folders.refresh() } }
@@ -176,6 +180,12 @@ internal fun DownloadsScreenContent(
             },
             onMove = { ids -> moveRequest = MoveRequest.MoveItems(ids) },
             onChooseLocation = { chooseLocationFor = it },
+            onLocateFile = { item ->
+                locateScope.launch {
+                    val picked = withContext(Dispatchers.Default) { folders.pickFile() }
+                    if (picked != null) locatePick = item to picked
+                }
+            },
         )
     } else {
         null
@@ -371,6 +381,25 @@ internal fun DownloadsScreenContent(
             },
         )
     }
+    locatePick?.let { (item, path) ->
+        val adopted = stringResource(Res.string.downloads_locate_adopted)
+        val refused = stringResource(Res.string.downloads_locate_refused)
+        AlertDialog(
+            onDismissRequest = { locatePick = null },
+            title = { Text(stringResource(Res.string.downloads_locate_confirm_title)) },
+            text = { Text(stringResource(Res.string.downloads_locate_confirm_body, item.nameForLabels(), path)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    locatePick = null
+                    locateScope.launch {
+                        val ok = withContext(Dispatchers.Default) { folders.adoptFile(item, path) }
+                        NuvioToastController.show(if (ok) adopted else refused)
+                    }
+                }) { Text(stringResource(Res.string.downloads_locate_confirm)) }
+            },
+            dismissButton = { TextButton(onClick = { locatePick = null }) { Text(stringResource(Res.string.action_cancel)) } },
+        )
+    }
     chooseLocationFor?.let { waiting ->
         DestinationDialog(
             locations = folderState.locations.filter { it.availability == FolderAvailability.Available },
@@ -448,6 +477,7 @@ private class RowExtras(
     val onToggleSelected: (Set<String>) -> Unit,
     val onMove: (Set<String>) -> Unit,
     val onChooseLocation: (DownloadItem) -> Unit,
+    val onLocateFile: (DownloadItem) -> Unit = {},
 )
 
 @Composable
@@ -766,7 +796,7 @@ private fun DownloadRow(
     val availability = location?.availability ?: FolderAvailability.Available
     val reachable = availability == FolderAvailability.Available
     val isMoving = extras != null && item.id in extras.folderState.movingIds
-    val rowStatus = downloadRowStatus(item, clock.nowEpochMs, clock.offline, availability, isMoving)
+    val rowStatus = downloadRowStatus(item, clock.nowEpochMs, clock.offline, availability, isMoving, addressRequired = extras != null)
     val displayTitle = item.displayTitle()
     val displaySubtitle = downloadDisplaySubtitle(
         item = item,
@@ -934,6 +964,15 @@ private fun DownloadRow(
                                     )
                                 }
                             }
+                        }
+                    }
+                    if (extras != null && rowStatus.phase == DownloadPhase.FileNotFound) {
+                        val locateDescription = stringResource(Res.string.downloads_locate_file_description, name)
+                        TextButton(
+                            onClick = { extras.onLocateFile(item) },
+                            modifier = Modifier.semantics { contentDescription = locateDescription },
+                        ) {
+                            Text(stringResource(Res.string.downloads_locate_file), style = MaterialTheme.typography.labelLarge)
                         }
                     }
                     if (extras != null && item.status == DownloadStatus.Paused && item.pausedByFolder) {
