@@ -12,7 +12,7 @@
 
 ![Platform](https://img.shields.io/badge/macOS-Apple%20silicon-111111?logo=apple&logoColor=white)
 ![Status](https://img.shields.io/badge/status-alpha%20%C2%B7%20fast%20development-8A2BE2)
-![Tests](https://img.shields.io/badge/desktop%20tests-3%2C237-2EA3F2)
+![Tests](https://img.shields.io/badge/desktop%20tests-3%2C356-2EA3F2)
 ![License](https://img.shields.io/badge/license-GPLv3-3DA639)
 ![Based on](https://img.shields.io/badge/based%20on-Nuvio%20Desktop-5B5BD6)
 
@@ -71,7 +71,7 @@ NuvioRoid installs beside the official Nuvio app. It has its own name, icon and 
 
 Alpha software under **fast development**. Expect breaking changes, and do not rely on it as your only media app.
 
-- Built and tested on macOS (Apple silicon). The desktop test suite runs 3,237 tests; the three that fail also fail on upstream without any of these changes.
+- Built and tested on macOS (Apple silicon). The desktop test suite runs 3,356 tests; the three that fail also fail on upstream without any of these changes.
 - Android, iOS, Windows and Linux builds of this fork have not been run.
 - NuvioRoid is a client only. You bring your own sources, as with Nuvio.
 

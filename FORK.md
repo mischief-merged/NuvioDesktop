@@ -21,6 +21,7 @@ NuvioRoid is a fork of [NuvioMedia/NuvioDesktop](https://github.com/NuvioMedia/N
 | Downloads screen | Rows say what is happening (waiting for the internet, checking the file, paused and why) and how a finished file was verified. Failures give a plain reason and a next step, including "Choose another source". Delete moves files to the Trash and names the item. An unreadable list is reported instead of shown as empty. Controls are named for assistive technology. | `fix/downloads-screen-states` |
 | Clearer auto-download | Deleting an auto-downloaded episode does not fetch it again; rule rows open their settings; results are reported only after they are saved; closing the window while downloads are running asks first. | `fix/auto-download-clarity` |
 | Complete offline | A download carries what it needs to be watched with no connection: subtitles (now also saved on desktop), intro and credits skip times, the season's episode list for the next-episode card, and a poster and thumbnail, all kept in one folder beside the video. Offline, the episode and show pages are drawn from these saved details. A failed lookup can add to what is saved but never replaces it. Existing downloads are filled in quietly in the background. | `pr/p-offline-skip-times` |
+| Not the real video | A download that is only a provider's placeholder clip is recognised: far smaller than the size the source stated, far too small or too short for the title's length, or a still picture. It is shown as a problem with the reason, is not counted as downloaded, and a real copy is fetched beside it. Downloads made before the checks existed are checked again in the background. Nothing already stored is removed automatically. | `fix/recheck-downloads-and-placeholders` |
 
 ## Playback
 
@@ -58,7 +59,7 @@ User-facing English text uses one set of terms ("source", "Auto-download") and p
 
 ## Testing
 
-The desktop test suite on `downloads-suite` runs 3,237 tests. Three fail, and the same three fail on upstream `Dev` at `c8ee7621` without any of these changes:
+The desktop test suite on `downloads-suite` runs 3,356 tests. Three fail, and the same three fail on upstream `Dev` at `c8ee7621` without any of these changes:
 
 - `DesktopWindowInsetsTest` (title bar clearance)
 - `SettingsNavigationTest` (buffer options by platform and playback engine)
