@@ -129,13 +129,16 @@ class SidecarSafetyTest {
     fun a_temporary_file_left_by_a_crash_is_ignored_and_cleaned_by_the_next_write() {
         val uri = video()
         SkipTimesSidecar.write(uri, SavedSkipTimes(2, listOf(intro)))
-        val leftover = File(folder, "a.mkv.subtitles/skip-times.json.tmp").also { it.writeText("{\"version\":1,\"fetchedAt") }
+        // Only the app's reserved temporary names are ever cleaned up; a generic ".tmp" may be someone else's.
+        val leftover = File(folder, "a.mkv.subtitles/${SidecarOwnership.newTemporaryName()}").also { it.writeText("{\"version\":1,\"fetchedAt") }
+        val generic = File(folder, "a.mkv.subtitles/skip-times.json.tmp").also { it.writeText("not the app's") }
 
         assertEquals(listOf(intro), saved(uri).intervals)
         assertTrue(leftover.exists())
 
         SkipTimesSidecar.write(uri, SavedSkipTimes(3, listOf(recap)))
         assertFalse(leftover.exists())
+        assertEquals("not the app's", generic.readText())
         assertEquals(listOf(recap), saved(uri).intervals)
     }
 

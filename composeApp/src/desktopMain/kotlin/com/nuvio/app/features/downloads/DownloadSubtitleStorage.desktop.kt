@@ -37,8 +37,8 @@ internal actual class DownloadSubtitleStorage actual constructor(localVideoUri: 
     actual fun writeBytes(fileName: String, bytes: ByteArray) {
         val target = file(fileName)
         if (!SidecarOwnership.ensureOwned(directory.toPath(), video.name)) throw IOException("The folder ${directory.name} is not the app's")
-        SidecarOwnership.removeOwnTemporaries(directory.toPath())
-        val temporary = directory.toPath().resolve("${SidecarOwnership.TemporaryPrefix}${DownloadMover.randomHex(8)}${SidecarOwnership.TemporarySuffix}")
+        SidecarOwnership.removeOwnTemporaries(directory.toPath(), video.name)
+        val temporary = directory.toPath().resolve(SidecarOwnership.newTemporaryName())
         try {
             FileChannel.open(temporary, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS).use { channel ->
                 val buffer = ByteBuffer.wrap(bytes)
@@ -69,7 +69,7 @@ internal actual class DownloadSubtitleStorage actual constructor(localVideoUri: 
     private fun file(fileName: String): File {
         require(
             fileName.isNotBlank() && File(fileName).name == fileName && fileName != "." && fileName != ".." &&
-                !fileName.endsWith(SidecarOwnership.TemporarySuffix) && fileName != SidecarOwnership.MarkerName,
+                !fileName.startsWith(SidecarOwnership.TemporaryPrefix) && fileName != SidecarOwnership.MarkerName,
         )
         return File(directory, fileName)
     }
@@ -78,13 +78,15 @@ internal actual class DownloadSubtitleStorage actual constructor(localVideoUri: 
 /** Which sidecar folders are the app's own, and the one-time adoption of folders made before they were marked. */
 internal object SidecarOwnership {
     const val MarkerName = ".nuvio-sidecar"
+
+    /** Temporary files of the app's writes: `.nuvio-tmp-<16 hex>`. The only names it ever cleans up, and only in a marked folder. */
     const val TemporaryPrefix = ".nuvio-tmp-"
-    const val TemporarySuffix = ".tmp"
+    private val temporaryName = Regex("""^\.nuvio-tmp-[0-9a-f]{16}$""")
     private const val MarkerHeader = "nuvio-sidecar 1"
 
-    /** Names the app saves besides the subtitle files a manifest lists. */
-    private val knownNames: Set<String> = setOf("manifest.json", SkipTimesSidecar.FILE_NAME, EpisodeListSidecar.FILE_NAME)
-    private val artworkStems: Set<String> = ArtworkRole.entries.map { it.fileStem }.toSet()
+    fun newTemporaryName(): String = TemporaryPrefix + DownloadMover.randomHex(8)
+
+    fun isTemporaryName(name: String): Boolean = temporaryName.matches(name)
 
     private fun markerText(videoName: String) = "$MarkerHeader\nvideo=$videoName\n"
 
@@ -101,8 +103,9 @@ internal object SidecarOwnership {
         Files.exists(folder, LinkOption.NOFOLLOW_LINKS) && !isOwned(folder, videoName) && !adoptable(folder)
 
     /**
-     * Makes sure the folder is the app's own: creates and marks it when it is not there; adopts it, once, when
-     * its contents are exactly what the app saves; otherwise false, and nothing is touched.
+     * Makes sure the folder is the app's own: creates and marks it when it is not there; adopts it when every
+     * entry in it is positively the app's ([adoptable]); otherwise false, and nothing is touched. Adoption only
+     * adds the mark: it never removes or changes anything.
      */
     fun ensureOwned(folder: Path, videoName: String): Boolean {
         if (!Files.exists(folder, LinkOption.NOFOLLOW_LINKS)) {
@@ -119,34 +122,69 @@ internal object SidecarOwnership {
     }
 
     /**
-     * A folder made by this app before folders were marked: a plain folder with only plain files, a
-     * `manifest.json` that reads as this app's manifest and lists exactly the subtitle files present (when
-     * there are any), and nothing else but the names the app saves (skip times, episode list, artwork, and
-     * the leftovers of its own interrupted writes).
+     * A folder made by this app before folders were marked, recognised only when EVERY entry is positively the
+     * app's, by name and by content: a `manifest.json` that reads as this app's manifest; exactly the subtitle
+     * files it lists, no more and no fewer; and beyond that only `skip-times.json` and `episodes.json` that read
+     * as this app's formats, `poster.*` / `thumbnail.*` that are real images within the size the app saves, and
+     * `.none` markers that read as the app's marker (or its old plain number). Anything else (a temporary-looking
+     * file, an unknown name, a file that does not read as ours, a link, a folder) and the folder is not adopted.
+     * An empty folder is adopted.
      */
     fun adoptable(folder: Path): Boolean = runCatching {
         if (Files.isSymbolicLink(folder) || !Files.isDirectory(folder, LinkOption.NOFOLLOW_LINKS)) return false
         val entries = Files.list(folder).use { it.toList() }
         if (entries.any { Files.isSymbolicLink(it) || !Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }) return false
-        val names = entries.map { it.fileName.toString() }.filterNot { it.endsWith(TemporarySuffix) && isOursTemporary(it) }
-        val manifest = folder.resolve("manifest.json")
-        val listed = if (Files.isRegularFile(manifest, LinkOption.NOFOLLOW_LINKS)) {
+        val byName = entries.associateBy { it.fileName.toString() }
+        val listed = byName["manifest.json"]?.let { manifest ->
+            if (Files.size(manifest) > MaxTextBytes) return false
             subtitleManifestFileNames(String(Files.readAllBytes(manifest), Charsets.UTF_8)) ?: return false
-        } else {
-            emptyList()
+        } ?: emptyList()
+        // Exactly the subtitle files the manifest lists.
+        if (listed.toSet().size != listed.size || !listed.all { it in byName && it != "manifest.json" }) return false
+        byName.all { (name, file) ->
+            name == "manifest.json" || name in listed || validatesAsOurs(name, file)
         }
-        val others = names.filterNot { it in knownNames || isArtwork(it) }
-        others.toSet() == listed.toSet()
     }.getOrDefault(false)
 
-    private fun isArtwork(name: String) = name.substringBeforeLast('.', "") in artworkStems
-    private fun isOursTemporary(name: String) = name.startsWith(TemporaryPrefix) || name.removeSuffix(TemporarySuffix).let { it in knownNames || isArtwork(it) || it.endsWith(".srt") || it.endsWith(".vtt") }
+    private const val MaxTextBytes = 1_000_000L
 
-    /** Removes temporary files of the app's own writes. Called only for a folder already proven to be the app's. */
-    fun removeOwnTemporaries(folder: Path) {
+    private fun text(file: Path): String? = if (Files.size(file) > MaxTextBytes) null else String(Files.readAllBytes(file), Charsets.UTF_8)
+
+    private fun validatesAsOurs(name: String, file: Path): Boolean = when {
+        name == SkipTimesSidecar.FILE_NAME -> text(file)?.let { SkipTimesSidecar.decode(it) is SavedSkipTimesRead.Saved } == true
+        name == EpisodeListSidecar.FILE_NAME -> text(file)?.let { EpisodeListSidecar.decode(it) } != null
+        else -> {
+            val stem = name.substringBeforeLast('.', "")
+            val extension = name.substringAfterLast('.', "")
+            when {
+                ArtworkRole.entries.none { it.fileStem == stem } -> false
+                extension == "none" -> text(file)?.let { ArtworkMarker.decode(it) != null || it.trim().toLongOrNull() != null } == true
+                extension in SavedArtwork.extensions -> isImage(file)
+                else -> false
+            }
+        }
+    }
+
+    /** A real image of a kind the app saves (JPEG, PNG, WebP, GIF), within the size it saves. */
+    private fun isImage(file: Path): Boolean {
+        val size = Files.size(file)
+        if (size < 12 || size > SavedArtwork.MaxBytes) return false
+        val head = Files.newByteChannel(file, java.nio.file.StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS).use { channel ->
+            val buffer = ByteBuffer.allocate(12)
+            while (buffer.hasRemaining() && channel.read(buffer) > 0) Unit
+            buffer.array()
+        }
+        fun at(offset: Int, vararg bytes: Int) = bytes.withIndex().all { (i, b) -> head[offset + i] == b.toByte() }
+        return at(0, 0xFF, 0xD8, 0xFF) || at(0, 0x89, 0x50, 0x4E, 0x47) || at(0, 0x47, 0x49, 0x46, 0x38) ||
+            (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50))
+    }
+
+    /** Removes the app's own temporary files ([isTemporaryName]) from a folder that carries its mark. Nothing else. */
+    fun removeOwnTemporaries(folder: Path, videoName: String) {
+        if (!isOwned(folder, videoName)) return
         runCatching {
             Files.list(folder).use { it.toList() }
-                .filter { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(it) && it.fileName.toString().endsWith(TemporarySuffix) && isOursTemporary(it.fileName.toString()) }
+                .filter { isTemporaryName(it.fileName.toString()) && Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(it) }
                 .forEach { runCatching { Files.deleteIfExists(it) } }
         }
     }
