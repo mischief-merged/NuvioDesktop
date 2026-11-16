@@ -37,7 +37,7 @@ class SavedArtworkTest {
         folder.deleteRecursively()
     }
 
-    private fun companion() = ArtworkCompanion(fetchImage = { fetched += it; answer(it) }, nowEpochMs = { now })
+    private fun companion() = ArtworkCompanion(fetchImage = { fetched += it; answer(it)?.let { bytes -> ImageFetch.Bytes(bytes) } ?: ImageFetch.Unreachable }, nowEpochMs = { now })
     private fun uriOf(name: String = "a.mkv") = File(folder, name).also { it.writeText("v") }.toURI().toString()
     private fun episode(uri: String?) = DownloadItem(
         id = "d1", contentType = "series", parentMetaId = "tt1", parentMetaType = "series", videoId = "tt1:1:1", title = "Show",
@@ -105,7 +105,8 @@ class SavedArtworkTest {
 
         assertContentEquals(poster, File(dir, "poster.jpg").readBytes())
         assertFalse(File(dir, "thumbnail.jpg").exists())
-        assertFalse(File(dir, "thumbnail.none").exists())
+        // Nothing was answered, so it is marked as a failure to retry soon, not as a settled no.
+        assertFalse(ArtworkMarker.read(uri, ArtworkRole.Thumbnail)!!.answered)
     }
 
     @Test
@@ -165,7 +166,7 @@ class SavedArtworkTest {
             fetchImage = {
                 // Another run saves the poster, as a different type, while this fetch is in flight.
                 DownloadSubtitleStorage(uri).writeBytes("poster.png", png)
-                jpeg
+                ImageFetch.Bytes(jpeg)
             },
             nowEpochMs = { now },
         )
