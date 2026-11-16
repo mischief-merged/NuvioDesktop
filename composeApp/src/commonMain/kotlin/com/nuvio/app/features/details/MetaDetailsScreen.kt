@@ -293,10 +293,10 @@ fun MetaDetailsScreen(
     }.collectAsStateWithLifecycle()
     val networkStatusUiState by NetworkStatusRepository.uiState.collectAsStateWithLifecycle()
     // When the details cannot be loaded, what downloads saved stands in for them.
-    val savedMeta by rememberSavedDetails(
-        type, id, wanted = loadedMeta == null && (uiState.errorMessage != null || networkStatusUiState.isOfflineLike),
+    val savedLookup by rememberSavedLookup(
+        type, id, wanted = savedDetailsWanted(loadedMeta != null, uiState.errorMessage, networkStatusUiState.condition),
     )
-    val displayedMeta = loadedMeta ?: savedMeta
+    val displayedMeta = loadedMeta ?: savedLookup.meta
     var autoLoadAttempted by remember(type, id) { mutableStateOf(false) }
     var observedOfflineState by remember(type, id) { mutableStateOf(false) }
     var selectedEpisodeForActions by remember(type, id) { mutableStateOf<MetaVideo?>(null) }
@@ -521,7 +521,7 @@ fun MetaDetailsScreen(
                 )
             }
 
-            displayedMeta == null && uiState.errorMessage != null -> {
+            displayedMeta == null && uiState.errorMessage != null && savedLookup.settled -> {
                 Column(
                     modifier = Modifier
                         .align(Alignment.Center)
