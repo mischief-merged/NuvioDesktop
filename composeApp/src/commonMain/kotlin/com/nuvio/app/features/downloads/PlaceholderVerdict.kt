@@ -10,9 +10,12 @@ import com.nuvio.app.features.player.looksLikePlaceholder
  *    because a source's size and the file it serves do not differ by a factor of ten, except when
  *    the file is not what was announced. Only a claim of a real size counts: a claim below
  *    [PlaceholderMinClaimBytes] is too small to say anything.
- *  - bitrate: the file's size over the running time of the title is below [PlaceholderMinBitsPerSecond],
- *    which no real video of that length reaches. Decisive on its own, and needs no claim from the
- *    source, only the title's running time. Only a finished file is judged.
+ *  - bitrate: the file's size over the running time of the title. Below [PlaceholderAbsurdBitsPerSecond]
+ *    (20 kbit/s) it is decisive on its own, whatever else is known except that the file's own length
+ *    matches the title. Between that and [PlaceholderMinBitsPerSecond] (100 kbit/s) it is decisive only
+ *    when the file's own measured length is also far short of the running time (under a fifth), and a
+ *    weak signal when the length is not known. A file whose own length is close to the running time
+ *    is complete and is never judged by its bitrate. Only a finished file is judged.
  *  - running time: the file is under ten minutes and under a fifth of the running time of the
  *    title, the same rule playback uses ([looksLikePlaceholder]), here on the duration the file
  *    states. Weak, because a runtime can be wrong.
@@ -32,9 +35,18 @@ internal const val PlaceholderMinClaimBytes = 200_000_000L
 
 /**
  * A file whose size, spread over the whole running time of the title, comes to less than this many
- * bits per second (100 kbit/s) cannot be that title: even a poor video or an audio-only file is above it.
+ * bits per second (100 kbit/s) is too small for that title, if it is also far too short for it.
  */
 internal const val PlaceholderMinBitsPerSecond = 100_000L
+
+/**
+ * Below this many bits per second (20 kbit/s) a size is absurd for the running time of any video,
+ * and decides even when no length of the file is known.
+ */
+internal const val PlaceholderAbsurdBitsPerSecond = 20_000L
+
+/** A file whose own length is under this part of the running time is far short of it (the player's fraction). */
+internal const val PlaceholderFarShortFraction = 0.20
 
 /** What the file is to be compared with, as far as it is known. */
 internal class PlaceholderEvidence(
@@ -80,11 +92,20 @@ internal fun isFarBelowClaim(fileBytes: Long?, claimedBytes: Long?): Boolean {
     return file.toDouble() < claim.toDouble() * PlaceholderSizeFraction
 }
 
+private fun impliedBitsPerSecond(bytes: Long, runtimeMinutes: Int): Double = bytes.toDouble() * 8.0 / (runtimeMinutes * 60.0)
+
 /** Whether [bytes] spread over [runtimeMinutes] is a bitrate under [PlaceholderMinBitsPerSecond]. False when either is unknown. */
 internal fun isTooSmallForRuntime(bytes: Long?, runtimeMinutes: Int?): Boolean {
     val size = bytes?.takeIf { it >= 0L } ?: return false
     val minutes = runtimeMinutes?.takeIf { it > 0 } ?: return false
-    return size.toDouble() * 8.0 / (minutes * 60.0) < PlaceholderMinBitsPerSecond.toDouble()
+    return impliedBitsPerSecond(size, minutes) < PlaceholderMinBitsPerSecond.toDouble()
+}
+
+/** Whether [bytes] spread over [runtimeMinutes] is a bitrate under [PlaceholderAbsurdBitsPerSecond]. False when either is unknown. */
+internal fun isAbsurdlySmallForRuntime(bytes: Long?, runtimeMinutes: Int?): Boolean {
+    val size = bytes?.takeIf { it >= 0L } ?: return false
+    val minutes = runtimeMinutes?.takeIf { it > 0 } ?: return false
+    return impliedBitsPerSecond(size, minutes) < PlaceholderAbsurdBitsPerSecond.toDouble()
 }
 
 /**
@@ -103,22 +124,34 @@ internal fun placeholderVerdict(evidence: PlaceholderEvidence): PlaceholderVerdi
 
     val duration = evidence.durationMs?.takeIf { it > 0L }
     val runtime = evidence.runtimeMinutes?.takeIf { it > 0 }
-    if (fileBytes != null && runtime != null && isTooSmallForRuntime(fileBytes, runtime)) {
-        return PlaceholderVerdict.NotTheRealVideo(PlaceholderReason.TooSmallForRuntime(fileBytes, runtime))
-    }
     val canJudgeLength = duration != null && runtime != null
-    val shortForRuntime = canJudgeLength && looksLikePlaceholder(duration!!, runtime)
+    // The file's own length is far short of the title's, or close to it (then the file is complete).
+    val farShort = canJudgeLength && duration!! < runtime!! * 60_000.0 * PlaceholderFarShortFraction
+    val lengthMatches = canJudgeLength && !farShort
+
+    if (fileBytes != null && runtime != null && !lengthMatches) {
+        if (isAbsurdlySmallForRuntime(fileBytes, runtime) || (farShort && isTooSmallForRuntime(fileBytes, runtime))) {
+            return PlaceholderVerdict.NotTheRealVideo(PlaceholderReason.TooSmallForRuntime(fileBytes, runtime))
+        }
+    }
+
+    val shortForRuntime = canJudgeLength && looksLikePlaceholder(duration!!, runtime!!)
     val pictureProblem = evidence.frames?.takeIf {
         it == DownloadedFramesProblem.StillPicture || it == DownloadedFramesProblem.Blank
     }
+    // With no length known, a bitrate between the floors is a weak sign that needs a second one.
+    val lowWithNoLength = fileBytes != null && runtime != null && duration == null && isTooSmallForRuntime(fileBytes, runtime)
 
     if (shortForRuntime && pictureProblem != null) {
         return PlaceholderVerdict.NotTheRealVideo(PlaceholderReason.ShortForRuntime(duration!!, runtime!!))
     }
+    if (lowWithNoLength && pictureProblem != null) {
+        return PlaceholderVerdict.NotTheRealVideo(PlaceholderReason.TooSmallForRuntime(fileBytes!!, runtime!!))
+    }
 
     val sizeJudged = fileBytes != null && claimed != null && claimed >= PlaceholderMinClaimBytes
     // One weak signal on its own proves nothing, and neither does a comparison that was not possible.
-    if (shortForRuntime || pictureProblem != null) return PlaceholderVerdict.CouldNotCheck
+    if (shortForRuntime || pictureProblem != null || lowWithNoLength) return PlaceholderVerdict.CouldNotCheck
     return if (sizeJudged || canJudgeLength || (fileBytes != null && runtime != null)) PlaceholderVerdict.LooksRight else PlaceholderVerdict.CouldNotCheck
 }
 

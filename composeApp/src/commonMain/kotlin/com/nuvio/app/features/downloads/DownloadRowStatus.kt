@@ -138,8 +138,9 @@ internal fun downloadRowStatus(
         DownloadStatus.Completed -> if (item.isPlaceholder) {
             DownloadRowStatus(DownloadPhase.NotTheRealVideo, isAuto = isAuto)
         } else {
+            val runtime = runtimeMinutes?.invoke(item)
             val cannotCompare = runtimeMinutes != null && item.framesCheck != DownloadFramesCheck.Passed &&
-                item.claimedSizeBytes() == null && runtimeMinutes(item) == null
+                item.claimedSizeBytes(runtime) == null && runtime == null
             DownloadRowStatus(
                 phase = DownloadPhase.Completed,
                 result = when {
