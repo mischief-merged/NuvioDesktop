@@ -861,6 +861,11 @@ private fun DownloadRow(
             delay(SkipTimesNoteLookIntervalMs)
         }
     }
+    // A folder of the sidecar's name that is not the app's: nothing is saved in it, and the row says so.
+    val sidecarRefused by produceState(false, item.localFileUri, item.status) {
+        val uri = item.localFileUri?.takeIf { item.status == DownloadStatus.Completed }
+        value = uri != null && SidecarIo.read { DownloadSubtitleStorage(uri).refused() } == true
+    }
     val displayTitle = item.displayTitle()
     val displaySubtitle = downloadDisplaySubtitle(
         item = item,
@@ -966,6 +971,13 @@ private fun DownloadRow(
                     resultText(rowStatus, skipTimesNote)?.let { result ->
                         Text(
                             text = result,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (sidecarRefused) {
+                        Text(
+                            text = stringResource(Res.string.downloads_sidecar_refused, item.fileName + ".subtitles"),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

@@ -36,4 +36,7 @@ internal actual class DownloadSubtitleStorage actual constructor(localVideoUri: 
         require(fileName.isNotBlank() && File(fileName).name == fileName && fileName != "." && fileName != "..")
         return File(directory, fileName)
     }
+
+    // A folder of the app's own: there is no folder of the user's to tell apart here.
+    actual fun refused(): Boolean = false
 }

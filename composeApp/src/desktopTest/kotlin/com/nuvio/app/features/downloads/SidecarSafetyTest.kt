@@ -122,7 +122,7 @@ class SidecarSafetyTest {
         SkipTimesSidecar.write(uri, SavedSkipTimes(3, listOf(recap)))
 
         assertEquals(listOf(recap), saved(uri).intervals)
-        assertEquals(listOf("skip-times.json"), File(folder, "a.mkv.subtitles").list().orEmpty().toList())
+        assertEquals(listOf("skip-times.json"), File(folder, "a.mkv.subtitles").list().orEmpty().filterNot { it == SidecarOwnership.MarkerName })
     }
 
     @Test
@@ -147,7 +147,7 @@ class SidecarSafetyTest {
         storage.write("manifest.json", "two")
 
         assertEquals("two", storage.read("manifest.json"))
-        assertEquals(listOf("manifest.json"), File(folder, "a.mkv.subtitles").list().orEmpty().toList())
+        assertEquals(listOf("manifest.json"), File(folder, "a.mkv.subtitles").list().orEmpty().filterNot { it == SidecarOwnership.MarkerName })
     }
 
     // ---- 3. races ----
