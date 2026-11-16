@@ -17,6 +17,7 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -38,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.error
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -49,6 +51,8 @@ import com.nuvio.app.core.i18n.localizedByteUnit
 import com.nuvio.app.core.network.NetworkStatusRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import org.jetbrains.compose.resources.getString
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import com.nuvio.app.core.ui.NuvioScreen
@@ -102,6 +106,7 @@ fun DownloadsScreen(
         rememberDeletion = rememberDeletion,
         onOpenShowDetails = onOpenShowDetails,
         episodeLinks = episodeLinks,
+        rechecks = DownloadRechecks.app,
     )
 }
 
@@ -129,11 +134,24 @@ internal fun DownloadsScreenContent(
     episodeLinks: DownloadEpisodeLinks? = null,
     /** Where the episodes that are about to be deleted after watching come from. Null where there is no auto-download. */
     autoDownloads: AutoDownloadController? = if (showAutoDownloads) AutoDownloads else null,
+    /** Looks again at finished downloads for a placeholder in place of the video. Null where that is not offered. */
+    rechecks: DownloadRechecks? = null,
 ) {
     val uiState by remember {
         DownloadsRepository.ensureLoaded()
         DownloadsRepository.uiState
     }.collectAsStateWithLifecycle()
+    val checkScope = rememberCoroutineScope()
+    val checkClearText = stringResource(Res.string.downloads_check_all_clear)
+    val checkNothingText = stringResource(Res.string.downloads_check_all_nothing)
+    val checkFoundText = { count: Int -> runBlocking { getString(Res.string.downloads_check_all_found, count) } }
+    // The downloads that are due are looked at as soon as the screen is opened, the ones on it first.
+    LaunchedEffect(rechecks) {
+        rechecks?.checkOnScreen(DownloadsRepository.uiState.value.items)
+    }
+    val checkAgain: ((DownloadItem) -> Unit)? = rechecks?.let { checks ->
+        { item: DownloadItem -> checkScope.launch { checks.checkAgain(item) } }
+    }
     LaunchedEffect(uiState.completedItems.size) {
         DownloadsRepository.markCompletedSeen()
     }
@@ -199,6 +217,28 @@ internal fun DownloadsScreenContent(
                     }
                 },
                 actions = {
+                    if (rechecks != null) {
+                        val checkAllText = stringResource(Res.string.downloads_check_all)
+                        IconButton(
+                            onClick = {
+                                checkScope.launch {
+                                    val summary = rechecks.checkAll()
+                                    NuvioToastController.show(
+                                        when {
+                                            summary.flagged > 0 -> checkFoundText(summary.flagged)
+                                            summary.looked == 0 -> checkNothingText
+                                            else -> checkClearText
+                                        },
+                                    )
+                                }
+                            },
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Refresh,
+                                contentDescription = checkAllText,
+                            )
+                        }
+                    }
                     IconButton(
                         onClick = {
                             if (!openDownloadsFolder()) {
@@ -256,6 +296,7 @@ internal fun DownloadsScreenContent(
                 },
                 onDeleteDownload = { downloadPendingDeletionId = it },
                 episodeLinks = episodeLinks,
+                onCheckAgain = checkAgain,
             )
         } else {
             downloadsShowContent(
@@ -267,6 +308,7 @@ internal fun DownloadsScreenContent(
                 scheduledDeletions = removalByDownload,
                 onKeepScheduled = { autoDownloads?.keepDownload(activeProfileId, it) },
                 episodeLinks = episodeLinks,
+                onCheckAgain = checkAgain,
             )
         }
     }
@@ -331,6 +373,7 @@ private fun LazyListScope.downloadsRootContent(
     onOpenShow: (showId: String, title: String) -> Unit,
     onDeleteDownload: (String) -> Unit,
     episodeLinks: DownloadEpisodeLinks?,
+    onCheckAgain: ((DownloadItem) -> Unit)?,
 ) {
     uiState.storeProblem?.let { problem ->
         item(key = "store-problem") {
@@ -377,6 +420,7 @@ private fun LazyListScope.downloadsRootContent(
                 onRetry = { DownloadsRepository.retryDownload(item.id) },
                 onDelete = { onDeleteDownload(item.id) },
                 episodeLinks = episodeLinks,
+                onCheckAgain = onCheckAgain,
             )
         }
     }
@@ -398,6 +442,7 @@ private fun LazyListScope.downloadsRootContent(
                 onResume = { DownloadsRepository.resumeDownload(item.id) },
                 onRetry = { DownloadsRepository.retryDownload(item.id) },
                 onDelete = { onDeleteDownload(item.id) },
+                onCheckAgain = onCheckAgain,
             )
         }
     }
@@ -469,6 +514,7 @@ private fun LazyListScope.downloadsShowContent(
     scheduledDeletions: Map<String, AutoDownloadRemoval>,
     onKeepScheduled: (downloadId: String) -> Unit,
     episodeLinks: DownloadEpisodeLinks?,
+    onCheckAgain: ((DownloadItem) -> Unit)?,
 ) {
     val showEpisodes = episodes
         .filter { it.parentMetaId == showId }
@@ -530,6 +576,7 @@ private fun LazyListScope.downloadsShowContent(
                 scheduledDeletionDueAtEpochMs = scheduledDeletions[item.id]?.dueAtEpochMs,
                 onKeepScheduled = { onKeepScheduled(item.id) },
                 episodeLinks = episodeLinks,
+                onCheckAgain = onCheckAgain,
             )
         }
     }
@@ -549,8 +596,10 @@ private fun DownloadRow(
     scheduledDeletionDueAtEpochMs: Long? = null,
     onKeepScheduled: () -> Unit = {},
     episodeLinks: DownloadEpisodeLinks? = null,
+    /** Looks at the file again. Null where that is not offered. */
+    onCheckAgain: ((DownloadItem) -> Unit)? = null,
 ) {
-    val rowStatus = downloadRowStatus(item, clock.nowEpochMs, clock.offline)
+    val rowStatus = downloadRowStatus(item, clock.nowEpochMs, clock.offline, runtimeMinutes = ::runtimeMinutesOfDownload)
     val skipTimesNote by produceState<DownloadCompanionsNote?>(null, item.localFileUri, item.status) {
         val uri = item.localFileUri?.takeIf { item.status == DownloadStatus.Completed }
         // Subtitles and skip times are saved a moment after a download finishes, so a missing note is looked for a few more times.
@@ -573,6 +622,8 @@ private fun DownloadRow(
         name,
         if (rowStatus.phase == DownloadPhase.Failed) {
             stringResource(Res.string.downloads_status_failed_reason, failureReasonText(item))
+        } else if (rowStatus.phase == DownloadPhase.NotTheRealVideo) {
+            stringResource(Res.string.downloads_status_problem_reason, placeholderRowReason(item))
         } else {
             stringResource(rowStatus.phase.announcement)
         },
@@ -635,9 +686,15 @@ private fun DownloadRow(
                         modifier = Modifier.semantics {
                             contentDescription = announcement
                             liveRegion = LiveRegionMode.Polite
+                            // A file that is not the video is a problem for a screen reader, not a finished download.
+                            if (rowStatus.phase == DownloadPhase.NotTheRealVideo) error(announcement)
                         },
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (rowStatus.phase == DownloadPhase.NotTheRealVideo) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
                     )
                     resultText(rowStatus, skipTimesNote)?.let { result ->
                         Text(
@@ -645,6 +702,9 @@ private fun DownloadRow(
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    }
+                    if (onCheckAgain != null && (rowStatus.result == DownloadResult.NotChecked || rowStatus.result == DownloadResult.CouldNotCompare)) {
+                        CheckAgainButton(item = item, onCheckAgain = onCheckAgain)
                     }
                     if (scheduledDeletionDueAtEpochMs != null) {
                         val hours = removalHoursLeft(scheduledDeletionDueAtEpochMs, clock.nowEpochMs)
@@ -694,11 +754,14 @@ private fun DownloadRow(
                         }
                         DownloadStatus.Failed -> Unit
                         DownloadStatus.Completed -> {
-                            IconButton(onClick = onOpen) {
-                                Icon(
-                                    imageVector = Icons.Rounded.PlayArrow,
-                                    contentDescription = playDescription,
-                                )
+                            // A placeholder is not played: it is not the video.
+                            if (!item.isPlaceholder) {
+                                IconButton(onClick = onOpen) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.PlayArrow,
+                                        contentDescription = playDescription,
+                                    )
+                                }
                             }
                         }
                     }
@@ -713,6 +776,14 @@ private fun DownloadRow(
 
             if (episodeLinks != null && item.isEpisode) {
                 EpisodeLinkButtons(item = item, links = episodeLinks)
+            }
+
+            if (item.isPlaceholder) {
+                PlaceholderDetails(
+                    item = item,
+                    onChooseAnotherSource = onChooseAnotherSource,
+                    onCheckAgain = onCheckAgain,
+                )
             }
 
             if (item.status == DownloadStatus.Failed) {
@@ -794,6 +865,7 @@ private fun statusText(item: DownloadItem, status: DownloadRowStatus): String {
 
     val line = when (status.phase) {
         DownloadPhase.Failed -> stringResource(Res.string.downloads_status_failed_reason, failureReasonText(item))
+        DownloadPhase.NotTheRealVideo -> placeholderRowReason(item)
         else -> if (status.phase.showsSize) {
             stringResource(status.phase.message, size)
         } else {
@@ -854,6 +926,55 @@ private fun EpisodeLinkButtons(
             onClick = { links.onGoToShow(item) },
         ) {
             Text(text = stringResource(Res.string.downloads_auto_go_to_show), style = MaterialTheme.typography.labelLarge)
+        }
+    }
+}
+
+/** The reason a finished file is not the video, as stored with it. */
+@Composable
+private fun placeholderRowReason(item: DownloadItem): String =
+    item.errorMessage?.takeIf { it.isNotBlank() } ?: stringResource(Res.string.downloads_status_not_real_video)
+
+/** "Check again" for a row, with a label that names the download. */
+@Composable
+private fun CheckAgainButton(item: DownloadItem, onCheckAgain: (DownloadItem) -> Unit) {
+    val description = stringResource(Res.string.downloads_check_again_description, item.nameForLabels())
+    TextButton(
+        modifier = Modifier.semantics { contentDescription = description },
+        onClick = { onCheckAgain(item) },
+    ) {
+        Text(text = stringResource(Res.string.downloads_check_again), style = MaterialTheme.typography.labelLarge)
+    }
+}
+
+/**
+ * What to do with a finished file that is not the video: choose another source, check it again, or
+ * delete it (the delete button of the row moves the file to the trash). The file stays where it is.
+ */
+@Composable
+private fun PlaceholderDetails(
+    item: DownloadItem,
+    onChooseAnotherSource: ((DownloadItem) -> Unit)?,
+    onCheckAgain: ((DownloadItem) -> Unit)?,
+) {
+    val name = item.nameForLabels()
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            text = stringResource(Res.string.downloads_placeholder_next_step),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (onChooseAnotherSource != null) {
+                val chooseDescription = stringResource(Res.string.downloads_choose_another_source_description, name)
+                TextButton(
+                    modifier = Modifier.semantics { contentDescription = chooseDescription },
+                    onClick = { onChooseAnotherSource(item) },
+                ) {
+                    Text(text = stringResource(Res.string.downloads_choose_another_source), style = MaterialTheme.typography.labelLarge)
+                }
+            }
+            if (onCheckAgain != null) CheckAgainButton(item = item, onCheckAgain = onCheckAgain)
         }
     }
 }

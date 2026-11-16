@@ -11,6 +11,8 @@ import nuvio.composeapp.generated.resources.downloads_announce_paused_storage_li
 import nuvio.composeapp.generated.resources.downloads_announce_reconnecting
 import nuvio.composeapp.generated.resources.downloads_announce_waiting_network
 import nuvio.composeapp.generated.resources.downloads_result_basic
+import nuvio.composeapp.generated.resources.downloads_result_could_not_compare
+import nuvio.composeapp.generated.resources.downloads_status_not_real_video
 import nuvio.composeapp.generated.resources.downloads_result_not_checked
 import nuvio.composeapp.generated.resources.downloads_result_suspect
 import nuvio.composeapp.generated.resources.downloads_result_verified_fingerprint
@@ -56,6 +58,9 @@ internal enum class DownloadPhase(
     PausedStorageLimit(Res.string.downloads_status_paused_storage_limit, showsSize = true, Res.string.downloads_announce_paused_storage_limit),
     PausedLowDiskSpace(Res.string.downloads_status_paused_low_disk, showsSize = true, Res.string.downloads_announce_paused_low_disk),
     Completed(Res.string.downloads_status_completed, showsSize = true, Res.string.downloads_announce_completed),
+
+    /** The file is there but is not the video: a placeholder the source sent. The row says why. */
+    NotTheRealVideo(Res.string.downloads_status_not_real_video, showsSize = false, Res.string.downloads_status_not_real_video),
     Failed(Res.string.downloads_status_failed, showsSize = false, Res.string.downloads_announce_failed),
 }
 
@@ -78,6 +83,9 @@ internal enum class DownloadResult(val message: StringResource) {
 
     /** The file's own title names another episode. */
     Suspect(Res.string.downloads_result_suspect),
+
+    /** Not checked, and nothing to check it against: the source claimed no size and the title's running time is not known. */
+    CouldNotCompare(Res.string.downloads_result_could_not_compare),
 }
 
 internal data class DownloadRowStatus(
@@ -94,12 +102,15 @@ internal data class DownloadRowStatus(
  * The sub-status of a download row.
  *
  * [nowEpochMs] is the time of the look and [offline] whether the internet cannot be reached; the
- * rest is read from [item]. Nothing here is stored.
+ * rest is read from [item]. Nothing here is stored. [runtimeMinutes], when given, finds the running
+ * time of the title: a file that is not checked says "could not check" when there is no size claim
+ * and no running time to hold it against. Without it that is not said.
  */
 internal fun downloadRowStatus(
     item: DownloadItem,
     nowEpochMs: Long,
     offline: Boolean = false,
+    runtimeMinutes: ((DownloadItem) -> Int?)? = null,
 ): DownloadRowStatus {
     val isAuto = item.autoDownloadRuleKey != null
     return when (item.status) {
@@ -124,21 +135,27 @@ internal fun downloadRowStatus(
             isAuto = isAuto,
         )
         DownloadStatus.Failed -> DownloadRowStatus(DownloadPhase.Failed, isAuto = isAuto)
-        DownloadStatus.Completed -> DownloadRowStatus(
-            phase = DownloadPhase.Completed,
-            result = when {
-                item.framesCheck == DownloadFramesCheck.Suspect -> DownloadResult.Suspect
-                else -> when (item.verifiedBy) {
-                    DownloadVerification.Hash -> DownloadResult.VerifiedBySource
-                    DownloadVerification.Digest -> DownloadResult.VerifiedByServer
-                    DownloadVerification.Size -> DownloadResult.VerifiedBySize
-                    DownloadVerification.None -> DownloadResult.BasicCheck
-                    null -> DownloadResult.NotChecked
-                }
-            },
-            pictureChecked = item.framesCheck == DownloadFramesCheck.Passed,
-            isAuto = isAuto,
-        )
+        DownloadStatus.Completed -> if (item.isPlaceholder) {
+            DownloadRowStatus(DownloadPhase.NotTheRealVideo, isAuto = isAuto)
+        } else {
+            val cannotCompare = runtimeMinutes != null && item.framesCheck != DownloadFramesCheck.Passed &&
+                item.claimedSizeBytes() == null && runtimeMinutes(item) == null
+            DownloadRowStatus(
+                phase = DownloadPhase.Completed,
+                result = when {
+                    item.framesCheck == DownloadFramesCheck.Suspect -> DownloadResult.Suspect
+                    else -> when (item.verifiedBy) {
+                        DownloadVerification.Hash -> DownloadResult.VerifiedBySource
+                        DownloadVerification.Digest -> DownloadResult.VerifiedByServer
+                        DownloadVerification.Size -> DownloadResult.VerifiedBySize
+                        DownloadVerification.None -> if (cannotCompare) DownloadResult.CouldNotCompare else DownloadResult.BasicCheck
+                        null -> if (cannotCompare) DownloadResult.CouldNotCompare else DownloadResult.NotChecked
+                    }
+                },
+                pictureChecked = item.framesCheck == DownloadFramesCheck.Passed,
+                isAuto = isAuto,
+            )
+        }
     }
 }
 
