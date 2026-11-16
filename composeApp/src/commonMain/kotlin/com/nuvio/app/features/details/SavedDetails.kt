@@ -15,6 +15,7 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.nuvio.app.core.network.NetworkCondition
 import com.nuvio.app.features.downloads.DownloadItem
 import com.nuvio.app.features.downloads.DownloadStatus
 import com.nuvio.app.features.downloads.DownloadsRepository
@@ -37,7 +38,9 @@ internal object SavedDetails {
     suspend fun metaFor(type: String, id: String): MetaDetails? = SidecarIo.read { readMeta(type, id) }
 
     private fun readMeta(type: String, id: String): MetaDetails? {
-        val items = DownloadsRepository.uiState.value.items.filter { it.parentMetaId == id && it.status == DownloadStatus.Completed }
+        // The list of downloads may not have been read yet when a title is opened offline.
+        DownloadsRepository.ensureLoaded()
+        val items = DownloadsRepository.uiState.value.items.filter { it.parentMetaId == id && it.status == DownloadStatus.Completed && !it.isPlaceholder }
         if (items.isEmpty()) return null
         val lists = items.mapNotNull { item ->
             item.localFileUri?.let { runCatching { EpisodeListSidecar.read(it) }.getOrNull() }
@@ -83,11 +86,32 @@ internal fun buildSavedMeta(type: String, id: String, items: List<DownloadItem>,
     )
 }
 
-/** The saved details of a title, while [wanted] (the real details are missing). Null until read, and when there are none. */
+/**
+ * Whether the page stands in saved details for the real ones: the details are not loaded and either
+ * their load failed or the network is known to be down, which includes "online, but the servers
+ * cannot be reached", the state that otherwise ends in a dead end.
+ */
+internal fun savedDetailsWanted(detailsLoaded: Boolean, loadError: String?, condition: NetworkCondition): Boolean =
+    !detailsLoaded && (loadError != null ||
+        condition == NetworkCondition.NoInternet || condition == NetworkCondition.ServersUnreachable)
+
+/** What looking for saved details came to: [settled] is false while the look is still being made. */
+internal class SavedLookup(val meta: MetaDetails?, val settled: Boolean)
+
+/**
+ * The saved details of a title, while [wanted] (the real details are missing). The meta is null until
+ * read, and when there are none; [SavedLookup.settled] says which, so that a page does not show its
+ * "failed to load" dead end for the moment the look takes.
+ */
 @Composable
-internal fun rememberSavedDetails(type: String, id: String, wanted: Boolean): State<MetaDetails?> =
-    produceState<MetaDetails?>(null, type, id, wanted, DownloadsRepository.uiState.value.items) {
-        value = if (wanted) SavedDetails.metaFor(type, id) else null
+internal fun rememberSavedLookup(type: String, id: String, wanted: Boolean): State<SavedLookup> =
+    produceState(SavedLookup(null, settled = !wanted), type, id, wanted, DownloadsRepository.uiState.value.items) {
+        if (!wanted) {
+            value = SavedLookup(null, settled = true)
+        } else {
+            value = SavedLookup(null, settled = false)
+            value = SavedLookup(SavedDetails.metaFor(type, id), settled = true)
+        }
     }
 
 /** The plain line shown over a page built from saved details. */

@@ -122,10 +122,10 @@ internal fun EpisodeDetailsScreen(
         ?: MetaDetailsRepository.peek(type, id)
     val networkStatus by NetworkStatusRepository.uiState.collectAsStateWithLifecycle()
     // When the details cannot be loaded, what downloads saved stands in for them.
-    val savedMeta by rememberSavedDetails(
-        type, id, wanted = loadedMeta == null && (uiState.errorMessage != null || networkStatus.isOfflineLike),
+    val savedLookup by rememberSavedLookup(
+        type, id, wanted = savedDetailsWanted(loadedMeta != null, uiState.errorMessage, networkStatus.condition),
     )
-    val meta = loadedMeta ?: savedMeta
+    val meta = loadedMeta ?: savedLookup.meta
     var autoLoadAttempted by remember(type, id) { mutableStateOf(false) }
 
     LaunchedEffect(type, id, loadedMeta, uiState.isLoading, autoLoadAttempted) {
@@ -162,7 +162,7 @@ internal fun EpisodeDetailsScreen(
             )
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 when {
-                    meta == null && uiState.errorMessage != null && !uiState.isLoading -> {
+                    meta == null && uiState.errorMessage != null && !uiState.isLoading && savedLookup.settled -> {
                         EpisodePageMessage(
                             title = stringResource(Res.string.details_failed_to_load),
                             message = when (networkStatus.condition) {

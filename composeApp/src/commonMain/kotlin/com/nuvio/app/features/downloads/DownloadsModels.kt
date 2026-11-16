@@ -98,8 +98,16 @@ data class DownloadItem(
         get() = status == DownloadStatus.Failed &&
             (failureKind == DownloadFailureKind.BadFile || failureKind == DownloadFailureKind.SourceRefused)
 
+    /**
+     * A finished download whose file is not the video: a placeholder the source served in its place.
+     * It keeps its file, so that the user can delete it to the trash, but it is not downloaded: it
+     * does not play, does not count as available offline and is replaced by a fetch from another source.
+     */
+    val isPlaceholder: Boolean
+        get() = status == DownloadStatus.Completed && framesCheck == DownloadFramesCheck.NotTheRealVideo
+
     val isPlayable: Boolean
-        get() = status == DownloadStatus.Completed && !localFileUri.isNullOrBlank()
+        get() = status == DownloadStatus.Completed && !localFileUri.isNullOrBlank() && !isPlaceholder
 
     val displaySubtitle: String
         get() = episodeTitle.orEmpty()
@@ -137,11 +145,12 @@ data class DownloadsUiState(
     /** Set when the stored list could not be read. The screen must not present the list as simply empty then. */
     val storeProblem: DownloadsStoreProblem? = null,
 ) {
+    /** What is not downloaded: running, paused, failed, and finished files that are not the video. */
     val activeItems: List<DownloadItem>
-        get() = items.filter { it.status != DownloadStatus.Completed }
+        get() = items.filter { it.status != DownloadStatus.Completed || it.isPlaceholder }
 
     val completedItems: List<DownloadItem>
-        get() = items.filter { it.status == DownloadStatus.Completed }
+        get() = items.filter { it.status == DownloadStatus.Completed && !it.isPlaceholder }
 }
 
 enum class DownloadEnqueueResult {

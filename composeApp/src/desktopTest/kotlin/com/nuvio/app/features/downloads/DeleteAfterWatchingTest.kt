@@ -443,4 +443,18 @@ class DeleteAfterWatchingTest {
         assertEquals(false, hasLaterReleasedEpisode(second, listOf(testEpisode(1), testEpisode(2), testEpisode(9, season = 0))))
         assertNull(hasLaterReleasedEpisode(second.copy(seasonNumber = null, episodeNumber = null), listOf(testEpisode(3))))
     }
+
+    @Test
+    fun a_file_marked_as_not_the_real_video_is_never_removed_after_watching() {
+        optIn()
+        assertTrue(watch(1))
+        // The file was scheduled, and a later look marked it.
+        items = items.map { if (it.episodeNumber == 1) it.copy(framesCheck = DownloadFramesCheck.NotTheRealVideo) else it }
+        now += 1_000 * hour
+
+        feature.runDue(1)
+
+        assertEquals(emptyList(), removeCalls)
+        assertTrue(items.any { it.episodeNumber == 1 })
+    }
 }

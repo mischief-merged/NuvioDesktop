@@ -99,6 +99,8 @@ class AutoDownloadRemovalTest {
             episodeThumbnail = null,
             stream = testStream("https://example.com/$episode.mp4"),
             autoDownloadRuleKey = ruleKey.takeIf { automatic },
+            // A download the user starts by choosing a source replaces what is there; an automatic one never does.
+            userChoseReplacement = !automatic,
         )
         if (!file.exists()) file.writeText("video $episode")
         finish.getValue(episode)(file.toUri().toString(), 7)

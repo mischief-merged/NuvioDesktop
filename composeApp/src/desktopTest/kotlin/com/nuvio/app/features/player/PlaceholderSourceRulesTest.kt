@@ -129,7 +129,9 @@ class PlaceholderSourceRulesTest {
     fun theDurationRuleKeepsItsThresholds() {
         assertTrue(looksLikePlaceholder(120_000L, 100))
         assertTrue(looksLikePlaceholder(120_000L, 24))
-        assertFalse(looksLikePlaceholder(8 * 60_000L, 150))
+        // Under ten minutes and under a fifth of 150 minutes: a placeholder now (it was not at the old five minutes).
+        assertTrue(looksLikePlaceholder(8 * 60_000L, 150))
+        assertFalse(looksLikePlaceholder(11 * 60_000L, 150))
         assertFalse(looksLikePlaceholder(120_000L, null))
     }
 
@@ -189,7 +191,7 @@ class PlaceholderSourceRulesTest {
 
     @Test
     fun aSuspectWithALengthAtOrAboveTheCeilingIsNotConfirmedByLengthAlone() {
-        assertFalse(confirmed(suspect = true, durationMs = PLACEHOLDER_MAX_DURATION_MS))
-        assertTrue(confirmed(suspect = true, durationMs = PLACEHOLDER_MAX_DURATION_MS - 1))
+        assertFalse(confirmed(suspect = true, durationMs = PLACEHOLDER_SUSPECT_MAX_DURATION_MS))
+        assertTrue(confirmed(suspect = true, durationMs = PLACEHOLDER_SUSPECT_MAX_DURATION_MS - 1))
     }
 }

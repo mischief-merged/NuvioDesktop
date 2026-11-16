@@ -182,4 +182,29 @@ class DownloadRowStatusTest {
         assertEquals("Film", item(DownloadStatus.Paused).copy(title = "Film", seasonNumber = null, episodeNumber = null).nameForLabels())
         assertEquals("Film", item(DownloadStatus.Paused).copy(title = "Film", seasonNumber = 1, episodeNumber = null).nameForLabels())
     }
+
+    @Test
+    fun a_finished_file_marked_as_not_the_real_video_is_a_problem_row_without_a_result() {
+        val marked = item(DownloadStatus.Completed, frames = DownloadFramesCheck.NotTheRealVideo, verifiedBy = DownloadVerification.Size)
+
+        val status = downloadRowStatus(marked, now)
+
+        assertEquals(DownloadPhase.NotTheRealVideo, status.phase)
+        assertNull(status.result)
+        assertFalse(status.pictureChecked)
+        assertTrue(marked.isPlaceholder)
+        assertFalse(marked.isPlayable)
+    }
+
+    @Test
+    fun a_download_with_nothing_to_compare_says_so_only_when_asked_with_a_runtime_lookup() {
+        val old = item(DownloadStatus.Completed)
+        assertEquals(DownloadResult.NotChecked, downloadRowStatus(old, now).result)
+        assertEquals(DownloadResult.CouldNotCompare, downloadRowStatus(old, now, runtimeMinutes = { null }).result)
+        assertEquals(DownloadResult.NotChecked, downloadRowStatus(old, now, runtimeMinutes = { 120 }).result)
+        val claimed = old.copy(streamSubtitle = "[\uD83D\uDCBE 9.53 GB] Film.mkv")
+        assertEquals(DownloadResult.NotChecked, downloadRowStatus(claimed, now, runtimeMinutes = { null }).result)
+        val verified = item(DownloadStatus.Completed, verifiedBy = DownloadVerification.Size)
+        assertEquals(DownloadResult.VerifiedBySize, downloadRowStatus(verified, now, runtimeMinutes = { null }).result)
+    }
 }
