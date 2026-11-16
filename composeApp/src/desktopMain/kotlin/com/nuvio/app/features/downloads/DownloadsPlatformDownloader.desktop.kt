@@ -313,9 +313,10 @@ internal actual object DownloadsPlatformDownloader {
         val isPartialResume = attemptedRangeRequest && statusCode == 206 && resumeFromBytes > 0L
         val appendToTemp = isPartialResume
         val startingBytes = if (appendToTemp) resumeFromBytes else 0L
-        if (!appendToTemp && tempFile.exists()) {
-            if (!partial.removeIfOurs(tempFile.toPath())) throw PartialNotOurs()
-        }
+        // An earlier partial that cannot be continued is discarded only after the checks below have
+        // passed, so a download that is refused for lack of room keeps what it already has.
+        val discardPartial = !appendToTemp && tempFile.exists()
+        val reclaimedBytes = if (discardPartial) tempFile.partialLength() else 0L
 
         val totalBytes = resolveTotalBytes(
             startingBytes = startingBytes,
@@ -328,7 +329,7 @@ internal actual object DownloadsPlatformDownloader {
         // Checked before anything of the body is written, for every download: a file announced as
         // larger than the room on the disk fails with a plain message instead of a system error.
         if (totalBytes != null) {
-            val free = freeBytesFor(request.item)
+            val free = freeBytesFor(request.item)?.plus(reclaimedBytes)
             if (free != null && totalBytes - startingBytes > free) {
                 response.body().close()
                 error(runBlocking { getString(Res.string.downloads_error_not_enough_space) })
@@ -337,9 +338,13 @@ internal actual object DownloadsPlatformDownloader {
         // Checked before anything of the body is written: a file that is announced as too large for
         // the limits of an automatic download is not started.
         val limits = request.limits
-        limits?.stopBeforeBody(downloadedBytes, totalBytes, freeBytesFor(request.item))?.let { reason ->
+        limits?.stopBeforeBody(downloadedBytes, totalBytes, freeBytesFor(request.item)?.plus(reclaimedBytes))?.let { reason ->
             response.body().close()
             throw TransferStoppedByLimit(reason)
+        }
+        if (discardPartial && !partial.removeIfOurs(tempFile.toPath())) {
+            response.body().close()
+            throw PartialNotOurs()
         }
         onProgress(downloadedBytes, totalBytes)
         val expectedDigest = if (statusCode == 200 && !appendToTemp) {

@@ -61,6 +61,37 @@ class PartialOwnershipTest {
     }
 
     @Test
+    fun a_partial_that_cannot_be_continued_is_kept_when_the_fresh_download_is_refused_for_lack_of_room() {
+        // The source answers a resume request with the whole file, so the partial would be started over.
+        val part = dir.resolve("Film.mkv.part").also { Files.write(it, ByteArray(10) { 1 }) }
+        val before = DownloadsPlatformDownloader.freeBytesProvider
+        DownloadsPlatformDownloader.freeBytesProvider = { 100L }
+        try {
+            assertFailsWith<IllegalStateException> {
+                runBlocking { DownloadsPlatformDownloader.transferToTempFile(request("Film.mkv"), part.toFile(), { _, _ -> }, limiter()) }
+            }
+        } finally {
+            DownloadsPlatformDownloader.freeBytesProvider = before
+        }
+
+        assertContentEquals(ByteArray(10) { 1 }, Files.readAllBytes(part))
+    }
+
+    @Test
+    fun the_room_a_discarded_partial_gives_back_counts_towards_the_fresh_download() {
+        val part = dir.resolve("Film.mkv.part").also { Files.write(it, ByteArray(1024) { 1 }) }
+        val before = DownloadsPlatformDownloader.freeBytesProvider
+        DownloadsPlatformDownloader.freeBytesProvider = { payload.size - 1024L }
+        try {
+            runBlocking { DownloadsPlatformDownloader.transferToTempFile(request("Film.mkv"), part.toFile(), { _, _ -> }, limiter()) }
+        } finally {
+            DownloadsPlatformDownloader.freeBytesProvider = before
+        }
+
+        assertContentEquals(payload, Files.readAllBytes(part))
+    }
+
+    @Test
     fun a_partial_this_download_created_is_recorded_and_can_be_started_again() {
         val part = dir.resolve("Film.mkv.part")
         val recorded = mutableListOf<String>()
