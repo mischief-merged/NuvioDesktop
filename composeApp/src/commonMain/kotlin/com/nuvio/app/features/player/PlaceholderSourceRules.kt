@@ -104,7 +104,7 @@ internal fun assessSourceLink(url: String, fileNames: List<String?>): LinkAssess
  * Whether a source is a placeholder, judged once the player has told its length. Any one of the independent
  * rules is enough: a short stable length against the running time, the two minute clip against the resume
  * point, or a served file far below its declared size. A [suspect] source (see [assessSourceLink]) also
- * needs only a short stable length (under [PLACEHOLDER_MAX_DURATION_MS]), even when the running time is
+ * needs only a short stable length (under [PLACEHOLDER_SUSPECT_MAX_DURATION_MS]), even when the running time is
  * unknown. Without a suspicion, a link or name never counts.
  */
 internal fun isPlaceholderConfirmed(
@@ -118,7 +118,7 @@ internal fun isPlaceholderConfirmed(
     looksLikePlaceholder(durationMs, expectedRuntimeMinutes) ||
         isWaitClipForResume(durationMs, resumeMs) ||
         servedFileTooSmallForDeclaredSize(servedBytes, declaredBytes) ||
-        (suspect && durationMs in 1 until PLACEHOLDER_MAX_DURATION_MS)
+        (suspect && durationMs in 1 until PLACEHOLDER_SUSPECT_MAX_DURATION_MS)
 
 /** A file this small can be a placeholder... */
 internal const val PLACEHOLDER_SIZE_CEILING_BYTES = 64L * 1024L * 1024L
