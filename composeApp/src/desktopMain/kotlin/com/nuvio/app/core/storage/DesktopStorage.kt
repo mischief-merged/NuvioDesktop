@@ -35,10 +35,24 @@ internal object DesktopStorage {
             stores.clear()
         }
         if (!rootDir.exists()) return
-        Files.walk(rootDir).use { stream ->
+        wipeFolder(rootDir, KeptOnWipe)
+    }
+
+    /**
+     * What a wipe of the app's data (sign-out, a lost session, account deletion) never touches: the app's own
+     * downloads folder, which holds the user's downloaded videos, and the move journals that may still name
+     * copies of them. Settings and lists go; the files stay where they are.
+     */
+    internal val KeptOnWipe = setOf("downloads", "moves")
+
+    /** Deletes everything under [root] except the top-level entries named in [keep] and what is inside them. Never follows a link. */
+    internal fun wipeFolder(root: Path, keep: Set<String>) {
+        if (!Files.isDirectory(root, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return
+        val kept = keep.map { root.resolve(it) }
+        Files.walk(root).use { stream ->
             stream
                 .sorted(Comparator.reverseOrder())
-                .filter { it != rootDir }
+                .filter { it != root && kept.none { k -> it.startsWith(k) } }
                 .forEach { path -> runCatching { Files.deleteIfExists(path) } }
         }
     }
