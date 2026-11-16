@@ -675,7 +675,8 @@ internal class SeasonBatchDownloader(
     ): Boolean {
         val item = itemFor(request, episode) ?: return false
         return when (item.status) {
-            DownloadStatus.Completed -> !item.isCompletedSmallerThan(minBytes) && verifyCompleted(item) && !isPlaceholderOnDisk(item, episode, minBytes)
+            DownloadStatus.Completed ->
+                !item.isPlaceholder && !item.isCompletedSmallerThan(minBytes) && verifyCompleted(item) && !isPlaceholderOnDisk(item, episode, minBytes)
             DownloadStatus.Downloading, DownloadStatus.Paused -> true
             DownloadStatus.Failed -> false
         }
@@ -683,8 +684,9 @@ internal class SeasonBatchDownloader(
 
     private fun DownloadsUiState.itemFor(request: SeasonBatchRequest, episode: SeasonBatchEpisode): DownloadItem? {
         val movie = episode.movie
+        // A file marked as not the real video is kept beside its replacement and is not the episode.
         return items.firstOrNull { item ->
-            if (movie != null) {
+            !item.isPlaceholder && if (movie != null) {
                 item.parentMetaId.trim() == movie.metaId.trim() && !item.isEpisode
             } else {
                 item.parentMetaId.trim() == request.parentMetaId.trim() &&

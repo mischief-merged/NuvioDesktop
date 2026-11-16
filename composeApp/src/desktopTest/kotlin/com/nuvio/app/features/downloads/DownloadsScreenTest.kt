@@ -301,10 +301,22 @@ class DownloadsScreenTest {
     }
 
     @Test
-    fun a_download_from_before_checks_were_recorded_says_not_checked() {
-        show(stored("m", "Completed", title = "Film", season = null, episode = null, extra = ""","localFileUri":"file:/m.mkv","downloadedBytes":100,"totalBytes":100"""))
+    fun a_download_from_before_checks_were_recorded_with_a_size_to_compare_says_not_checked() {
+        show(
+            stored(
+                "m", "Completed", title = "Film", season = null, episode = null,
+                extra = ""","localFileUri":"file:/m.mkv","downloadedBytes":100,"totalBytes":100,"streamSubtitle":"[size: 9.53 GB] Film.mkv"""",
+            ),
+        )
 
         compose.onNodeWithText(text(DownloadResult.NotChecked.message)).assertIsDisplayed()
+    }
+
+    @Test
+    fun a_download_with_no_size_and_no_running_time_to_compare_says_why_it_could_not_be_checked() {
+        show(stored("m", "Completed", title = "Film", season = null, episode = null, extra = ""","localFileUri":"file:/m.mkv","downloadedBytes":100,"totalBytes":100"""))
+
+        compose.onNodeWithText(text(DownloadResult.CouldNotCompare.message)).assertIsDisplayed()
     }
 
     @Test
