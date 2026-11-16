@@ -158,7 +158,7 @@ internal object AutoDownloads : AutoDownloadController {
     )
 
     // The local file the player has open, if any.
-    private val playingFileUri = atomic<String?>(null)
+    private val playingFileUri = PlayingLocalFile.uri
 
     private val deleteAfterWatching = DeleteAfterWatching(
         store = store,

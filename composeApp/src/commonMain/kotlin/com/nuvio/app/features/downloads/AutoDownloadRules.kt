@@ -103,7 +103,7 @@ internal data class AutoDownloadPlan(
  *   and is left out.
  * - An episode that is downloaded, downloading or paused, by the rule or by hand, counts as kept and
  *   is not queued again. One whose download failed, or whose finished file is too small to be the
- *   episode, is queued again.
+ *   episode or is marked as not the real video, is queued again.
  */
 internal fun planAutoDownload(
     rule: AutoDownloadRule,
@@ -153,7 +153,8 @@ private fun List<DownloadItem>.placeholderEpisodeKeys(parentMetaId: String, epis
         val episode = item.episodeNumber ?: return@mapNotNullTo null
         if (item.parentMetaId.trim() != parent || item.status != DownloadStatus.Completed) return@mapNotNullTo null
         val key = autoDownloadEpisodeKey(season, episode)
-        key.takeIf { item.finishedSizeBytes < minPlausibleVideoBytes(runtimes[key]) }
+        // A file marked as not the real video is not the episode, whatever its size.
+        key.takeIf { item.isPlaceholder || item.finishedSizeBytes < minPlausibleVideoBytes(runtimes[key]) }
     }
 }
 

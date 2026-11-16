@@ -81,6 +81,13 @@ enum class DownloadFramesCheck {
 
     /** Passed, but the title in the container names another episode. That proves little, so the file is kept. */
     Suspect,
+
+    /**
+     * Compared with what the source claimed and with the running time of the title, the file is not
+     * the video but a placeholder from the source (see [placeholderVerdict]). The file is kept and
+     * marked, never removed by itself; the reason is in [DownloadItem.errorMessage].
+     */
+    NotTheRealVideo,
 }
 
 /*

@@ -37,7 +37,7 @@ internal object SavedDetails {
     suspend fun metaFor(type: String, id: String): MetaDetails? = SidecarIo.read { readMeta(type, id) }
 
     private fun readMeta(type: String, id: String): MetaDetails? {
-        val items = DownloadsRepository.uiState.value.items.filter { it.parentMetaId == id && it.status == DownloadStatus.Completed }
+        val items = DownloadsRepository.uiState.value.items.filter { it.parentMetaId == id && it.status == DownloadStatus.Completed && !it.isPlaceholder }
         if (items.isEmpty()) return null
         val lists = items.mapNotNull { item ->
             item.localFileUri?.let { runCatching { EpisodeListSidecar.read(it) }.getOrNull() }

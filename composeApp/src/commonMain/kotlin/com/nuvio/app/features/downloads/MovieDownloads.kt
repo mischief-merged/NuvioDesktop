@@ -88,7 +88,7 @@ internal fun movieSetEntries(
     // A finished download that is too small to be a movie is a placeholder clip and does not count.
     val inDownloads = downloads
         .filter { !it.isEpisode && it.status != DownloadStatus.Failed }
-        .filterNot { it.status == DownloadStatus.Completed && it.finishedSizeBytes < minPlausibleVideoBytes() }
+        .filterNot { it.status == DownloadStatus.Completed && (it.isPlaceholder || it.finishedSizeBytes < minPlausibleVideoBytes()) }
         .mapTo(mutableSetOf()) { it.parentMetaId.trim() }
     return movies.distinctBy { it.id }.map { movie ->
         MovieSetEntry(

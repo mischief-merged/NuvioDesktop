@@ -675,7 +675,8 @@ internal class SeasonBatchDownloader(
     ): Boolean {
         val item = itemFor(request, episode) ?: return false
         return when (item.status) {
-            DownloadStatus.Completed -> !item.isCompletedSmallerThan(minBytes) && verifyCompleted(item) && !isPlaceholderOnDisk(item, episode, minBytes)
+            DownloadStatus.Completed ->
+                !item.isPlaceholder && !item.isCompletedSmallerThan(minBytes) && verifyCompleted(item) && !isPlaceholderOnDisk(item, episode, minBytes)
             DownloadStatus.Downloading, DownloadStatus.Paused -> true
             DownloadStatus.Failed -> false
         }
