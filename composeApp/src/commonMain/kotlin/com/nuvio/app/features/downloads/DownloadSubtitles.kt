@@ -300,4 +300,12 @@ internal expect class DownloadSubtitleStorage(localVideoUri: String) {
     fun writeBytes(fileName: String, bytes: ByteArray)
     fun localFileUri(fileName: String): String?
     fun remove()
+
+    /** True when a folder of that name is already beside the video and is not the app's: nothing is saved in it. */
+    fun refused(): Boolean
 }
+
+/** The subtitle file names a saved manifest lists, or null when [text] is not a manifest of this app. */
+internal fun subtitleManifestFileNames(text: String): List<String>? = runCatching {
+    kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(SubtitleManifest.serializer(), text).tracks.map { it.fileName }
+}.getOrNull()

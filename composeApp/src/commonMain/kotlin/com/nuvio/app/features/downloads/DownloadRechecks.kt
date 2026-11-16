@@ -102,6 +102,8 @@ internal class DownloadRechecks(
                 break
             }
             if (item.status != DownloadStatus.Completed) continue
+            // A download a move or a delete holds, or whose location is away, waits for a later pass.
+            if (runCatching { DownloadsRepository.isBusyOrAway(item) }.getOrDefault(true)) continue
             if (!force) {
                 if (!item.needsRecheck()) continue
                 val last = kotlinx.atomicfu.locks.synchronized(lookedAtLock) { lookedAt[item.id] }

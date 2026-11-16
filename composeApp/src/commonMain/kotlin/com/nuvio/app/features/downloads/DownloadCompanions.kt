@@ -164,6 +164,8 @@ internal class DownloadCompanions(
             // The scan stops once a pass has all it may do; the rest waits for the next pass.
             if (pending.size >= BackfillMaxPerPass) { scanStopped = true; break }
             if (item.status != DownloadStatus.Completed) continue
+            // A download a move or a delete holds, or whose location is away, waits for a later pass.
+            if (runCatching { DownloadsRepository.isBusyOrAway(item) }.getOrDefault(true)) continue
             val uri = runCatching { resolveLocalFileUri(item) }.getOrNull()
             if (uri == null) {
                 summary = summary.copy(unavailable = summary.unavailable + 1)

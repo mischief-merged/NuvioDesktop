@@ -12,9 +12,12 @@ import kotlinx.coroutines.async
  * each other, and a write cannot interleave with a delete: delete takes the same lock, and once the
  * video is gone every later write finds that and does nothing.
  *
- * LOCK ORDER, everywhere: this per-video lock FIRST, then DownloadsRepository's state lock. A block
- * run under this lock must not take the state lock (and the guard it calls does not); both delete
- * paths take this lock before entering the state lock.
+ * LOCK ORDER, everywhere: this per-video lock FIRST, then DownloadsRepository's state lock, then the
+ * lock every save of a list of downloads takes (the store's lock across processes). A block run under
+ * this lock must not take the state lock (and the guard it calls does not); both delete paths take this
+ * lock before entering the state lock. The folder move takes this lock around its Trash step and then
+ * the list lock inside it, never the state lock. Item locks, writer tokens and the move's OS lock are
+ * only ever tried or waited for with a limit, so they are outside this order and cannot invert it.
  *
  * The blocks are short file operations, which is why a plain lock is used: the delete path is not
  * a coroutine.
@@ -39,7 +42,8 @@ internal object SidecarLocks {
  */
 internal object DownloadCompanionGuard {
     internal var stillWanted: (localVideoUri: String) -> Boolean =
-        { uri -> DownloadsRepository.videoFileIsThere(uri) }
+        // Never for a download a move or a delete holds, or whose location is away.
+        { uri -> !DownloadsRepository.isBusyOrAway(uri) && DownloadsRepository.videoFileIsThere(uri) }
 }
 
 /**

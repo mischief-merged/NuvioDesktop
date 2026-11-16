@@ -83,6 +83,9 @@ internal enum class AutoDownloadStatus {
 
     /** The downloads volume has too little free space left for automatic downloads. */
     LowDiskSpace,
+
+    /** The location that holds this show's downloads is not connected. Nothing is queued elsewhere. */
+    FolderNotConnected,
 }
 
 internal data class AutoDownloadPlan(

@@ -6,6 +6,10 @@ internal data class DownloadPlatformRequest(
     val onDigestVerified: () -> Unit = {},
     /** Set for an automatic download. The desktop downloader is the one that applies them. */
     val limits: DownloadTransferLimits? = null,
+    /** Told the identity of the partial file the transfer just created, to be kept with the download. */
+    val onPartialCreated: (String) -> Unit = {},
+    /** Told the new file name when the old one was taken by a file that is not this download's. */
+    val onFileNameChanged: (String) -> Unit = {},
 ) {
     val sourceUrl: String get() = item.sourceUrl
     val sourceHeaders: Map<String, String> get() = item.sourceHeaders
@@ -14,6 +18,15 @@ internal data class DownloadPlatformRequest(
 
 internal interface DownloadsTaskHandle {
     fun cancel()
+
+    /**
+     * Cancels and waits until the transfer has stopped writing and closed its file. False when it
+     * did not stop within [timeoutMs]. A platform that cannot wait says it stopped.
+     */
+    fun cancelAndWait(timeoutMs: Long): Boolean {
+        cancel()
+        return true
+    }
 }
 
 internal expect object DownloadsPlatformDownloader {
