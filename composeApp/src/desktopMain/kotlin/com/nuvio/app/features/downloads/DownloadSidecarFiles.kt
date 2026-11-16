@@ -16,7 +16,7 @@ internal class Companions(val files: List<CompanionFile>, val skippedLinks: List
  * Files that merely share a base name with the video are never companions: they may be another
  * download's. Links are never companions: they are skipped and reported, never followed or moved.
  */
-internal object DownloadCompanions {
+internal object DownloadSidecarFiles {
     const val SidecarSuffix = ".subtitles"
 
     /** The name of the sidecar folder of a video. */

@@ -188,7 +188,7 @@ internal class DesktopDownloadFolders(
         val all = hooks.allRecords() ?: return FileOwnership.Unknown
         val ownership = DownloadOwnership(locations, all)
         val profile = hooks.profileId()
-        val sidecar = path.resolveSibling(DownloadCompanions.sidecarFolderName(path.fileName.toString()))
+        val sidecar = path.resolveSibling(DownloadSidecarFiles.sidecarFolderName(path.fileName.toString()))
         return if (ownership.otherOwner(profile, item.id, path) != null || ownership.otherOwner(profile, item.id, sidecar) != null) {
             FileOwnership.Owned
         } else {
@@ -205,7 +205,7 @@ internal class DesktopDownloadFolders(
         if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) return true
         if (Files.isSymbolicLink(file)) return false
         if (!(runCatching { trashPath(file) }.getOrDefault(false) && !Files.exists(file, LinkOption.NOFOLLOW_LINKS))) return false
-        file.resolveSibling(DownloadCompanions.sidecarFolderName(file.fileName.toString()))
+        file.resolveSibling(DownloadSidecarFiles.sidecarFolderName(file.fileName.toString()))
             .takeIf { Files.isDirectory(it, LinkOption.NOFOLLOW_LINKS) }?.let { runCatching { trashPath(it) } }
         return true
     }
@@ -342,7 +342,7 @@ internal class DesktopDownloadFolders(
                     is FileLookup.Found -> if (found.locationId != destination.id) {
                         val video = DownloadLocations.fileOfUri(found.uri)?.toPath() ?: return
                         val root = locations.location(found.locationId)?.path ?: return
-                        val companions = DownloadCompanions.of(video)
+                        val companions = DownloadSidecarFiles.of(video)
                         if (Files.isSymbolicLink(video) || companions.skippedLinks.isNotEmpty()) {
                             failures += MoveFailure(item.fileName, MoveFailureReason.Symlink)
                             return

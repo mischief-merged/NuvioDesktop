@@ -109,6 +109,9 @@ import com.nuvio.app.features.details.MetaScreenSettingsRepository
 import com.nuvio.app.features.downloads.DownloadItem
 import com.nuvio.app.features.downloads.DownloadSubtitles
 import com.nuvio.app.features.downloads.DownloadsRepository
+import com.nuvio.app.features.downloads.DownloadCompanions
+import com.nuvio.app.features.downloads.DownloadRechecks
+import com.nuvio.app.features.downloads.backfillWhenIdle
 import com.nuvio.app.features.home.HomeCatalogSection
 import com.nuvio.app.features.home.HomeCatalogSettingsRepository
 import com.nuvio.app.features.home.HomeRepository
@@ -568,6 +571,18 @@ internal fun MainAppContent(
         initialHomeReady = true
     }
 
+    // Quietly saves subtitles and skip times for finished downloads that lack them, once the app is online.
+    LaunchedEffect(appContentGeneration, networkStatusUiState.isOnline) {
+        if (!ownsAppRuntime || !AppFeaturePolicy.downloadsEnabled || !networkStatusUiState.isOnline) return@LaunchedEffect
+        DownloadCompanions.app.backfillWhenIdle()
+    }
+
+    // Quietly looks again, a few at a time, at finished downloads that were never checked, for a placeholder in place of the video.
+    LaunchedEffect(appContentGeneration) {
+        if (!ownsAppRuntime || !AppFeaturePolicy.downloadsEnabled) return@LaunchedEffect
+        DownloadRechecks.app.recheckWhenIdle()
+    }
+
     LaunchedEffect(networkStatusUiState.condition) {
         if (!ownsAppRuntime) return@LaunchedEffect
         val condition = networkStatusUiState.condition
@@ -668,7 +683,7 @@ internal fun MainAppContent(
                 offlineLaunchRouteHandled = true
                 if (!AppFeaturePolicy.downloadsEnabled) return@LaunchedEffect
                 val hasPlayableDownload = downloadsUiState.completedItems.any {
-                    DownloadsRepository.playableLocalFileUri(it) != null
+                    !it.isPlaceholder && DownloadsRepository.playableLocalFileUri(it) != null
                 }
                 if (hasPlayableDownload) {
                     activateTab(AppScreenTab.Library)

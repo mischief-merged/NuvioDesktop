@@ -118,13 +118,18 @@ internal fun EpisodeDetailsScreen(
     modifier: Modifier = Modifier,
 ) {
     val uiState by MetaDetailsRepository.uiState.collectAsStateWithLifecycle()
-    val meta = uiState.meta?.takeIf { it.type == type && it.id == id }
+    val loadedMeta = uiState.meta?.takeIf { it.type == type && it.id == id }
         ?: MetaDetailsRepository.peek(type, id)
     val networkStatus by NetworkStatusRepository.uiState.collectAsStateWithLifecycle()
+    // When the details cannot be loaded, what downloads saved stands in for them.
+    val savedLookup by rememberSavedLookup(
+        type, id, wanted = savedDetailsWanted(loadedMeta != null, uiState.errorMessage, networkStatus.condition),
+    )
+    val meta = loadedMeta ?: savedLookup.meta
     var autoLoadAttempted by remember(type, id) { mutableStateOf(false) }
 
-    LaunchedEffect(type, id, meta, uiState.isLoading, autoLoadAttempted) {
-        if (!autoLoadAttempted && meta == null && !uiState.isLoading) {
+    LaunchedEffect(type, id, loadedMeta, uiState.isLoading, autoLoadAttempted) {
+        if (!autoLoadAttempted && loadedMeta == null && !uiState.isLoading) {
             autoLoadAttempted = true
             MetaDetailsRepository.load(type, id)
         }
@@ -157,7 +162,7 @@ internal fun EpisodeDetailsScreen(
             )
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 when {
-                    meta == null && uiState.errorMessage != null && !uiState.isLoading -> {
+                    meta == null && uiState.errorMessage != null && !uiState.isLoading && savedLookup.settled -> {
                         EpisodePageMessage(
                             title = stringResource(Res.string.details_failed_to_load),
                             message = when (networkStatus.condition) {
@@ -197,6 +202,7 @@ internal fun EpisodeDetailsScreen(
                         )
                     }
                 }
+                if (loadedMeta == null && meta != null) SavedDetailsNotice(Modifier.align(Alignment.BottomCenter))
             }
         }
     }

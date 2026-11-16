@@ -151,6 +151,8 @@ class DeleteAcrossProfilesTest {
             contentType = item.contentType, videoId = item.videoId, parentMetaId = item.parentMetaId, parentMetaType = item.parentMetaType,
             title = item.title, logo = null, poster = null, background = null, seasonNumber = null, episodeNumber = null,
             episodeTitle = null, episodeThumbnail = null, stream = testStream(item.sourceUrl),
+            // A finished file is replaced only when the user chose to.
+            userChoseReplacement = true,
         )
     }
 

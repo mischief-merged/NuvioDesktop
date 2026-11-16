@@ -228,24 +228,38 @@ class SourceFailoverPlannerTest {
 
     @Test
     fun theDurationBoundariesAreStrict() {
-        // Exactly 5 minutes is not under 5 minutes.
+        // Exactly 10 minutes is not under 10 minutes.
         assertFalse(looksLikePlaceholder(PLACEHOLDER_MAX_DURATION_MS, expectedRuntimeMinutes = 120))
         assertTrue(looksLikePlaceholder(PLACEHOLDER_MAX_DURATION_MS - 1, expectedRuntimeMinutes = 120))
-        // 30% of 10 minutes is exactly 3 minutes.
-        assertFalse(looksLikePlaceholder(3 * minute, expectedRuntimeMinutes = 10))
-        assertTrue(looksLikePlaceholder(3 * minute - 1, expectedRuntimeMinutes = 10))
+        // 20% of 10 minutes is exactly 2 minutes.
+        assertFalse(looksLikePlaceholder(2 * minute, expectedRuntimeMinutes = 10))
+        assertTrue(looksLikePlaceholder(2 * minute - 1, expectedRuntimeMinutes = 10))
+    }
+
+    @Test
+    fun theClipThatWasThreeHundredAndNineTenthsOfASecondLongAgainstAFilmOfTwoHoursIsAPlaceholder() {
+        // A provider's clip of 300.9 seconds was 0.9 seconds past the old limit of five minutes.
+        assertTrue(looksLikePlaceholder(durationMs = 300_900L, expectedRuntimeMinutes = 120))
+        assertTrue(looksLikePlaceholder(durationMs = 300_900L, expectedRuntimeMinutes = 118))
     }
 
     @Test
     fun aShortEpisodeOfAShortShowIsNotAPlaceholder() {
         assertFalse(looksLikePlaceholder(durationMs = 4 * minute, expectedRuntimeMinutes = 5))
         assertFalse(looksLikePlaceholder(durationMs = 4 * minute, expectedRuntimeMinutes = 8))
+        // Nine minutes of an eleven minute cartoon: under ten minutes, but not under 20% of its runtime.
+        assertFalse(looksLikePlaceholder(durationMs = 9 * minute, expectedRuntimeMinutes = 11))
+        assertFalse(looksLikePlaceholder(durationMs = 3 * minute, expectedRuntimeMinutes = 12))
     }
 
     @Test
     fun aFileOfFullLengthIsNeverAPlaceholderEvenIfItIsOnePicture() {
         assertFalse(looksLikePlaceholder(durationMs = 45 * minute, expectedRuntimeMinutes = 45))
-        assertFalse(looksLikePlaceholder(durationMs = 6 * minute, expectedRuntimeMinutes = 100))
+        // Six minutes of a film that runs 100: far shorter than the film, so a placeholder under the rule
+        // of 10 minutes and 20%. It was not one under the old five minutes.
+        assertTrue(looksLikePlaceholder(durationMs = 6 * minute, expectedRuntimeMinutes = 100))
+        // Six minutes of something that runs 25 is 24%: not far enough below its running time.
+        assertFalse(looksLikePlaceholder(durationMs = 6 * minute, expectedRuntimeMinutes = 25))
     }
 
     @Test

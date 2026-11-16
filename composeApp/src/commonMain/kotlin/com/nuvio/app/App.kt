@@ -15,6 +15,7 @@ import coil3.request.CachePolicy
 import coil3.request.crossfade
 import coil3.svg.SvgDecoder
 import com.nuvio.app.core.poster.CustomPosterFallbackInterceptor
+import com.nuvio.app.features.downloads.SavedArtworkInterceptor
 import com.nuvio.app.core.ui.NativeProfileSwitcherController
 import com.nuvio.app.core.ui.NuvioTheme
 import com.nuvio.app.core.ui.addPlatformDecoders
@@ -83,6 +84,7 @@ internal fun AppEnvironment(content: @Composable () -> Unit) {
                 .memoryCachePolicy(CachePolicy.ENABLED)
                 .components {
                     add(CustomPosterFallbackInterceptor())
+                    add(SavedArtworkInterceptor())
                     addPlatformDecoders()
                     add(SvgDecoder.Factory())
                     add(

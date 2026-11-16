@@ -12,7 +12,7 @@
 
 ![Platform](https://img.shields.io/badge/macOS-Apple%20silicon-111111?logo=apple&logoColor=white)
 ![Status](https://img.shields.io/badge/status-alpha%20%C2%B7%20fast%20development-8A2BE2)
-![Tests](https://img.shields.io/badge/desktop%20tests-2%2C962-2EA3F2)
+![Tests](https://img.shields.io/badge/desktop%20tests-3%2C356-2EA3F2)
 ![License](https://img.shields.io/badge/license-GPLv3-3DA639)
 ![Based on](https://img.shields.io/badge/based%20on-Nuvio%20Desktop-5B5BD6)
 
@@ -29,6 +29,7 @@
 | 📥 **Season download** | One click fetches every released episode of a season, two at a time, with progress and Stop on the button. |
 | 🔁 **Auto-download** | Per show: keep the next N unwatched episodes on disk, inside a storage limit you set. |
 | 🧹 **Delete after watching** | Watched episodes move to the Trash after a delay, with Keep and a "Recently deleted" list. |
+| ✈️ **Complete offline** | Downloads keep their subtitles, skip-intro times, next-episode list and artwork, so everything works with no connection. |
 | 🔍 **File checks** | Every download is checked before it counts: size, type, running time, hash, audio language, and a look at the frames to catch fakes, blanks and cut-off files. |
 | ▶️ **Play by preferences** | Set quality, bitrate and language once. Play picks the best matching source instead of asking every time. |
 | 🔀 **Source failover** | When a source fails to start, dies mid-play or turns out to be a placeholder clip, the player moves to the next one and resumes where you were. |
@@ -50,6 +51,7 @@
 | Play the best source without asking | — | ✅ |
 | Episode pages with a trail back to season and show | — | ✅ |
 | Switch source by itself when one fails mid-play | — | ✅ |
+| Skip intro, subtitles and next episode work offline | — | ✅ |
 | Download speed limit | — | ✅ |
 | Windows and Linux builds | ✅ | not yet |
 
@@ -69,7 +71,7 @@ NuvioRoid installs beside the official Nuvio app. It has its own name, icon and 
 
 Alpha software under **fast development**. Expect breaking changes, and do not rely on it as your only media app.
 
-- Built and tested on macOS (Apple silicon). The desktop test suite runs 2,962 tests; the three that fail also fail on upstream without any of these changes.
+- Built and tested on macOS (Apple silicon). The desktop test suite runs 3,356 tests; the three that fail also fail on upstream without any of these changes.
 - Android, iOS, Windows and Linux builds of this fork have not been run.
 - NuvioRoid is a client only. You bring your own sources, as with Nuvio.
 

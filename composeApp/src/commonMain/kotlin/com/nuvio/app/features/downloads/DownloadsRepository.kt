@@ -1,6 +1,7 @@
 package com.nuvio.app.features.downloads
 
 import com.nuvio.app.features.player.SubtitleRequestExtras
+import com.nuvio.app.features.player.looksLikePlaceholder
 import com.nuvio.app.features.player.addonSubtitleRequests
 import com.nuvio.app.features.streams.StreamItem
 import kotlinx.atomicfu.locks.SynchronizedObject
@@ -26,6 +27,9 @@ import org.jetbrains.compose.resources.getString
 object DownloadsRepository {
     private const val MaxDownloadAttempts = 3
 
+    /** How often a delete looks again when the file moved while it waited for the per-video lock. */
+    private const val LockAttempts = 3
+
     private val _uiState = MutableStateFlow(DownloadsUiState())
     val uiState: StateFlow<DownloadsUiState> = _uiState.asStateFlow()
 
@@ -34,6 +38,11 @@ object DownloadsRepository {
 
     // The UI, downloader callbacks and background workers reach this object from different threads.
     // Every read-modify-write of the item list, and every use of activeTransfers, holds this lock.
+    //
+    // LOCK ORDER, everywhere: the per-video lock (SidecarLocks) FIRST, then this state lock. Code that
+    // holds this lock never waits for a per-video lock, and code that holds a per-video lock never
+    // takes this one: the guard behind every sidecar write (videoFileIsThere) reads the disk through
+    // the backend only. Both delete paths therefore take the per-video lock before entering here.
     private val stateLock = SynchronizedObject()
 
     // The transfer that currently owns each download. A transfer that was paused, replaced or removed
@@ -44,6 +53,9 @@ object DownloadsRepository {
 
     // Where items are persisted and transfers and files are handled. Always the platform in the app.
     internal var backend: DownloadsBackend = PlatformDownloadsBackend
+
+    // Saves what a download that finished needs beside it (subtitles, skip times). Always the app's in the app.
+    internal var companions: () -> DownloadCompanions = { DownloadCompanions.app }
 
     // What limits automatic downloads. Always the saved setting in the app.
     internal var autoDownloadLimits: AutoDownloadLimits = SavedAutoDownloadLimits
@@ -70,6 +82,9 @@ object DownloadsRepository {
     // the app may save in between; a save then merges this copy's own changes onto what is stored.
     private var baseline: List<DownloadItem> = emptyList()
     private var baseRevision: Long = 0L
+
+    /** Runs [block] inside the state lock. Tests only: proves what must not need it. */
+    internal fun holdStateLockForTest(block: () -> Unit) = synchronized(stateLock) { block() }
 
     fun ensureLoaded(): Unit = synchronized(stateLock) {
         if (hasLoaded) return
@@ -147,6 +162,36 @@ object DownloadsRepository {
         }
     }
 
+    /**
+     * Whether the file at [localFileUri] physically exists, at exactly that address. Reads the disk
+     * through the backend and takes no lock of this repository, so it is safe to call while holding a
+     * per-video lock (see the lock order at [stateLock]).
+     */
+    /**
+     * Whether a download must be left alone by background passes and sidecar writes: a move or a delete
+     * holds it, or its location cannot be used. Reads the published list only: no lock is taken.
+     */
+    internal fun isBusyOrAway(item: DownloadItem): Boolean = backend.heldByFolder(item)
+
+    /** [isBusyOrAway] for the finished download whose file is [localFileUri]; false when there is none. */
+    internal fun isBusyOrAway(localFileUri: String): Boolean {
+        val wanted = localFileUri.localFilePath()
+        return _uiState.value.items.any { item ->
+            item.status == DownloadStatus.Completed && item.localFileUri?.localFilePath() == wanted && backend.heldByFolder(item)
+        }
+    }
+
+    internal fun videoFileIsThere(localFileUri: String): Boolean {
+        val resolved = backend.resolveLocalFileUri(localFileUri, "") ?: return false
+        return resolved.localFilePath() == localFileUri.localFilePath()
+    }
+
+    /** The address of a finished download's file now, from the published list: no lock is taken. */
+    private fun finishedFileUriOf(downloadId: String): String? {
+        val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return null
+        return if (item.status == DownloadStatus.Completed) backend.resolveLocalFileUri(item.localFileUri, item.fileName) else null
+    }
+
     fun playableLocalFileUri(item: DownloadItem): String? {
         ensureLoaded()
         if (item.status != DownloadStatus.Completed) return null
@@ -186,6 +231,8 @@ object DownloadsRepository {
         episodeThumbnail: String?,
         stream: StreamItem,
         autoDownloadRuleKey: String? = null,
+        /** The user picked this source for a title that has a finished download: it replaces that download's file. */
+        userChoseReplacement: Boolean = false,
     ): DownloadEnqueueResult = synchronized(stateLock) {
         ensureLoaded()
 
@@ -211,13 +258,18 @@ object DownloadsRepository {
         )
 
         var replacedExisting = false
-        var replaced: DownloadItem? = null
         val currentItems = _uiState.value.items.toMutableList()
-        val existing = currentItems.firstOrNull { it.logicalContentKey == logicalKey }
-        if (existing != null) {
+        // What is replaced: a download that has no finished file. A finished file, marked as not the
+        // real video or not, is a stored file of the user: it is replaced only when the user chose
+        // to ([userChoseReplacement]), and then a marked one goes to the trash. Anything automatic
+        // leaves it and its record where they are and fetches the new copy beside it, under a name
+        // and a record of its own.
+        val replaced = currentItems.filter { item ->
+            item.logicalContentKey == logicalKey && (userChoseReplacement || item.status != DownloadStatus.Completed)
+        }
+        replaced.forEach { existing ->
             replacedExisting = true
             activeTransfers.remove(existing.id)?.cancel()
-            replaced = existing
             currentItems.removeAll { it.id == existing.id }
         }
 
@@ -270,27 +322,30 @@ object DownloadsRepository {
             createdAtEpochMs = now,
             updatedAtEpochMs = now,
             expectedVideoHash = stream.behaviorHints.videoHash.asVideoHash(),
-            expectedSizeBytes = stream.behaviorHints.videoSize?.takeIf { it > 0L },
             autoDownloadRuleKey = autoDownloadRuleKey,
         )
 
-        currentItems.add(0, item)
+        // The size the source claims for the selected file, where that is established (see SourceSizeClaim).
+        val claimed = usableSizeClaim(stream, item.isEpisode, runtimeMinutesOf(item))
+        val queued = item.copy(expectedSizeBytes = claimed)
+
+        currentItems.add(0, queued)
         publish(currentItems)
         // The list without the old record is on disk first; only then does its file go, so a crash or a
         // failed save can leave a file without a record, never a record whose file is in the Trash.
-        val savedDurably = persist(durably = replaced != null)
-        replaced?.let { existing ->
+        val savedDurably = persist(durably = replaced.isNotEmpty())
+        replaced.forEach { existing ->
             val oldUri = playableLocalFileUri(existing) ?: existing.localFileUri
-            // The old file goes the way a cancel sends it (the Trash on desktop), and only when no other
-            // record of any profile uses it; where that cannot be told it stays where it is.
+            // The old file goes to the Trash (a flagged placeholder too, so it can be looked at), and only when
+            // no other record of any profile uses it; where that cannot be told it stays where it is.
             val keep = !savedDurably || oldUri != null &&
                 backend.ownershipOf(existing, oldUri).let { it == FileOwnership.Owned || it == FileOwnership.Unknown }
             if (!keep) {
-                backend.discardFile(oldUri)
+                if (existing.isPlaceholder) oldUri?.let(backend::trashFile) else backend.discardFile(oldUri)
                 backend.removePartialOf(existing)
             }
         }
-        startDownload(item)
+        startDownload(queued)
 
         return if (replacedExisting) {
             DownloadEnqueueResult.Replaced
@@ -446,10 +501,29 @@ object DownloadsRepository {
      * far is removed. A file that another download also uses stays where it is. When the file cannot
      * be moved nothing is removed: the entry stays, so that the file is not lost from view.
      */
-    internal fun deleteDownload(downloadId: String, permanently: Boolean = false): DownloadDeleteResult = synchronized(stateLock) {
+    internal fun deleteDownload(downloadId: String, permanently: Boolean = false): DownloadDeleteResult {
+        ensureLoaded()
+        // LOCK ORDER (see stateLock): per-video lock, then the state lock, then the list lock.
+        // If the file moved between the look and the locks, look again.
+        repeat(LockAttempts) {
+            val locked = finishedFileUriOf(downloadId)
+            val result = if (locked != null) {
+                SidecarLocks.withLock(locked) { deleteWithLocksHeld(downloadId, locked, permanently) }
+            } else {
+                deleteWithLocksHeld(downloadId, null, permanently)
+            }
+            if (result != null) return result
+        }
+        return DownloadDeleteResult.NotMoved
+    }
+
+    /** Null when the file is no longer where [lockedUri] said: the caller starts again with the right lock. */
+    private fun deleteWithLocksHeld(downloadId: String, lockedUri: String?, permanently: Boolean): DownloadDeleteResult? = synchronized(stateLock) {
         ensureLoaded()
         val items = _uiState.value.items
         val item = items.firstOrNull { it.id == downloadId } ?: return DownloadDeleteResult.Gone
+        val current = if (item.status == DownloadStatus.Completed) backend.resolveLocalFileUri(item.localFileUri, item.fileName) else null
+        if (current != lockedUri) return null
         // Whatever the status, an item whose location is away is not touched: not its partial file, not its record.
         if (!backend.isConnected(item)) return DownloadDeleteResult.NotReachable
         // One thing changes an item at a time: a move has it, or something else is deleting it.
@@ -565,6 +639,7 @@ object DownloadsRepository {
             ),
             { downloadedBytes, totalBytes ->
                 ifCurrent(item.id, transfer) {
+                    if (failIfAnnouncedAsPlaceholder(item, totalBytes)) return@ifCurrent
                     mutateItem(item.id) { current ->
                         if (current.status != DownloadStatus.Downloading) {
                             current
@@ -654,13 +729,28 @@ object DownloadsRepository {
             else -> DownloadFramesCheck.Passed
         }
 
+        // What the source claimed and the title's running time, held against the file that arrived.
+        val placeholder = if (problem == null && framesProblem == null && facts != null) {
+            (placeholderVerdict(
+                PlaceholderEvidence(
+                    fileBytes = facts.sizeBytes,
+                    claimedBytes = item.claimedSizeBytes(runtimeMinutesOf(item)),
+                    durationMs = facts.durationMs ?: samples?.durationMs,
+                    runtimeMinutes = runtimeMinutesOf(item),
+                ),
+            ) as? PlaceholderVerdict.NotTheRealVideo)?.reason
+        } else {
+            null
+        }
+
         ifCurrent(item.id, transfer) {
             activeTransfers.remove(item.id)
-            if (problem != null || framesProblem != null) backend.removeFile(localFileUri)
+            if (problem != null || framesProblem != null || placeholder != null) backend.removeFile(localFileUri)
             mutateItem(item.id) { current ->
                 if (current.status != DownloadStatus.Downloading) return@mutateItem current
                 if (problem != null) return@mutateItem current.failedBecauseOf(problem)
                 if (framesProblem != null) return@mutateItem current.failedBecauseOf(framesProblem)
+                if (placeholder != null) return@mutateItem current.failedAsPlaceholder(placeholder)
                 current.copy(
                     verifiedBy = facts?.verification(
                         // Only a size the server announced while the transfer ran counts.
@@ -682,10 +772,48 @@ object DownloadsRepository {
                     updatedAtEpochMs = DownloadsClock.nowEpochMs(),
                 )
             }
+            if (problem == null && framesProblem == null && placeholder == null) companions().saveAfterDownload(item, localFileUri)
         }
     }
 
     private class FileInspection(val facts: DownloadedFileFacts?, val problem: DownloadedFileProblem?)
+
+    /**
+     * Gives up a transfer whose server announced, before sending anything, a total far below the size
+     * the source claimed: it is a placeholder, and downloading it all would only waste the time. The
+     * download fails as a bad file, so a season or an automatic download goes on to the next source
+     * and a single download shows the reason with "Choose another source". Called under the state
+     * lock for a transfer that still owns the download. True when the transfer was ended.
+     */
+    private fun failIfAnnouncedAsPlaceholder(item: DownloadItem, announcedBytes: Long?): Boolean {
+        if (announcedBytes == null || announcedBytes <= 0L) return false
+        val runtime = runtimeMinutesOf(item)
+        val claimed = item.claimedSizeBytes(runtime)
+        // No length is known yet at the start, so only what needs none decides: a total far below a
+        // claim that describes the file, or a total that is absurdly small for the running time. A low
+        // bitrate in between is judged on the finished file, whose own length can say it is complete.
+        val reason = when {
+            claimed != null && announcedSizeIsFarBelowClaim(announcedBytes, claimed) ->
+                PlaceholderReason.SizeBelowClaim(announcedBytes, claimed)
+            runtime != null && isAbsurdlySmallForRuntime(announcedBytes, runtime) ->
+                PlaceholderReason.TooSmallForRuntime(announcedBytes, runtime)
+            else -> return false
+        }
+        activeTransfers.remove(item.id)?.cancel()
+        backend.removePartialOf(item)
+        mutateItem(item.id) { current ->
+            if (current.status != DownloadStatus.Downloading) {
+                current
+            } else {
+                current.failedAsPlaceholder(reason)
+                    .copy(totalBytes = announcedBytes, downloadedBytes = 0L)
+            }
+        }
+        return true
+    }
+
+    /** The running time of the title of [item] in minutes, from details that are already loaded. Null when not known. */
+    private fun runtimeMinutesOf(item: DownloadItem): Int? = runtimeMinutesOfDownload(item)
 
     /** The downloads that went on by themselves when the list was loaded. Each is handed out once. */
     internal fun takeDownloadsResumedAtLoad(): Set<String> = synchronized(stateLock) {
@@ -709,6 +837,85 @@ object DownloadsRepository {
         if (item.status != DownloadStatus.Completed) return null
         val fileUri = backend.resolveLocalFileUri(item.localFileUri, item.fileName) ?: item.localFileUri ?: return null
         return backend.inspectFile(fileUri)
+    }
+
+    /**
+     * Looks again at the file of a finished download and holds it against what the source claimed and
+     * the running time of the title (see [placeholderVerdict]), then saves the result on the download
+     * the way a fresh download's result is saved. Never touches the file: a placeholder is marked, and
+     * a mark that no longer applies is cleared. The look at the disk, and at frames, runs outside the
+     * state lock. A file that cannot be looked at, or is broken in another way, is left as it is.
+     */
+    internal fun recheckCompleted(downloadId: String): RecheckOutcome {
+        ensureLoaded()
+        val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return RecheckOutcome.Skipped
+        if (item.status != DownloadStatus.Completed) return RecheckOutcome.Skipped
+        val uri = backend.resolveLocalFileUri(item.localFileUri, item.fileName) ?: return RecheckOutcome.Unavailable
+        val facts = runCatching { backend.inspectFile(uri) }.getOrNull() ?: return RecheckOutcome.CouldNotLook
+        if (!facts.exists) return RecheckOutcome.Unavailable
+        if (facts.problem(announcedBytes = item.totalBytes, expectedVideoHash = item.expectedVideoHash) != null) {
+            return RecheckOutcome.CouldNotLook
+        }
+
+        val runtime = runtimeMinutesOfDownload(item)
+        val claimed = item.claimedSizeBytes(runtime)
+        fun evidence(durationMs: Long?, frames: DownloadedFramesProblem?) =
+            PlaceholderEvidence(facts.sizeBytes, claimed, durationMs, runtime, frames)
+
+        var verdict = placeholderVerdict(evidence(facts.durationMs, null))
+        var picturePassed = false
+        // The picture is worth the seconds it takes only when it can change the answer: the title's
+        // running time is known and the file is short for it, or the container did not state its length.
+        val needsPicture = verdict !is PlaceholderVerdict.NotTheRealVideo && runtime != null && item.framesCheck != DownloadFramesCheck.Passed &&
+            (facts.durationMs == null || looksLikePlaceholder(facts.durationMs, runtime))
+        if (needsPicture) {
+            val samples = runCatching { backend.sampleFrames(uri) }.getOrNull()
+            val framesVerdict = samples?.let { first ->
+                runCatching { confirmedFramesProblem(first) { backend.sampleConfirmingFrames(uri, first.durationMs) } }.getOrNull()
+            }
+            if (samples != null && framesVerdict != null && framesVerdict.conclusive) {
+                verdict = placeholderVerdict(evidence(facts.durationMs ?: samples.durationMs, framesVerdict.problem))
+                picturePassed = framesVerdict.problem == null && samples.structuralProblem() == null
+            } else if (samples != null && facts.durationMs == null) {
+                verdict = placeholderVerdict(evidence(samples.durationMs, null))
+            }
+        }
+
+        val verification = facts.verification(
+            announcedBytes = item.totalBytes,
+            expectedVideoHash = item.expectedVideoHash,
+            expectedSizeBytes = item.expectedSizeBytes,
+            digestVerified = false,
+        )
+        val flagged = (verdict as? PlaceholderVerdict.NotTheRealVideo)?.reason
+        val message = flagged?.let { placeholderReasonText(it, item) }
+        var applied = false
+        mutateItem(downloadId) { current ->
+            if (current.status != DownloadStatus.Completed || current.fileName != item.fileName) return@mutateItem current
+            applied = true
+            val wasMarked = current.framesCheck == DownloadFramesCheck.NotTheRealVideo
+            current.copy(
+                verifiedBy = current.verifiedBy ?: verification,
+                expectedSizeBytes = current.expectedSizeBytes ?: claimed,
+                framesCheck = when {
+                    flagged != null -> DownloadFramesCheck.NotTheRealVideo
+                    picturePassed -> DownloadFramesCheck.Passed
+                    wasMarked -> DownloadFramesCheck.NotChecked
+                    else -> current.framesCheck
+                },
+                errorMessage = when {
+                    flagged != null -> message
+                    wasMarked -> null
+                    else -> current.errorMessage
+                },
+            )
+        }
+        return when {
+            !applied -> RecheckOutcome.Skipped
+            flagged != null -> RecheckOutcome.Flagged
+            verdict == PlaceholderVerdict.LooksRight -> RecheckOutcome.LooksRight
+            else -> RecheckOutcome.CouldNotCheck
+        }
     }
 
     /**
@@ -771,6 +978,16 @@ object DownloadsRepository {
             DownloadedFramesProblem.StillPicture -> Res.string.downloads_error_frames_still
         },
         DownloadFailureKind.BadFile,
+    )
+
+    /** A download that just arrived, or is arriving, as a placeholder: failed, without a file, as a bad file. */
+    private fun DownloadItem.failedAsPlaceholder(reason: PlaceholderReason): DownloadItem = copy(
+        status = DownloadStatus.Failed,
+        localFileUri = null,
+        framesCheck = DownloadFramesCheck.NotChecked,
+        failureKind = DownloadFailureKind.BadFile,
+        errorMessage = placeholderReasonText(reason, this),
+        updatedAtEpochMs = DownloadsClock.nowEpochMs(),
     )
 
     private fun DownloadItem.failedWith(message: StringResource, kind: DownloadFailureKind): DownloadItem = copy(
@@ -847,24 +1064,46 @@ object DownloadsRepository {
         downloadId: String,
         ruleKey: String,
         stillWanted: () -> Boolean = { true },
-    ): AutoDownloadRemovalResult =
-        synchronized(stateLock) {
-            ensureLoaded()
-            val items = _uiState.value.items
-            val item = items.firstOrNull { it.id == downloadId } ?: return AutoDownloadRemovalResult.Changed
-            if (item.autoDownloadRuleKey != ruleKey || item.status != DownloadStatus.Completed) {
-                return AutoDownloadRemovalResult.Changed
+    ): AutoDownloadRemovalResult {
+        ensureLoaded()
+        // Per-video lock first, then the state lock (see the lock order at stateLock).
+        repeat(LockAttempts) {
+            val locked = finishedFileUriOf(downloadId)
+            val result = if (locked != null) {
+                SidecarLocks.withLock(locked) { removeAutoWithLocksHeld(downloadId, ruleKey, stillWanted, locked) }
+            } else {
+                removeAutoWithLocksHeld(downloadId, ruleKey, stillWanted, null)
             }
-            if (!stillWanted()) return AutoDownloadRemovalResult.Changed
-            if (!backend.isConnected(item)) return AutoDownloadRemovalResult.NotReachable
-            // A move has the item: it stays scheduled and is looked at again later.
-            if (!ItemLocks.tryAcquire(downloadId)) return AutoDownloadRemovalResult.Busy
-            try {
-                return backend.withListLock { removeWatchedLocked(item, items) }
-            } finally {
-                ItemLocks.release(downloadId)
-            }
+            if (result != null) return result
         }
+        return AutoDownloadRemovalResult.NotMoved
+    }
+
+    private fun removeAutoWithLocksHeld(
+        downloadId: String,
+        ruleKey: String,
+        stillWanted: () -> Boolean,
+        lockedUri: String?,
+    ): AutoDownloadRemovalResult? = synchronized(stateLock) {
+        ensureLoaded()
+        val items = _uiState.value.items
+        val item = items.firstOrNull { it.id == downloadId } ?: return AutoDownloadRemovalResult.Changed
+        // A file flagged as a placeholder is never removed automatically.
+        if (item.autoDownloadRuleKey != ruleKey || item.status != DownloadStatus.Completed || item.isPlaceholder) {
+            return AutoDownloadRemovalResult.Changed
+        }
+        if (!stillWanted()) return AutoDownloadRemovalResult.Changed
+        val fileUri = backend.resolveLocalFileUri(item.localFileUri, item.fileName)
+        if (fileUri != lockedUri) return null
+        if (!backend.isConnected(item)) return AutoDownloadRemovalResult.NotReachable
+        // A move has the item: it stays scheduled and is looked at again later.
+        if (!ItemLocks.tryAcquire(downloadId)) return AutoDownloadRemovalResult.Busy
+        try {
+            return backend.withListLock { removeWatchedLocked(item, items) }
+        } finally {
+            ItemLocks.release(downloadId)
+        }
+    }
 
     private fun removeWatchedLocked(item: DownloadItem, items: List<DownloadItem>): AutoDownloadRemovalResult {
         val downloadId = item.id
@@ -1125,6 +1364,7 @@ object DownloadsRepository {
 
     private fun DownloadItem.hasPlayableLocalFile(): Boolean =
         status == DownloadStatus.Completed &&
+            !isPlaceholder &&
             backend.resolveLocalFileUri(
                 localFileUri = localFileUri,
                 destinationFileName = fileName,

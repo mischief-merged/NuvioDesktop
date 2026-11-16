@@ -71,10 +71,9 @@ internal actual object DownloadsPlatformDownloader {
     /** A transfer that receives nothing for this long is cut off and tried again. */
     internal var stallTimeoutMs: Long = 60_000L
 
-    /**
-     * An item whose file or partial file is in another location than its record says, after a move
-     * that was cut short, follows the file.
-     */
+    /** Subtitles tried at the start of a transfer are given up after this long. */
+    internal const val StartSubtitlesTimeoutMs = 60_000L
+
     /**
      * A file is found only where its record says. Nothing is adopted by name or size: a finished record
      * without an address shows "File not found", and only the user can point it at a file ("Locate the file…").
@@ -110,6 +109,13 @@ internal actual object DownloadsPlatformDownloader {
             val downloadsDir = File(location.path.also { if (location.id == DownloadLocations.AppId) it.createDirectories() }.toUri())
             val destination = File(downloadsDir, request.destinationFileName)
             val tempFile = File(downloadsDir, "${request.destinationFileName}.part")
+
+            // Subtitles are tried now, beside the transfer, so that a partly watched file has them.
+            // What cannot be fetched now is tried again when the file is done (DownloadCompanions).
+            if (DownloadSubtitles.hasSources(request.item)) launch {
+                runCatching { withTimeoutOrNull(StartSubtitlesTimeoutMs) { DownloadSubtitles.prepare(request.item, destination.toURI().toString()) } }
+                    .onFailure { if (it is CancellationException) throw it }
+            }
 
             // Dropped connections are retried in place (resuming from the .part file) with backoff.
             // The retry budget resets whenever an attempt makes progress, so long downloads survive
@@ -179,6 +185,9 @@ internal actual object DownloadsPlatformDownloader {
 
     actual fun removePartialFile(destinationFileName: String): Boolean {
         // Without a record to say where, only the app's own folder: never a file of that name elsewhere.
+        // Subtitles saved at the start of a download that never became a file go with it. Never when the file exists.
+        val video = File(appDownloadsDir, destinationFileName)
+        if (!video.exists()) runCatching { DownloadSubtitleStorage(video.toURI().toString()).remove() }
         val tempFile = File(appDownloadsDir, "$destinationFileName.part")
         return !tempFile.exists() || runCatching { tempFile.delete() }.getOrDefault(false)
     }

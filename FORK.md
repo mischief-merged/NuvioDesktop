@@ -20,6 +20,8 @@ NuvioRoid is a fork of [NuvioMedia/NuvioDesktop](https://github.com/NuvioMedia/N
 | Safer state | Download state updates are serialised across threads; the stored list is written atomically with a fallback copy and decoded tolerantly; interrupted downloads resume on launch and retry when the connection returns. | `pr/b-downloads-concurrency` and later branches |
 | Downloads screen | Rows say what is happening (waiting for the internet, checking the file, paused and why) and how a finished file was verified. Failures give a plain reason and a next step, including "Choose another source". Delete moves files to the Trash and names the item. An unreadable list is reported instead of shown as empty. Controls are named for assistive technology. | `fix/downloads-screen-states` |
 | Clearer auto-download | Deleting an auto-downloaded episode does not fetch it again; rule rows open their settings; results are reported only after they are saved; closing the window while downloads are running asks first. | `fix/auto-download-clarity` |
+| Complete offline | A download carries what it needs to be watched with no connection: subtitles (now also saved on desktop), intro and credits skip times, the season's episode list for the next-episode card, and a poster and thumbnail, all kept in one folder beside the video. Offline, the episode and show pages are drawn from these saved details. A failed lookup can add to what is saved but never replaces it. Existing downloads are filled in quietly in the background. | `pr/p-offline-skip-times` |
+| Not the real video | A download that is only a provider's placeholder clip is recognised: far smaller than the size the source stated, far too small or too short for the title's length, or a still picture. It is shown as a problem with the reason, is not counted as downloaded, and a real copy is fetched beside it. Downloads made before the checks existed are checked again in the background. Nothing already stored is removed automatically. | `fix/recheck-downloads-and-placeholders` |
 
 ## Playback
 
@@ -28,6 +30,8 @@ NuvioRoid is a fork of [NuvioMedia/NuvioDesktop](https://github.com/NuvioMedia/N
 | Play by preferences | A new auto-play mode, "Best match for my preferences", picks the source using the same saved quality, bitrate and language as downloads. If nothing fits, the source list opens and says so; when a source is picked, the loading screen names it. Manual stays the default. | `pr/i-auto-play-preferred` |
 | Preferences in Settings | Settings, Playback, "Quality and language preferences" edits the saved values and the "When I press Play" choice. A one-time prompt offers the same choices to a new profile. | `pr/j-preferences-settings` |
 | Source failover | When a source fails to start or dies during playback, the player moves to the next source in the same ranked order and resumes where it was. A short placeholder clip played in place of the real file counts as a failure. Bounded, never retries a failed source, waits when offline, and can be turned off. | `pr/l-playback-failover` |
+| Stalled and placeholder sources | A source that never makes progress, or stops responding during playback, is abandoned and the next one is tried. Provider placeholder clips are recognised by file name and link together with a second sign such as a very short length. Pausing, seeking, sleep and going offline do not count. | `pr/m-playback-failure-signals` |
+| Source ranking by identity and language | A source that is clearly a different title, episode or film year goes to the back of the list instead of being picked. Audio language is told apart from subtitle language, and an untagged source that looks foreign no longer counts as the chosen language. Ambiguous cases are left alone. | `pr/n-source-ranking` |
 
 ## Navigation
 
@@ -55,7 +59,7 @@ User-facing English text uses one set of terms ("source", "Auto-download") and p
 
 ## Testing
 
-The desktop test suite on `downloads-suite` runs 2,962 tests. Three fail, and the same three fail on upstream `Dev` at `c8ee7621` without any of these changes:
+The desktop test suite on `downloads-suite` runs 3,356 tests. Three fail, and the same three fail on upstream `Dev` at `c8ee7621` without any of these changes:
 
 - `DesktopWindowInsetsTest` (title bar clearance)
 - `SettingsNavigationTest` (buffer options by platform and playback engine)

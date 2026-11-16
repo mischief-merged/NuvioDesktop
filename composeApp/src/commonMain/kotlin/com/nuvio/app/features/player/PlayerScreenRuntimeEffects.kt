@@ -21,6 +21,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.downloads.AutoDownloads
+import com.nuvio.app.features.downloads.SidecarIo
+import com.nuvio.app.features.downloads.savedEpisodeVideosFor
 import com.nuvio.app.features.p2p.P2pSettingsRepository
 import com.nuvio.app.features.p2p.P2pStreamRequest
 import com.nuvio.app.features.p2p.P2pStreamingEngine
@@ -97,7 +99,14 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
     LaunchedEffect(parentMetaType, parentMetaId) {
         playerMeta = MetaDetailsRepository.peek(parentMetaType, parentMetaId)
         playerMetaVideos = playerMeta?.videos.orEmpty()
+        // Without details in memory a finished download offers the next episode at once from what was saved beside it.
+        // Details that arrive from the network replace it.
         if (playerMetaVideos.isEmpty()) {
+            val localUri = activeSourceUrl.takeIf { it.startsWith("file:") }
+            // Read off the main thread, with a time limit; applied here.
+            playerMetaVideos = SidecarIo.read { savedEpisodeVideosFor(localUri) }.orEmpty()
+        }
+        if (playerMeta?.videos.isNullOrEmpty()) {
             MetaDetailsRepository.fetch(parentMetaType, parentMetaId)?.let { meta ->
                 playerMeta = meta
                 playerMetaVideos = meta.videos
@@ -164,6 +173,14 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
         PlayerStreamsRepository.clearEpisodeStreams()
         resetAddonSubtitlesIfSourceChanged()
         WatchProgressRepository.ensureLoaded()
+
+        if (isDesktop) {
+            // A provider's status clip can be told from its link or file name before any frame.
+            checkForPlaceholderBySourceSignals()
+            // One watch decides about the start and about a stall later on; see monitorSourceHealth.
+            monitorSourceHealth()
+            return@LaunchedEffect
+        }
 
         // A source that does not finish loading within the configured time counts as failed when
         // falling back to the next source. It has an effect only where that fallback applies.
@@ -437,7 +454,7 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
             return@LaunchedEffect
         }
 
-        controller.seekTo(targetPositionMs)
+        seekWithNote(controller, targetPositionMs)
         initialSeekApplied = true
     }
 
@@ -673,7 +690,11 @@ private fun PlayerScreenRuntime.BindPlayerMetadataAndSkipEffects() {
         nextEpisodeCardDismissed = false
         cancelNextEpisodeAutoPlay()
 
+        launch { saveCompanionsOfPlayingDownload() }
+
         if (!playerSettingsUiState.skipIntroEnabled) return@LaunchedEffect
+
+        if (applyDownloadedSkipIntervals()) return@LaunchedEffect
 
         if ((contentType ?: parentMetaType).equals("movie", ignoreCase = true)) {
             val api = SkipIntroRepository.getMovieSkipIntervals(parentMetaId, activeVideoId)
@@ -810,7 +831,7 @@ private fun PlayerScreenRuntime.BindPlayerMetadataAndSkipEffects() {
                 val rawMs = current.internalSkipAction(skipIntervals, durationMs)?.targetMs ?: return@LaunchedEffect
                 val seekPositionMs = if (durationMs > 0L) rawMs.coerceAtMost(durationMs - 1) else rawMs
                 val notification = current.autoSkipNotificationMessage(seekPositionMs)
-                if (!controller.trySeekTo(seekPositionMs)) return@LaunchedEffect
+                if (!trySeekWithNote(controller, seekPositionMs)) return@LaunchedEffect
                 autoSkippedIntervalKeys.add(intervalKey)
                 autoSkippedIntervals.add(current)
                 scheduleProgressSyncAfterSeek()

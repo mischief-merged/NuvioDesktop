@@ -23,6 +23,13 @@ internal enum class SourceFailure {
     DiedDuringPlayback,
 
     /**
+     * The source stopped responding after playback had started: the position stood still, without an
+     * error, while the user wanted playback. It is handled like [DiedDuringPlayback] (any source,
+     * resuming a little before where it stopped) and has its own message.
+     */
+    StalledDuringPlayback,
+
+    /**
      * The source plays without an error, but what plays is a short placeholder clip, such as a notice that
      * the file is not ready, and not the video. It applies in every mode: the user never chose a placeholder.
      */
@@ -121,11 +128,22 @@ internal fun sourceFailoverResumePositionMs(positionMs: Long, durationMs: Long):
     }
 }
 
-/** A file shorter than this can be a placeholder. */
-internal const val PLACEHOLDER_MAX_DURATION_MS = 5L * 60_000L
+/**
+ * A file shorter than this can be a placeholder. Ten minutes, because a provider's "not ready" clip
+ * can run to a little over five (one was 300.9 seconds), and the other limit below keeps a short
+ * episode or a short film out.
+ */
+internal const val PLACEHOLDER_MAX_DURATION_MS = 10L * 60_000L
 
 /** A file shorter than this part of the expected running time can be a placeholder. */
-internal const val PLACEHOLDER_MAX_FRACTION_OF_RUNTIME = 0.30
+internal const val PLACEHOLDER_MAX_FRACTION_OF_RUNTIME = 0.20
+
+/**
+ * A suspect source (see assessSourceLink) needs only a short stable length to be confirmed. That
+ * limit stays at five minutes: the wider limit above works together with the running time, which a
+ * suspect source does not need to have.
+ */
+internal const val PLACEHOLDER_SUSPECT_MAX_DURATION_MS = 5L * 60_000L
 
 /** The placeholder check stops this long after the first frame of a source, whatever the position does. */
 internal const val PLACEHOLDER_CHECK_WINDOW_MS = 30_000L

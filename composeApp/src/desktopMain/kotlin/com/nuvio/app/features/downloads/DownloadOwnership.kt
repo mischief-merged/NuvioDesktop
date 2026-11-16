@@ -52,7 +52,7 @@ internal class DownloadOwnership(private val locations: DownloadLocations, recor
         }
         val videos = files.filterNot { it.fileName.toString().endsWith(".part") }
         return files.map { Claim(record, keyOf(it)) } +
-            videos.map { Claim(record, keyOf(it.resolveSibling(DownloadCompanions.sidecarFolderName(it.fileName.toString())))) }
+            videos.map { Claim(record, keyOf(it.resolveSibling(DownloadSidecarFiles.sidecarFolderName(it.fileName.toString())))) }
     }
 
     /** The record, other than [profileId]/[id], that owns [path], or null. */

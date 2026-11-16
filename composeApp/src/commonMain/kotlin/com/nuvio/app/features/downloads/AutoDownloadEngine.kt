@@ -245,7 +245,7 @@ internal class AutoDownloadEngine(
         val keysByRule = mutableMapOf<String, MutableSet<String>>()
         items.forEach { item ->
             val ruleKey = item.autoDownloadRuleKey ?: return@forEach
-            if (item.status != DownloadStatus.Completed) return@forEach
+            if (item.status != DownloadStatus.Completed || item.isPlaceholder) return@forEach
             val season = item.seasonNumber ?: return@forEach
             val episode = item.episodeNumber ?: return@forEach
             keysByRule.getOrPut(ruleKey) { mutableSetOf() } += autoDownloadEpisodeKey(season, episode)

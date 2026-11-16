@@ -81,6 +81,18 @@ A finished record with no address is never given a file by name or size: name an
 - **Delete, removal after watching and cancel** check, under that lock, that no record of any profile uses the file or anything in its sidecar folder; if a list cannot be read, nothing is removed. Cancel sends the file to the Trash; partial files go to the Trash too, only when no other record uses them. "Delete permanently" stays an explicit, confirmed action, with the same check.
 - **A finished download never replaces a file**: the partial file is published with a hard link under the first free name (`name (2).ext`, ...), or copied into a file created with create-new, then the partial name goes. The partial file is written without following a link, and a fresh one is created with create-new.
 
+- **Delete, removal after watching, cancel and re-download**: the record removal is saved first, durably (file and folder flushed), and only then does the file go to the Trash; if the Trash refuses, the record is put back. So a failure or a crash can leave a file without a record, never a record whose file is in the Trash. A flagged placeholder is never removed automatically; a finished file is replaced only when the user chooses, and then goes to the Trash.
+- **A finished download** is forced to disk, published under a name that replaces nothing, and its folder flushed before it is marked finished; until then the partial file keeps its name. If the folder cannot be flushed, the download is not finished: it fails with a plain reason and goes on from its partial file when tried again. On Windows, where a folder cannot be opened to flush it at all, completion rests on the forced file contents (NTFS journals its folder changes); the folder move, which needs that flush, stops there and lists its copies.
+- **The location marker** is only ever created with create-new. A file already at its name is read without following links: a marker of ours that no location holds is adopted, anything else (a file of the user's, a link, another location's marker) refuses the folder and nothing is written.
+- **A save without the lock**: when the store's lock across processes cannot be taken, nothing runs and the save counts as not done.
+
+### 5.7 Lock order (also written at SidecarLocks)
+1. The per-video sidecar lock (`SidecarLocks`), taken by sidecar writers, both delete paths, and the move's Trash step.
+2. The repository's state lock.
+3. The list lock: the store's lock across processes, taken by every save of a list, the compare-and-relocate, delete/cancel/removal, and the move's last ownership check plus Trash call.
+
+Nothing waits for an earlier lock while holding a later one: code under the list lock reads the published list without the state lock, and nothing under the state lock takes a sidecar lock. Item locks, writer tokens and the move's OS lock are only tried, or waited for with a time limit, so they cannot invert the order. Background passes (re-checks, companion backfill) and sidecar writes skip a download a move or a delete holds, or whose location is away.
+
 ## 6. Shows stay together
 Rule: a new episode of a show (manual, season, automatic) goes to the location holding that show's downloads (the location of the most recent finished or running item with the same show id), otherwise to the default location. Moving the show is how it changes. If that location is not connected: automatic downloads for the show wait with a visible reason ("Drive not connected"); a manual download is queued waiting at that location and its row offers "Choose where to save", so nothing is put elsewhere silently. (The details screens call enqueue and have no way to ask; the question is asked on the Downloads screen row.)
 

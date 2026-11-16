@@ -415,6 +415,7 @@ fun StreamsScreen(
                                     episodeTitle = episodeTitle,
                                     episodeThumbnail = episodeThumbnail,
                                     stream = resolved.stream,
+                                    userChoseReplacement = true,
                                 )
                                 NuvioToastController.show(result.toastMessage())
                             }
@@ -441,6 +442,7 @@ fun StreamsScreen(
                         episodeTitle = episodeTitle,
                         episodeThumbnail = episodeThumbnail,
                         stream = stream,
+                        userChoseReplacement = true,
                     )
                     NuvioToastController.show(result.toastMessage())
                 }

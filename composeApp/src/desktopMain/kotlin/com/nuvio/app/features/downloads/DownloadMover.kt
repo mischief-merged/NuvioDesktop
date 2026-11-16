@@ -26,7 +26,7 @@ internal enum class MoveKind {
     /** The partial file of a download that is not finished. */
     Partial,
 
-    /** A file in the dedicated sidecar folder of the video (see [DownloadCompanions]). */
+    /** A file in the dedicated sidecar folder of the video (see [DownloadSidecarFiles]). */
     Companion,
 }
 
@@ -631,10 +631,13 @@ internal class DownloadMover(
                 kept += MoveFailure(item.displayName, MoveFailureReason.OriginalNotRemoved, detail)
             }
             var mainGone = false
+            // The per-video lock that sidecar writers take, then the list lock (see the order at SidecarLocks).
+            val sidecarLock = source?.toFile()?.toURI()?.toString()
+            fun <T> sidecarLocked(block: () -> T): T = if (sidecarLock == null) block() else SidecarLocks.withLock(sidecarLock, block)
             when {
                 source == null -> keep("its location is not connected")
                 !Files.exists(source, LinkOption.NOFOLLOW_LINKS) -> mainGone = true
-                else -> when (val problem = records.underListLock {
+                else -> when (val problem = sidecarLocked { records.underListLock {
                     // The last checks and the Trash call in one step under the list lock.
                     when {
                         Files.isSymbolicLink(source) || fileKeyOf(source) != main.srcKey -> "it is not the file that was copied"
@@ -642,7 +645,7 @@ internal class DownloadMover(
                         !sendToTrash(source) -> "the Trash did not take it"
                         else -> null
                     }
-                }) {
+                } }) {
                     null -> {
                         checkpoint("trashed")
                         updateEntry(index, mainIndex) { it.copy(state = EntryState.Trashed) }
@@ -654,10 +657,10 @@ internal class DownloadMover(
             val companions = item.entries.withIndex().filter { it.value.kind == MoveKind.Companion }
             // The sidecar folder follows its video: it goes only when the video went.
             if (companions.isNotEmpty() && source != null && mainGone) {
-                val folder = source.resolveSibling(DownloadCompanions.sidecarFolderName(source.fileName.toString()))
+                val folder = source.resolveSibling(DownloadSidecarFiles.sidecarFolderName(source.fileName.toString()))
                 val root = resolve(main.srcLocationId)
                 val expected = companions.associate { it.value.srcRel to it.value.srcKey }
-                val problem = records.underListLock {
+                val problem = sidecarLocked { records.underListLock {
                     val now = if (root == null || Files.isSymbolicLink(folder)) null else listFiles(folder)?.associate { root.relativize(it).toString() to fileKeyOf(it) }
                     when {
                         now == null || now != expected -> "its sidecar folder changed"
@@ -665,7 +668,7 @@ internal class DownloadMover(
                         !sendToTrash(folder) -> "the Trash did not take its sidecar folder"
                         else -> null
                     }
-                }
+                } }
                 if (problem != null) keep(problem) else updateItem(index) { it.copy(entries = it.entries.map { e -> if (e.kind == MoveKind.Companion) e.copy(state = EntryState.Trashed) else e }) }
             }
             return kept
