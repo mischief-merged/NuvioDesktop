@@ -1,5 +1,7 @@
 package com.nuvio.app.features.downloads
 
+import com.nuvio.app.features.streams.StreamItem
+
 /*
  * The size a source says its file has, read from the text it shows when it does not state one in a
  * structured field. Such text is written for people ("[💾 9.53 GB] Title.2026.1080p.mkv"), so every
@@ -28,13 +30,21 @@ private val SizeWordBefore = Regex("""size\s*[:=\-]?\s*$""", RegexOption.IGNORE_
 
 private const val DiskSymbol = "💾"
 
-// Text that says the file is one of many: a season pack, a complete series or a collection. The size
-// such text states is the size of the whole pack, not of the one file that was fetched from it.
+// Text that says the file is one of many: a season pack, a complete series, a collection, a range of
+// episodes or "x of y files". The size such text states is the size of the whole pack, not of the one
+// file that was fetched from it. When in doubt this says pack: a claim not made is better than a wrong one.
 private val PackMarker = Regex(
-    """(?<![\p{L}\p{N}])(complete|pack|batch|collection|box\s?set|trilogy|saga|anthology)(?![\p{L}\p{N}])""" +
-        """|(?<![\p{L}\p{N}])seasons?[\s._-]*\d{1,2}\s*[-–]\s*\d{1,2}""" +
-        """|(?<![\p{L}\p{N}])S\d{1,2}\s*[-–]\s*S?\d{1,2}(?![\p{L}\p{N}])""" +
-        """|(?<![\p{L}\p{N}])S\d{1,2}(?![\p{L}\p{N}])(?![\s._-]*E\d)""",
+    """(?<![\p{L}\p{N}])(complete|pack|batch|collection|box\s?set|trilogy|saga|anthology|full\s+season)(?![\p{L}\p{N}])""" +
+        // "Season 1", "Season 1-3": a season named without an episode of it.
+        """|(?<![\p{L}\p{N}])seasons?[\s._-]*\d{1,2}(?![\p{L}\p{N}])(?![\s._-]*(episode|ep|e)[\s._-]*\d)""" +
+        """|(?<![\p{L}\p{N}])S\d{1,2}\s*[-\u2013\u2014]\s*S?\d{1,2}(?![\p{L}\p{N}])""" +
+        // "S01" with no episode after it.
+        """|(?<![\p{L}\p{N}])S\d{1,2}(?![\p{L}\p{N}])(?![\s._-]*E\d)""" +
+        // A range or list of episodes: "S01E01-E10", "E01-E10", "S01E01E02".
+        """|(?<!\p{L})E\d{1,3}\s*[-\u2013\u2014]\s*E?\d{1,3}(?![\p{L}\p{N}])""" +
+        """|(?<!\p{L})E\d{1,3}E\d{1,3}(?![\p{L}\p{N}])""" +
+        // "10 files", "3 of 10 files".
+        """|(?<![\p{L}\p{N}])\d+\s*(of|/)\s*\d+\s*files?(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])\d+\s+files(?![\p{L}\p{N}])""",
     RegexOption.IGNORE_CASE,
 )
 
@@ -90,12 +100,48 @@ internal fun claimedSizeFromSourceText(title: String?, subtitle: String?): Long?
 }
 
 /**
- * The size the source claims for this download's file: the size it stated, or else the one its text
- * names. Both are kept in [DownloadItem.expectedSizeBytes] where known, and the text is read again
- * for an item that was stored before the text was read.
+ * The fastest an episode can plausibly be encoded: 40 Mbit/s, above the best 1080p remux. A claim for
+ * a series episode that spread over its runtime comes to more than this is the size of something
+ * larger, such as a season, and is not used.
  */
-internal fun DownloadItem.claimedSizeBytes(): Long? =
-    expectedSizeBytes?.takeIf { it > 0L } ?: claimedSizeFromSourceText(streamTitle, streamSubtitle)
+internal const val MaxPlausibleEpisodeBitsPerSecond = 40_000_000L
+
+/** The largest size taken for one episode when the title's runtime is not known: 12 GB. */
+internal const val MaxPlausibleEpisodeBytesWithoutRuntime = 12_000_000_000L
+
+/** Whether [bytes] can be one episode of a title that runs [runtimeMinutes] (not known: null). */
+internal fun isPlausibleForOneEpisode(bytes: Long, runtimeMinutes: Int?): Boolean {
+    val minutes = runtimeMinutes?.takeIf { it > 0 } ?: return bytes <= MaxPlausibleEpisodeBytesWithoutRuntime
+    return bytes.toDouble() * 8.0 / (minutes * 60.0) <= MaxPlausibleEpisodeBitsPerSecond.toDouble()
+}
+
+/**
+ * The size a source claims for the file that is selected, or null. A claim is used only when it is
+ * established to describe that file, and abstains when in doubt:
+ *  - a stream that selects a file by index (`fileIdx`) is a file of a torrent that may hold many;
+ *  - a size the source states in a structured field is not used when the stream is a torrent
+ *    (`infoHash`), since it may be the size of the whole torrent;
+ *  - text that describes a pack, a season or a range of episodes;
+ *  - for a series episode, a size too large for one episode (see [isPlausibleForOneEpisode]).
+ */
+internal fun usableSizeClaim(stream: StreamItem, isEpisode: Boolean, runtimeMinutes: Int?): Long? {
+    if (stream.fileIdx != null) return null
+    if (looksLikePack(listOfNotNull(stream.streamLabel, stream.streamSubtitle, stream.title).joinToString("\n"))) return null
+    val structured = stream.behaviorHints.videoSize?.takeIf { it > 0L && stream.infoHash == null }
+    val claim = structured ?: claimedSizeFromSourceText(stream.streamLabel, stream.streamSubtitle) ?: return null
+    return claim.takeIf { !isEpisode || isPlausibleForOneEpisode(it, runtimeMinutes) }
+}
+
+/**
+ * The size the source claims for this download's file: the size kept with it, or else the one its
+ * text names. Pack wording in its text, or a size too large for one episode, makes it null, also for a
+ * size kept by an earlier build, which did not look at either.
+ */
+internal fun DownloadItem.claimedSizeBytes(runtimeMinutes: Int? = null): Long? {
+    if (looksLikePack(listOfNotNull(streamTitle, streamSubtitle).joinToString("\n"))) return null
+    val claim = expectedSizeBytes?.takeIf { it > 0L } ?: claimedSizeFromSourceText(streamTitle, streamSubtitle) ?: return null
+    return claim.takeIf { !isEpisode || isPlausibleForOneEpisode(it, runtimeMinutes) }
+}
 
 /** The claim of a source as a size for a sentence: "9.5 GB", in the units the source wrote its size in. */
 internal fun formatClaimedSize(bytes: Long): String = formatDecimalSize(bytes)
