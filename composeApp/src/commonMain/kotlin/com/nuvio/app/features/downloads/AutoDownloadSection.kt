@@ -329,6 +329,7 @@ internal fun autoDownloadStatusLabel(status: AutoDownloadStatus): String = strin
         AutoDownloadStatus.Failed -> Res.string.downloads_auto_status_failed
         AutoDownloadStatus.Stopped -> Res.string.downloads_auto_status_stopped
         AutoDownloadStatus.StorageLimitReached -> Res.string.downloads_auto_status_storage_limit
+        AutoDownloadStatus.FolderNotConnected -> Res.string.downloads_auto_status_folder_not_connected
         AutoDownloadStatus.LowDiskSpace -> Res.string.downloads_auto_status_low_disk_space
     },
 )

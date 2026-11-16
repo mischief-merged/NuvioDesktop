@@ -66,6 +66,7 @@ import nuvio.composeapp.generated.resources.downloads_auto_status_private_source
 import nuvio.composeapp.generated.resources.downloads_auto_status_pending
 import nuvio.composeapp.generated.resources.downloads_auto_status_stopped
 import nuvio.composeapp.generated.resources.downloads_auto_status_low_disk_space
+import nuvio.composeapp.generated.resources.downloads_auto_status_folder_not_connected
 import nuvio.composeapp.generated.resources.downloads_auto_status_storage_limit
 import nuvio.composeapp.generated.resources.downloads_auto_status_up_to_date
 import nuvio.composeapp.generated.resources.downloads_auto_storage_limit
@@ -141,6 +142,7 @@ class AutoDownloadSectionTest {
         AutoDownloadStatus.Stopped to Res.string.downloads_auto_status_stopped,
         AutoDownloadStatus.StorageLimitReached to Res.string.downloads_auto_status_storage_limit,
         AutoDownloadStatus.LowDiskSpace to Res.string.downloads_auto_status_low_disk_space,
+        AutoDownloadStatus.FolderNotConnected to Res.string.downloads_auto_status_folder_not_connected,
     )
 
     @Test

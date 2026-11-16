@@ -1,5 +1,7 @@
 package com.nuvio.app
 
+import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.app_already_open
 import com.nuvio.app.features.autosync.AutoSyncPreferencesDesktop
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -58,6 +60,11 @@ private const val MacosDarkAquaAppearance = "NSAppearanceNameDarkAqua"
 
 @OptIn(ExperimentalComposeUiApi::class)
 fun main(args: Array<String>) {
+    // One copy of the app per app data folder: a second copy says so and stops before touching anything.
+    if (!com.nuvio.app.core.storage.DesktopSingleInstance.acquireForApp(com.nuvio.app.core.storage.DesktopStorage.rootDir)) {
+        showAlreadyOpen()
+        return
+    }
     // On Linux, initialize GTK BEFORE AWT/Compose/Skia to prevent GdkDisplayManager
     // type registration conflict (Skiko partially loads GDK without full GTK init).
     if (System.getProperty("os.name", "").lowercase().contains("linux")) {
@@ -74,6 +81,8 @@ fun main(args: Array<String>) {
     // Load cached profile data synchronously so the profile color is available
     // on the very first Compose frame (matching Android's SharedPreferences behavior).
     ProfileRepository.loadCachedProfiles()
+    // Settles a folder move that was cut short, before the list of downloads is read.
+    runCatching { com.nuvio.app.features.downloads.DesktopDownloads.install() }
     AppIconRepository.ensureLoaded()
     AutoSyncPreferencesDesktop.initialize()
     DiscordPresenceManager.start()
@@ -325,3 +334,12 @@ private fun handleDesktopLaunchArgs(args: Array<String>) {
 private fun isDesktopAppUrl(value: String): Boolean =
     value.startsWith("nuvio://", ignoreCase = true) ||
         value.startsWith("stremio://", ignoreCase = true)
+
+/** The plain message a second copy of the app shows before it stops. Nothing of the first copy is touched. */
+private fun showAlreadyOpen() {
+    val message = runCatching {
+        kotlinx.coroutines.runBlocking { org.jetbrains.compose.resources.getString(Res.string.app_already_open) }
+    }.getOrDefault("NuvioRoid is already open.")
+    runCatching { javax.swing.JOptionPane.showMessageDialog(null, message, "NuvioRoid", javax.swing.JOptionPane.INFORMATION_MESSAGE) }
+        .onFailure { System.err.println(message) }
+}

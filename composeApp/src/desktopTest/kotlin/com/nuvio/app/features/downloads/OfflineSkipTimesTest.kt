@@ -262,7 +262,10 @@ class OfflineSkipTimesTest {
     @Test
     fun a_corrupt_file_counts_as_missing_and_is_replaced_by_a_lookup() = runBlocking {
         val uri = video()
-        File(File(File(java.net.URI(uri)).path + ".subtitles").also { it.mkdirs() }, SkipTimesSidecar.FILE_NAME).writeText("<<<")
+        // A corrupt file in the app's own (marked) folder.
+        val folder = File(File(java.net.URI(uri)).path + ".subtitles")
+        assertTrue(SidecarOwnership.ensureOwned(folder.toPath(), File(java.net.URI(uri)).name))
+        File(folder, SkipTimesSidecar.FILE_NAME).writeText("<<<")
         answer = { SkipFetchResult.Found(listOf(intro)) }
 
         assertEquals(listOf(intro), skipTimes().refresh(request(), uri))

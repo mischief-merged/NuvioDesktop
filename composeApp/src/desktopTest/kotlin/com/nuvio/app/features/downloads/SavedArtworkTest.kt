@@ -55,7 +55,7 @@ class SavedArtworkTest {
         assertEquals(CompanionOutcome.Saved, companion().run(episode(uri), uri))
 
         assertEquals(listOf("https://img/poster.jpg", "https://img/thumb.jpg"), fetched)
-        assertEquals(setOf("poster.jpg", "thumbnail.jpg"), dir.list().orEmpty().toSet())
+        assertEquals(setOf("poster.jpg", "thumbnail.jpg"), dir.list().orEmpty().filterNot { it == SidecarOwnership.MarkerName }.toSet())
         assertContentEquals(jpeg, File(dir, "poster.jpg").readBytes())
     }
 
@@ -86,7 +86,7 @@ class SavedArtworkTest {
         val companion = companion()
 
         assertEquals(CompanionOutcome.NothingFound, companion.run(episode(uri), uri))
-        assertEquals(setOf("poster.none", "thumbnail.none"), dir.list().orEmpty().toSet())
+        assertEquals(setOf("poster.none", "thumbnail.none"), dir.list().orEmpty().filterNot { it == SidecarOwnership.MarkerName }.toSet())
         assertFalse(companion.isDue(episode(uri), uri))
 
         now += SavedArtwork.RecheckAgeMs
@@ -155,7 +155,7 @@ class SavedArtworkTest {
         val uri = uriOf()
         companion().run(episode(uri), uri)
 
-        assertEquals(setOf("a.mkv", "a.mkv.subtitles"), folder.list().orEmpty().toSet())
+        assertEquals(setOf("a.mkv", "a.mkv.subtitles"), folder.list().orEmpty().filterNot { it == SidecarOwnership.MarkerName }.toSet())
         assertTrue(dir.list().orEmpty().none { it.endsWith(".tmp") })
     }
 
@@ -173,7 +173,7 @@ class SavedArtworkTest {
 
         companion.run(episode(uri).copy(episodeNumber = null, seasonNumber = null), uri)
 
-        assertEquals(setOf("poster.png"), dir.list().orEmpty().toSet())
+        assertEquals(setOf("poster.png"), dir.list().orEmpty().filterNot { it == SidecarOwnership.MarkerName }.toSet())
         assertContentEquals(png, File(dir, "poster.png").readBytes())
     }
 }
