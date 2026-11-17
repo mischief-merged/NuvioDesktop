@@ -10,7 +10,7 @@ package com.nuvio.app.features.streams
  *    Its cached sources carry a lightning bolt instead: "[TB⚡]".
  *  - A service tag followed by "download" in square brackets, as Torrentio writes it: "[RD download]".
  *    Its cached sources read "[RD+]".
- *  - The whole word "uncached" or the words "not cached".
+ *  - The whole word "uncached" or the words "not cached", unless negated ("uncached: false").
  */
 
 /** A service tag of two to four letters next to a download arrow (with or without the emoji selector), in brackets. */
@@ -19,8 +19,15 @@ private val ARROW_TAG = Regex("\\[\\s*(?:[A-Za-z]{2,4}\\s*⬇️?|⬇️?\\s*[A-
 /** A service tag and the word "download", in brackets. */
 private val DOWNLOAD_TAG = Regex("\\[\\s*[A-Za-z]{2,4}\\s+download\\s*]", RegexOption.IGNORE_CASE)
 
-/** "uncached" or "not cached" as whole words. */
-private val NOT_CACHED_WORDS = Regex("(?<![\\p{L}\\p{N}])(?:uncached|not\\s+cached)(?![\\p{L}\\p{N}])", RegexOption.IGNORE_CASE)
+/**
+ * "uncached" or "not cached" as whole words, unless the text negates them: "not uncached", or a status
+ * that follows with false, no, 0 or off ("uncached: false", "uncached=no").
+ */
+private val NOT_CACHED_WORDS = Regex(
+    "(?<![\\p{L}\\p{N}])(?<!not\\s)(?:uncached|not\\s+cached)(?![\\p{L}\\p{N}])" +
+        "(?!\\s*[:=]?\\s*(?:false|no|0|off)(?![\\p{L}\\p{N}]))",
+    RegexOption.IGNORE_CASE,
+)
 
 /** Whether a source's name (its label in the list) says the debrid service does not have the file yet. */
 internal fun sourceLabelSaysNotCached(name: String?): Boolean {

@@ -24,6 +24,7 @@ import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.player_failover_exhausted
 import nuvio.composeapp.generated.resources.player_failover_now_playing
 import nuvio.composeapp.generated.resources.player_failover_placeholder_exhausted
+import nuvio.composeapp.generated.resources.player_failover_placeholder_last_source
 import nuvio.composeapp.generated.resources.player_failover_placeholder_warning
 import nuvio.composeapp.generated.resources.player_failover_trying_after_placeholder
 import nuvio.composeapp.generated.resources.player_failover_trying_after_stall
@@ -230,7 +231,8 @@ private fun PlayerScreenRuntime.judgePlaceholderLength(url: String, videoId: Str
     )
     if (!confirmed) return
     log.i { "Source looks like a placeholder: $durationMs ms against $expectedMinutes minutes expected (suspect=$suspect, ended=$ended)" }
-    handleDetectedPlaceholder(url)
+    // Judged by its length: a real video can be that short, so when no other source plays this one stays.
+    handleDetectedPlaceholder(url, byLength = true)
 }
 
 /**
@@ -274,7 +276,8 @@ internal fun PlayerScreenRuntime.checkForPlaceholderBySourceSignals() {
  * A placeholder was recognised: treat it as a failed source and move on, which applies in every mode. When
  * the setting is off (or the device is offline) the source is kept and the user is told once.
  */
-private fun PlayerScreenRuntime.handleDetectedPlaceholder(url: String) {
+private fun PlayerScreenRuntime.handleDetectedPlaceholder(url: String, byLength: Boolean = false) {
+    sourceFailoverPlaceholderByLength = byLength
     if (tryFallbackToNextSourceAfterError(message = null, failureOverride = SourceFailure.PlaceholderClip)) return
     // Not moved on: the setting is off (or the device is offline). Say so once, only when the user chose to stay.
     if (!playerSettingsUiState.streamAutoPlayFallbackActive && placeholderWarnedUrl != url) {
@@ -462,6 +465,13 @@ private suspend fun PlayerScreenRuntime.finishSourceFailover(message: String?, r
     sourceFailoverForStall = false
     if (sourceFailoverForPlaceholder) {
         sourceFailoverForPlaceholder = false
+        if (sourceFailoverPlaceholderByLength && reason != SourceFailoverStop.Offline) {
+            // Only its length made it a placeholder, and every other source failed or looked the same: it may
+            // be a real short video. It keeps playing (the user can start it again) instead of an error screen.
+            showSourceNotice(getString(Res.string.player_failover_placeholder_last_source))
+            controlsVisible = !playerControlsLocked
+            return
+        }
         if (reason == SourceFailoverStop.Offline) {
             // The device is offline: the other sources were not at fault, so the clip keeps playing and the user is told.
             showSourceNotice(getString(Res.string.player_failover_placeholder_warning))

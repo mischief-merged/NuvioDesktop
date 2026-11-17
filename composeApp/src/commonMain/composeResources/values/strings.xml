@@ -1382,6 +1382,7 @@
     <string name="player_failover_trying_after_placeholder">That source was only a placeholder, not the video. Trying another source: %1$s</string>
     <string name="player_failover_trying_after_stall">That source stopped responding. Trying another source: %1$s</string>
     <string name="player_failover_placeholder_exhausted">That source was only a placeholder, not the video, and no other source played. Choose a different source.</string>
+    <string name="player_failover_placeholder_last_source">No other source played, so this one keeps playing. It may be a short notice instead of the video.</string>
     <string name="player_failover_placeholder_warning">This source looks like a placeholder, not the video.</string>
     <string name="player_failover_exhausted">The sources we tried did not play. Choose a different source.</string>
     <string name="player_error_source_stalled">The source stopped responding.</string>

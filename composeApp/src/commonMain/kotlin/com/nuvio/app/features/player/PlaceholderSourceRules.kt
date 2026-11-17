@@ -106,7 +106,8 @@ internal fun assessSourceLink(url: String, fileNames: List<String?>): LinkAssess
  * running time (see [isBelowPlaceholderFloor]), the two minute clip against the resume
  * point, or a served file far below its declared size. A [suspect] source (see [assessSourceLink]) also
  * needs only a short stable length (under [PLACEHOLDER_SUSPECT_MAX_DURATION_MS]), even when the running time is
- * unknown. Without a suspicion, a link or name never counts.
+ * unknown, but never a length that matches a known running time ([lengthMatchesRuntime]). Without a suspicion,
+ * a link or name never counts.
  */
 internal fun isPlaceholderConfirmed(
     suspect: Boolean,
@@ -120,7 +121,22 @@ internal fun isPlaceholderConfirmed(
         isBelowPlaceholderFloor(durationMs, expectedRuntimeMinutes) ||
         isWaitClipForResume(durationMs, resumeMs) ||
         servedFileTooSmallForDeclaredSize(servedBytes, declaredBytes) ||
-        (suspect && durationMs in 1 until PLACEHOLDER_SUSPECT_MAX_DURATION_MS)
+        (suspect && durationMs in 1 until PLACEHOLDER_SUSPECT_MAX_DURATION_MS && !lengthMatchesRuntime(durationMs, expectedRuntimeMinutes))
+
+/**
+ * A file at least this part of the known running time is taken to be the video, whatever a link, name or
+ * label said about the source: a label tells how the source was when the list was made, not what a later
+ * request returns. Four fifths, because listed running times are rounded to the minute and may count
+ * credits a file lacks (a file of 2:30 for a title listed at 3 minutes is 83%), while every placeholder
+ * rule here looks for files far below the running time (under a fifth of it).
+ */
+internal const val PLACEHOLDER_RUNTIME_MATCH_FRACTION = 0.80
+
+/** Whether a file of [durationMs] is long enough for a title that runs [expectedRuntimeMinutes]. False when that is unknown. */
+internal fun lengthMatchesRuntime(durationMs: Long, expectedRuntimeMinutes: Int?): Boolean {
+    val runtime = expectedRuntimeMinutes?.takeIf { it > 0 } ?: return false
+    return durationMs > 0L && durationMs >= runtime * 60_000.0 * PLACEHOLDER_RUNTIME_MATCH_FRACTION
+}
 
 /** A file this small can be a placeholder... */
 internal const val PLACEHOLDER_SIZE_CEILING_BYTES = 64L * 1024L * 1024L

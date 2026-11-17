@@ -317,6 +317,30 @@ class UncachedClipSequenceTest {
     }
 
     @Test
+    fun when_every_source_is_a_short_clip_the_last_one_keeps_playing_instead_of_an_error() {
+        // A real 45 second video with no running time known: each copy looks like a placeholder by its length.
+        val second = stream("Other 1080p", "https://other.example/s01e02.mkv")
+        val search = ListSearch(listOf(clipStream, second))
+        val runtime = runtime(search)
+        runtime.checkForPlaceholderBySourceSignals()
+        val clipEnded = PlayerPlaybackSnapshot(isLoading = false, isEnded = true, durationMs = 45_000L, positionMs = 45_000L)
+        runtime.checkForPlaceholderSource(clipEnded)
+        val deadline = System.currentTimeMillis() + 10_000
+        while (runtime.activeSourceUrl == clipUrl && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        assertEquals(second.url, runtime.activeSourceUrl)
+
+        // The second copy is 45 seconds as well. Nothing is left to try: it stays, playable, and no error screen comes.
+        runtime.checkForPlaceholderSource(PlayerPlaybackSnapshot(isLoading = false, isEnded = true, durationMs = 45_000L, positionMs = 45_000L))
+        val settle = System.currentTimeMillis() + 10_000
+        while (runtime.sourceFallbackJob?.isActive == true && System.currentTimeMillis() < settle) Thread.sleep(20)
+        Thread.sleep(100)
+
+        assertNull(runtime.errorMessage, "the user is left with an error and nothing to play")
+        assertEquals(second.url, runtime.activeSourceUrl, "the last source was dropped")
+        assertTrue(runtime.playerNotificationMessage.isNotBlank(), "the user is not told why")
+    }
+
+    @Test
     fun the_running_time_comes_from_the_details_the_player_loaded_when_the_details_screen_is_not_open() {
         val runtime = runtime(ListSearch(emptyList()))
         assertNull(runtime.expectedRuntimeMinutes("tt-lego:1:2", 1, 2))

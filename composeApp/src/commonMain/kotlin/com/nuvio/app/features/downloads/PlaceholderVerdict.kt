@@ -1,6 +1,7 @@
 package com.nuvio.app.features.downloads
 
 import com.nuvio.app.features.player.PLACEHOLDER_SUSPECT_MAX_DURATION_MS
+import com.nuvio.app.features.player.lengthMatchesRuntime
 import com.nuvio.app.features.player.looksLikePlaceholder
 
 /*
@@ -22,8 +23,9 @@ import com.nuvio.app.features.player.looksLikePlaceholder
  *    states. Weak, because a runtime can be wrong.
  *  - picture: the frames are one still picture or blank. Weak, because a title card can be long.
  *  - not cached: the source's own label said the debrid service did not have the file yet, and the
- *    file runs under five minutes (the player's limit for a suspect source). Decisive: such a source
- *    serves the service's "not cached yet" clip, and no film or episode is that short.
+ *    file runs under five minutes (the player's limit for a suspect source), unless its length matches the
+ *    known running time (the service had the file by the time it was fetched). Decisive: such a source
+ *    serves the service's "not cached yet" clip.
  *
  * One decisive signal, or two weak ones, make the verdict. Anything less never flags: a short film
  * and a trailer-length extra carry their own short running time, a small file of low quality has
@@ -132,7 +134,9 @@ internal fun placeholderVerdict(evidence: PlaceholderEvidence): PlaceholderVerdi
     }
 
     val duration = evidence.durationMs?.takeIf { it > 0L }
-    if (evidence.sourceSaysNotCached && duration != null && duration < PLACEHOLDER_SUSPECT_MAX_DURATION_MS) {
+    if (evidence.sourceSaysNotCached && duration != null && duration < PLACEHOLDER_SUSPECT_MAX_DURATION_MS &&
+        !lengthMatchesRuntime(duration, evidence.runtimeMinutes)
+    ) {
         return PlaceholderVerdict.NotTheRealVideo(PlaceholderReason.NotCachedClip(duration))
     }
     val runtime = evidence.runtimeMinutes?.takeIf { it > 0 }
