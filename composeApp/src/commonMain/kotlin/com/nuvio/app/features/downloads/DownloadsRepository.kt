@@ -654,21 +654,22 @@ object DownloadsRepository {
      */
     private fun applyConnectionHold(): Unit = synchronized(stateLock) {
         if (!hasLoaded) return
-        if (connectionHold.holdReason != null) {
-            _uiState.value.items
-                .filter { it.status == DownloadStatus.Downloading }
-                // A transfer whose file is complete and being checked is left to finish: stopping it then would lose the file.
-                .filter { activeTransfers[it.id]?.finishing != true }
-                .forEach { item ->
-                    activeTransfers.remove(item.id)?.cancel()
-                    mutateItem(item.id) { it.waitingForConnection() }
-                }
-        } else {
-            _uiState.value.items
-                .filter { it.status == DownloadStatus.Paused && it.pausedByConnection }
-                .forEach { resumeDownload(it.id) }
-        }
+        _uiState.value.items
+            .filter { it.status == DownloadStatus.Downloading && it.connectionHoldReason() != null }
+            // A transfer whose file is complete and being checked is left to finish: stopping it then would lose the file.
+            .filter { activeTransfers[it.id]?.finishing != true }
+            .forEach { item ->
+                activeTransfers.remove(item.id)?.cancel()
+                mutateItem(item.id) { it.waitingForConnection() }
+            }
+        _uiState.value.items
+            .filter { it.status == DownloadStatus.Paused && it.pausedByConnection && it.connectionHoldReason() == null }
+            .forEach { resumeDownload(it.id) }
     }
+
+    /** Why this download waits for the connection now: some reasons hold automatic downloads only. */
+    private fun DownloadItem.connectionHoldReason(): LimitedConnectionReason? =
+        connectionHold.holdReasonFor(automatic = autoDownloadRuleKey != null)
 
     private fun DownloadItem.waitingForConnection(): DownloadItem =
         if (status != DownloadStatus.Downloading) {
@@ -684,7 +685,7 @@ object DownloadsRepository {
 
     private fun startDownload(item: DownloadItem, attempt: Int = 1): Unit = synchronized(stateLock) {
         // On a limited connection a download waits instead of starting, and goes on when that ends.
-        if (connectionHold.holdReason != null) {
+        if (item.connectionHoldReason() != null) {
             mutateItem(item.id) { it.waitingForConnection() }
             return
         }
