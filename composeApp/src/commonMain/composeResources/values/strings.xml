@@ -1943,6 +1943,8 @@
     <string name="streams_loading_subtitles">Loading subtitles from addons…</string>
     <string name="streams_loading_skip_segments">Loading intro/outro segments…</string>
     <string name="streams_finding_streams">Finding sources…</string>
+    <string name="streams_pick_to_download">Pick a source to download</string>
+    <string name="streams_pick_to_download_hint">Tap a source to download %1$s. It takes the place of the download that did not work. Nothing plays from here.</string>
     <string name="streams_link_copied">Source link copied</string>
     <string name="streams_no_direct_link">This source has no direct link</string>
     <string name="streams_no_metadata">No metadata available</string>
