@@ -55,6 +55,7 @@ import com.nuvio.app.core.network.NetworkStatusRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import org.jetbrains.compose.resources.StringResource
 import org.jetbrains.compose.resources.getString
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
@@ -141,6 +142,8 @@ internal fun DownloadsScreenContent(
     folders: DownloadFolderController = DownloadFolders.controller,
     /** Looks again at finished downloads for a placeholder in place of the video. Null where that is not offered. */
     rechecks: DownloadRechecks? = null,
+    /** Whether downloads wait because the connection is limited. */
+    connectionHold: ConnectionHold = LimitedConnections.hold,
 ) {
     val uiState by remember {
         DownloadsRepository.ensureLoaded()
@@ -208,7 +211,8 @@ internal fun DownloadsScreenContent(
     } else {
         null
     }
-    val clock = RowClock(nowEpochMs = now, offline = network.isOfflineLike, extras = extras)
+    val holdState by connectionHold.state.collectAsStateWithLifecycle()
+    val clock = RowClock(nowEpochMs = now, offline = network.isOfflineLike, extras = extras, limitedBy = holdState.reason)
     // What the list builder needs is read here, in composition, once. A list builder that reads state
     // itself is run again whenever that state changes, also in the middle of a layout pass, which the
     // lazy list does not survive (an item count that changes between two lookups of one pass).
@@ -327,6 +331,11 @@ internal fun DownloadsScreenContent(
                         autoLimitGb = storageLimitNow,
                         onManageLocations = openSettingsPage?.let { open -> { open(SettingsPage.Playback) } },
                     )
+                }
+            }
+            holdState.holdReason?.let { reason ->
+                item(key = "connection-hold") {
+                    ConnectionHoldLine(reason = reason, onDownloadAnyway = connectionHold::downloadAnyway)
                 }
             }
             speedLimitBytes?.let { limit ->
@@ -508,7 +517,13 @@ private val NoStorageLimit = kotlinx.coroutines.flow.MutableStateFlow<Int?>(null
 private val NoScheduledRemovals = kotlinx.coroutines.flow.MutableStateFlow(emptyList<AutoDownloadRemoval>())
 
 /** The time and network state that the rows work out their status from. */
-private data class RowClock(val nowEpochMs: Long, val offline: Boolean, val extras: RowExtras? = null)
+private data class RowClock(
+    val nowEpochMs: Long,
+    val offline: Boolean,
+    val extras: RowExtras? = null,
+    /** Why the connection is limited now, or null. */
+    val limitedBy: LimitedConnectionReason? = null,
+)
 
 /** What the rows need to know about locations, selection and moving. Null where there are no locations. */
 private class RowExtras(
@@ -850,7 +865,10 @@ private fun DownloadRow(
     val availability = location?.availability ?: FolderAvailability.Available
     val reachable = availability == FolderAvailability.Available
     val isMoving = extras != null && item.id in extras.folderState.movingIds
-    val rowStatus = downloadRowStatus(item, clock.nowEpochMs, clock.offline, availability, isMoving, addressRequired = extras != null, runtimeMinutes = ::runtimeMinutesOfDownload)
+    val rowStatus = downloadRowStatus(
+        item, clock.nowEpochMs, clock.offline, availability, isMoving,
+        addressRequired = extras != null, runtimeMinutes = ::runtimeMinutesOfDownload, limitedBy = clock.limitedBy,
+    )
     val skipTimesNote by produceState<DownloadCompanionsNote?>(null, item.localFileUri, item.status) {
         val uri = item.localFileUri?.takeIf { item.status == DownloadStatus.Completed }
         // Subtitles and skip times are saved a moment after a download finishes, so a missing note is looked for a few more times.
@@ -1023,7 +1041,15 @@ private fun DownloadRow(
                                 )
                             }
                         }
-                        DownloadStatus.Paused -> {
+                        // One that waits for a better connection is offered a pause, which keeps it paused when that ends.
+                        DownloadStatus.Paused -> if (item.pausedByConnection) {
+                            IconButton(onClick = onPause) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Pause,
+                                    contentDescription = pauseDescription,
+                                )
+                            }
+                        } else {
                             IconButton(onClick = onResume) {
                                 Icon(
                                     imageVector = Icons.Rounded.PlayArrow,
@@ -1369,6 +1395,47 @@ private fun SpeedLimitLine(megabytesPerSecond: Int, onChange: (() -> Unit)?) {
             }
         }
     }
+}
+
+/**
+ * Downloads wait because the connection is limited: says why, and offers to download anyway on this
+ * network (until it changes or the app is closed).
+ */
+@Composable
+private fun ConnectionHoldLine(reason: LimitedConnectionReason, onDownloadAnyway: () -> Unit) {
+    val anywayDescription = stringResource(Res.string.downloads_held_download_anyway_description)
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(
+            modifier = Modifier.weight(1f).semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = stringResource(connectionHoldTitle(reason)),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = stringResource(Res.string.downloads_held_detail),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        TextButton(
+            modifier = Modifier.semantics { contentDescription = anywayDescription },
+            onClick = onDownloadAnyway,
+        ) {
+            Text(text = stringResource(Res.string.downloads_held_download_anyway), style = MaterialTheme.typography.labelLarge)
+        }
+    }
+}
+
+/** The line at the top of the Downloads screen for each reason downloads can wait. */
+internal fun connectionHoldTitle(reason: LimitedConnectionReason): StringResource = when (reason) {
+    LimitedConnectionReason.Hotspot -> Res.string.downloads_held_hotspot
+    LimitedConnectionReason.LowDataMode -> Res.string.downloads_held_low_data
 }
 
 /** The empty list: what to do to get a download, and where to start. */

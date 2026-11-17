@@ -97,6 +97,11 @@ data class DownloadItem(
     /** Paused because its location cannot be reached or is being moved. It resumes by itself when it can. */
     val pausedByFolder: Boolean = false,
     /**
+     * Waiting because the connection is limited (a hotspot, a Low Data Mode network) and the setting
+     * to pause on such connections is on. It goes on by itself, from its partial file, when that ends.
+     */
+    val pausedByConnection: Boolean = false,
+    /**
      * The identity of the partial file this download created, recorded when it was created, so that only
      * that file is ever resumed, cut back or removed; a file of the same name that does not have it is not
      * this download's. Null before a partial file was created.

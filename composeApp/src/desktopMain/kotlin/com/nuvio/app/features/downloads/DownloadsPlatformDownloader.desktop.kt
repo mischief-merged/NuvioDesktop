@@ -163,6 +163,14 @@ internal actual object DownloadsPlatformDownloader {
                     }
                     if (transfer.digestMatched == true) request.onDigestVerified()
 
+                    // From here the file is published: a pause that came first keeps the partial file, and
+                    // none that comes after may stop the transfer (publishing removes the partial file).
+                    currentCoroutineContext().ensureActive()
+                    if (!request.mayPublish()) {
+                        onPaused()
+                        return@launch
+                    }
+
                     // Reported finished only once the file is on disk under its final name, which never replaces
                     // a file this download did not create (a taken name gets " (2)", " (3)", ...).
                     val published = try {

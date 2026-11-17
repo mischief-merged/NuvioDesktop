@@ -1,6 +1,14 @@
 #import <Cocoa/Cocoa.h>
 #import <IOKit/hidsystem/ev_keymap.h>
 #import <MediaPlayer/MediaPlayer.h>
+#import <Network/Network.h>
+#include <arpa/inet.h>
+#include <net/if_dl.h>
+#include <net/route.h>
+#include <netinet/if_ether.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/sysctl.h>
 #define GL_SILENCE_DEPRECATION
 #import <OpenGL/OpenGL.h>
 #import <OpenGL/gl3.h>
@@ -13,6 +21,7 @@
 #include <mpv/render_gl.h>
 
 #include <atomic>
+#include <memory>
 #include <chrono>
 #include <clocale>
 #include <cmath>
@@ -3957,4 +3966,184 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_sampleFrames(
         env->DeleteLocalRef(bytes);
     }
     return result;
+}
+
+// ---- Network path monitor (limited connections) ----
+// Reports whether the path traffic takes is expensive (a phone's hotspot, tethering, cellular) or
+// constrained (Low Data Mode), now and on every change, to a listener on the JVM side. It runs on a
+// queue of its own and never touches the player.
+
+namespace {
+std::mutex gPathMonitorMutex;
+nw_path_monitor_t gPathMonitor = nil;
+JavaVM *gPathJavaVm = nullptr;
+jobject gPathListener = nullptr;
+jmethodID gPathListenerMethod = nullptr;
+}
+
+static const char *NuvioInterfaceKind(nw_interface_type_t type) {
+    switch (type) {
+        case nw_interface_type_wifi: return "wifi";
+        case nw_interface_type_cellular: return "cellular";
+        case nw_interface_type_wired: return "wired";
+        case nw_interface_type_loopback: return "loopback";
+        default: return "other";
+    }
+}
+
+// The hardware address of the router at an IPv4 address, from the ARP table. Empty when it is not there.
+// Tells two networks apart that hand out the same addresses (two phones' hotspots both use 172.20.10.1),
+// without the Wi-Fi name, which needs Location permission.
+static std::string NuvioRouterHardwareAddress(in_addr_t address) {
+    int mib[6] = {CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_FLAGS, RTF_LLINFO};
+    size_t needed = 0;
+    if (sysctl(mib, 6, nullptr, &needed, nullptr, 0) != 0 || needed == 0) return "";
+    std::vector<char> buffer(needed);
+    if (sysctl(mib, 6, buffer.data(), &needed, nullptr, 0) != 0) return "";
+    for (size_t offset = 0; offset + sizeof(rt_msghdr) <= needed;) {
+        const rt_msghdr *message = (const rt_msghdr *)(buffer.data() + offset);
+        if (message->rtm_msglen == 0) break;
+        const sockaddr_in *inet = (const sockaddr_in *)(message + 1);
+        if (inet->sin_family == AF_INET && inet->sin_addr.s_addr == address) {
+            const size_t inetLength = inet->sin_len ? ((inet->sin_len + sizeof(uint32_t) - 1) & ~(sizeof(uint32_t) - 1)) : sizeof(uint32_t);
+            const sockaddr_dl *link = (const sockaddr_dl *)((const char *)inet + inetLength);
+            if (link->sdl_family == AF_LINK && link->sdl_alen == 6) {
+                const unsigned char *bytes = (const unsigned char *)LLADDR(link);
+                char text[18];
+                snprintf(text, sizeof(text), "%02x:%02x:%02x:%02x:%02x:%02x", bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]);
+                return text;
+            }
+            return "";
+        }
+        offset += message->rtm_msglen;
+    }
+    return "";
+}
+
+// The routers of the path, "address@hardware" where the hardware address is known, else "address".
+static std::string NuvioPathGateways(nw_path_t path) {
+    __block std::string gateways;
+    nw_path_enumerate_gateways(path, ^bool(nw_endpoint_t endpoint) {
+        std::string entry;
+        if (nw_endpoint_get_type(endpoint) == nw_endpoint_type_address) {
+            const sockaddr *address = nw_endpoint_get_address(endpoint);
+            char text[INET6_ADDRSTRLEN] = {0};
+            if (address && address->sa_family == AF_INET) {
+                const in_addr ipv4 = ((const sockaddr_in *)address)->sin_addr;
+                if (inet_ntop(AF_INET, &ipv4, text, sizeof(text))) {
+                    entry = text;
+                    const std::string hardware = NuvioRouterHardwareAddress(ipv4.s_addr);
+                    if (!hardware.empty()) entry += "@" + hardware;
+                }
+            } else if (address && address->sa_family == AF_INET6) {
+                if (inet_ntop(AF_INET6, &((const sockaddr_in6 *)address)->sin6_addr, text, sizeof(text))) entry = text;
+            }
+        } else {
+            const char *host = nw_endpoint_get_hostname(endpoint);
+            if (host) entry = host;
+        }
+        if (!entry.empty()) {
+            if (!gateways.empty()) gateways += ",";
+            gateways += entry;
+        }
+        return true;
+    });
+    return gateways;
+}
+
+static void NuvioReportPath(nw_path_t path) {
+    const bool satisfied = nw_path_get_status(path) == nw_path_status_satisfied;
+    const bool expensive = nw_path_is_expensive(path);
+    const bool constrained = nw_path_is_constrained(path);
+    __block std::string interfaces;
+    nw_path_enumerate_interfaces(path, ^bool(nw_interface_t interface) {
+        if (!interfaces.empty()) interfaces += ",";
+        const char *name = nw_interface_get_name(interface);
+        interfaces += name ? name : "?";
+        interfaces += "/";
+        interfaces += NuvioInterfaceKind(nw_interface_get_type(interface));
+        return true;
+    });
+    const std::string gateways = NuvioPathGateways(path);
+
+    std::lock_guard<std::mutex> guard(gPathMonitorMutex);
+    if (!gPathJavaVm || !gPathListener || !gPathListenerMethod) return;
+    JNIEnv *env = nullptr;
+    bool didAttach = false;
+    jint status = gPathJavaVm->GetEnv((void **)&env, JNI_VERSION_1_6);
+    if (status == JNI_EDETACHED) {
+        if (gPathJavaVm->AttachCurrentThreadAsDaemon((void **)&env, nullptr) != JNI_OK) return;
+        didAttach = true;
+    } else if (status != JNI_OK) {
+        return;
+    }
+    jstring names = env->NewStringUTF(interfaces.c_str());
+    jstring routers = names ? env->NewStringUTF(gateways.c_str()) : nullptr;
+    if (names && routers) {
+        env->CallVoidMethod(gPathListener, gPathListenerMethod, (jboolean)satisfied, (jboolean)expensive, (jboolean)constrained, names, routers);
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    if (routers) env->DeleteLocalRef(routers);
+    if (names) env->DeleteLocalRef(names);
+    if (didAttach) gPathJavaVm->DetachCurrentThread();
+}
+
+static void NuvioStopPathMonitorLocked(JNIEnv *env) {
+    if (gPathMonitor) {
+        nw_path_monitor_cancel(gPathMonitor);
+        gPathMonitor = nil;
+    }
+    if (gPathListener && env) env->DeleteGlobalRef(gPathListener);
+    gPathListener = nullptr;
+    gPathListenerMethod = nullptr;
+}
+
+// Starts the monitor, replacing one that runs. Waits up to a second for the first report, so the
+// listener knows the path before this returns. False when it could not be started.
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_nuvio_app_features_downloads_MacNetworkPathNative_startMonitor(JNIEnv *env, jobject, jobject listener) {
+    if (!listener) return JNI_FALSE;
+    jclass listenerClass = env->GetObjectClass(listener);
+    if (!listenerClass) return JNI_FALSE;
+    jmethodID method = env->GetMethodID(listenerClass, "onPath", "(ZZZLjava/lang/String;Ljava/lang/String;)V");
+    env->DeleteLocalRef(listenerClass);
+    if (!method) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return JNI_FALSE;
+    }
+    JavaVM *javaVm = nullptr;
+    if (env->GetJavaVM(&javaVm) != JNI_OK || !javaVm) return JNI_FALSE;
+    jobject globalListener = env->NewGlobalRef(listener);
+    if (!globalListener) return JNI_FALSE;
+
+    dispatch_semaphore_t firstReport = dispatch_semaphore_create(0);
+    auto reported = std::make_shared<std::atomic<bool>>(false);
+    {
+        std::lock_guard<std::mutex> guard(gPathMonitorMutex);
+        NuvioStopPathMonitorLocked(env);
+        nw_path_monitor_t monitor = nw_path_monitor_create();
+        if (!monitor) {
+            env->DeleteGlobalRef(globalListener);
+            return JNI_FALSE;
+        }
+        gPathJavaVm = javaVm;
+        gPathListener = globalListener;
+        gPathListenerMethod = method;
+        dispatch_queue_t queue = dispatch_queue_create("com.nuvio.network-path", DISPATCH_QUEUE_SERIAL);
+        nw_path_monitor_set_queue(monitor, queue);
+        nw_path_monitor_set_update_handler(monitor, ^(nw_path_t path) {
+            NuvioReportPath(path);
+            if (!reported->exchange(true)) dispatch_semaphore_signal(firstReport);
+        });
+        gPathMonitor = monitor;
+        nw_path_monitor_start(monitor);
+    }
+    dispatch_semaphore_wait(firstReport, dispatch_time(DISPATCH_TIME_NOW, (int64_t)NSEC_PER_SEC));
+    return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_downloads_MacNetworkPathNative_stopMonitor(JNIEnv *env, jobject) {
+    std::lock_guard<std::mutex> guard(gPathMonitorMutex);
+    NuvioStopPathMonitorLocked(env);
 }

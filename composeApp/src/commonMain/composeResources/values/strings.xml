@@ -3225,4 +3225,17 @@
     <string name="download_folder_leftover_keep_description">Keep both copies of %1$s</string>
     <string name="download_folder_leftover_removed_toast">The extra copy was moved to the Trash.</string>
     <string name="download_folder_leftover_refused_toast">Nothing was removed: the copies are not the same, or the download does not point at the copy that stays.</string>
+    <string name="settings_pause_on_limited_title">Pause downloads on hotspots and Low Data Mode networks</string>
+    <string name="settings_pause_on_limited_description">Downloads wait while your Mac uses a phone's hotspot or a network set to Low Data Mode, and carry on by themselves when you're back on a regular connection.</string>
+    <string name="downloads_status_waiting_hotspot">Waiting: you're on a hotspot • %1$s</string>
+    <string name="downloads_status_waiting_low_data">Waiting: this network uses Low Data Mode • %1$s</string>
+    <string name="downloads_status_waiting_connection">Waiting for a regular connection • %1$s</string>
+    <string name="downloads_announce_waiting_hotspot">Waiting because you're on a hotspot</string>
+    <string name="downloads_announce_waiting_low_data">Waiting because this network uses Low Data Mode</string>
+    <string name="downloads_announce_waiting_connection">Waiting for a regular connection</string>
+    <string name="downloads_held_hotspot">Downloads paused: you're on a hotspot</string>
+    <string name="downloads_held_low_data">Downloads paused: this network uses Low Data Mode</string>
+    <string name="downloads_held_detail">They carry on by themselves when you're back on a regular connection.</string>
+    <string name="downloads_held_download_anyway">Download anyway</string>
+    <string name="downloads_held_download_anyway_description">Download anyway on this network until it changes or the app is closed</string>
 </resources>
