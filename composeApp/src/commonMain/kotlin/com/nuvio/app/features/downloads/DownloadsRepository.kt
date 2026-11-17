@@ -60,6 +60,17 @@ object DownloadsRepository {
     // What limits automatic downloads. Always the saved setting in the app.
     internal var autoDownloadLimits: AutoDownloadLimits = SavedAutoDownloadLimits
 
+    // Whether downloads wait because the connection is limited. Always the app's in the app.
+    internal var connectionHold: ConnectionHold = LimitedConnections.hold
+        set(value) {
+            field = value
+            value.listen(::applyConnectionHold)
+        }
+
+    init {
+        connectionHold.listen(::applyConnectionHold)
+    }
+
     private var nextDownloadOrdinal = 0L
 
     // What the stored payload held that this build does not use: fields of an item it does not
@@ -357,6 +368,11 @@ object DownloadsRepository {
     fun pauseDownload(downloadId: String): Unit = synchronized(stateLock) {
         ensureLoaded()
         val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return
+        // One that waits for a better connection becomes paused by the user: it stays paused when that ends.
+        if (item.status == DownloadStatus.Paused && item.pausedByConnection) {
+            mutateItem(downloadId) { it.copy(pausedByConnection = false, updatedAtEpochMs = DownloadsClock.nowEpochMs()) }
+            return
+        }
         if (item.status != DownloadStatus.Downloading) return
 
         activeTransfers.remove(downloadId)?.cancel()
@@ -364,6 +380,7 @@ object DownloadsRepository {
             current.copy(
                 status = DownloadStatus.Paused,
                 pausedByFolder = false,
+                pausedByConnection = false,
                 updatedAtEpochMs = DownloadsClock.nowEpochMs(),
                 errorMessage = null,
             )
@@ -392,6 +409,7 @@ object DownloadsRepository {
                     current.copy(
                         status = DownloadStatus.Paused,
                         pausedByFolder = false,
+                        pausedByConnection = false,
                         updatedAtEpochMs = DownloadsClock.nowEpochMs(),
                         errorMessage = null,
                     )
@@ -413,6 +431,7 @@ object DownloadsRepository {
             failureKind = null,
             localFileUri = null,
             pausedByFolder = false,
+            pausedByConnection = false,
             updatedAtEpochMs = DownloadsClock.nowEpochMs(),
         )
 
@@ -623,9 +642,51 @@ object DownloadsRepository {
         val resumed = normalized.filter { it.status == DownloadStatus.Downloading && it.id !in activeTransfers }
         downloadsResumedAtLoad = downloadsResumedAtLoad + resumed.map { it.id }
         resumed.forEach(::startDownload)
+        // Downloads that waited for a better connection when the app quit go on when it is no longer limited.
+        applyConnectionHold()
     }
 
+    /**
+     * Applies the connection hold to the list as it is now: while it holds, every running transfer is
+     * stopped the way a pause stops it (its partial file stays, to be continued); once it no longer
+     * holds, every download that waited for it goes on. Run whenever the hold changes.
+     */
+    private fun applyConnectionHold(): Unit = synchronized(stateLock) {
+        if (!hasLoaded) return
+        if (connectionHold.holdReason != null) {
+            _uiState.value.items
+                .filter { it.status == DownloadStatus.Downloading }
+                // A transfer whose file is complete and being checked is left to finish: stopping it then would lose the file.
+                .filter { activeTransfers[it.id]?.finishing != true }
+                .forEach { item ->
+                    activeTransfers.remove(item.id)?.cancel()
+                    mutateItem(item.id) { it.waitingForConnection() }
+                }
+        } else {
+            _uiState.value.items
+                .filter { it.status == DownloadStatus.Paused && it.pausedByConnection }
+                .forEach { resumeDownload(it.id) }
+        }
+    }
+
+    private fun DownloadItem.waitingForConnection(): DownloadItem =
+        if (status != DownloadStatus.Downloading) {
+            this
+        } else {
+            copy(
+                status = DownloadStatus.Paused,
+                pausedByConnection = true,
+                errorMessage = null,
+                updatedAtEpochMs = DownloadsClock.nowEpochMs(),
+            )
+        }
+
     private fun startDownload(item: DownloadItem, attempt: Int = 1): Unit = synchronized(stateLock) {
+        // On a limited connection a download waits instead of starting, and goes on when that ends.
+        if (connectionHold.holdReason != null) {
+            mutateItem(item.id) { it.waitingForConnection() }
+            return
+        }
         val transfer = ActiveTransfer()
         // Registered before the downloader is asked to start, so a report made before start returns
         // already finds this transfer.
@@ -638,6 +699,13 @@ object DownloadsRepository {
                 limits = autoTransferLimits(item, transfer),
                 onPartialCreated = { key -> ifCurrent(item.id, transfer) { mutateItem(item.id) { it.copy(partialFileKey = key) } } },
                 onFileNameChanged = { name -> ifCurrent(item.id, transfer) { mutateItem(item.id) { it.copy(fileName = name, partialFileKey = null) } } },
+                // Decided under the state lock, so a connection hold either came first (the transfer
+                // ends as paused, its partial file intact) or sees the transfer finishing and leaves it.
+                mayPublish = {
+                    synchronized(stateLock) {
+                        (activeTransfers[item.id] === transfer).also { if (it) transfer.finishing = true }
+                    }
+                },
             ),
             { downloadedBytes, totalBytes ->
                 ifCurrent(item.id, transfer) {
@@ -704,6 +772,7 @@ object DownloadsRepository {
      * download; the result is applied under the lock, and only if the transfer still owns it.
      */
     private fun finishTransfer(item: DownloadItem, transfer: ActiveTransfer, localFileUri: String, totalBytes: Long?) {
+        transfer.finishing = true
         // A download is finished only when its file is there, has the size the server
         // announced and is a video. Anything else is a failed download without a file.
         val inspection = synchronized(stateLock) {
@@ -1381,6 +1450,10 @@ private class ActiveTransfer {
     /** Set by the platform downloader when the body matched a digest the server sent. */
     @Volatile
     var digestVerified = false
+
+    /** Set once the platform downloader reported the file complete: it is being checked and must not be stopped. */
+    @Volatile
+    var finishing = false
 
     /** A transfer cancelled before its handle is known is cancelled as soon as the handle arrives. */
     fun attach(handle: DownloadsTaskHandle) {

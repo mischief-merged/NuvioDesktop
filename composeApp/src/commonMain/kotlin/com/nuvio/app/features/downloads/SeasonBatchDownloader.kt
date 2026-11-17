@@ -659,7 +659,8 @@ internal class SeasonBatchDownloader(
      */
     private fun Batch.sawPause(state: DownloadsUiState, request: SeasonBatchRequest): Boolean {
         if (!pauseSeen) {
-            pauseSeen = queued.any { state.itemFor(request, it)?.status == DownloadStatus.Paused }
+            // Waiting for a better connection is not a pause by the user: the batch goes on queueing.
+            pauseSeen = queued.any { state.itemFor(request, it)?.let { item -> item.status == DownloadStatus.Paused && !item.pausedByConnection } == true }
         }
         return pauseSeen
     }
@@ -720,8 +721,9 @@ internal class SeasonBatchDownloader(
         }
     }
 
+    // A download that waits for a better connection is not settled: it goes on by itself, so the batch waits with it.
     private fun DownloadItem?.isSettledOrGone(): Boolean =
-        this == null || status != DownloadStatus.Downloading
+        this == null || status != DownloadStatus.Downloading && !pausedByConnection
 
     private fun DownloadItem?.isAnnouncedSmallerThan(minBytes: Long): Boolean =
         this != null && status == DownloadStatus.Downloading && totalBytes != null && totalBytes in 1 until minBytes
