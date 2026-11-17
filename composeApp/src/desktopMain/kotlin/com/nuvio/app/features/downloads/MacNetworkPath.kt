@@ -8,7 +8,7 @@ import java.util.concurrent.Executors
 
 /** Called by the native monitor, on a queue of its own, with the path traffic takes now. */
 internal fun interface NetworkPathListener {
-    fun onPath(satisfied: Boolean, expensive: Boolean, constrained: Boolean, interfaces: String)
+    fun onPath(satisfied: Boolean, expensive: Boolean, constrained: Boolean, interfaces: String, gateways: String)
 }
 
 /** The network path monitor of the macOS native bridge (Network.framework). Lives in the player bridge library. */
@@ -53,8 +53,8 @@ internal class MacNetworkPathDetector(
         }
         val started = try {
             loadLibrary()
-            native.start { satisfied, expensive, constrained, interfaces ->
-                val report = pathReport(satisfied, expensive, constrained, interfaces)
+            native.start { satisfied, expensive, constrained, interfaces, gateways ->
+                val report = pathReport(satisfied, expensive, constrained, interfaces, gateways)
                 runCatching { reports.execute { runCatching { onReport(report) }.onFailure { log.w(it) { "a path report failed" } } } }
             }
         } catch (error: Throwable) {
@@ -79,9 +79,19 @@ internal class MacNetworkPathDetector(
     }
 }
 
-/** The report for what the native monitor said. The network key is the interfaces in a stable order. */
-internal fun pathReport(satisfied: Boolean, expensive: Boolean, constrained: Boolean, interfaces: String): NetworkPathReport.Known {
-    val key = interfaces.split(',').map(String::trim).filter(String::isNotEmpty).sorted().joinToString(",")
+/**
+ * The report for what the native monitor said. The network key is the interfaces and the routers
+ * ("address@hardware address" where that is known), each in a stable order (see [sameNetwork]).
+ */
+internal fun pathReport(
+    satisfied: Boolean,
+    expensive: Boolean,
+    constrained: Boolean,
+    interfaces: String,
+    gateways: String,
+): NetworkPathReport.Known {
+    fun sortedList(text: String) = text.split(',').map(String::trim).filter(String::isNotEmpty).distinct().sorted().joinToString(",")
+    val key = sortedList(interfaces) + "|" + sortedList(gateways)
     return NetworkPathReport.Known(
         // A path that cannot carry traffic is not limited: downloads wait for the internet in their own way then.
         expensive = satisfied && expensive,

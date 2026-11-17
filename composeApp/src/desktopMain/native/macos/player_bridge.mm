@@ -2,6 +2,13 @@
 #import <IOKit/hidsystem/ev_keymap.h>
 #import <MediaPlayer/MediaPlayer.h>
 #import <Network/Network.h>
+#include <arpa/inet.h>
+#include <net/if_dl.h>
+#include <net/route.h>
+#include <netinet/if_ether.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/sysctl.h>
 #define GL_SILENCE_DEPRECATION
 #import <OpenGL/OpenGL.h>
 #import <OpenGL/gl3.h>
@@ -3984,6 +3991,66 @@ static const char *NuvioInterfaceKind(nw_interface_type_t type) {
     }
 }
 
+// The hardware address of the router at an IPv4 address, from the ARP table. Empty when it is not there.
+// Tells two networks apart that hand out the same addresses (two phones' hotspots both use 172.20.10.1),
+// without the Wi-Fi name, which needs Location permission.
+static std::string NuvioRouterHardwareAddress(in_addr_t address) {
+    int mib[6] = {CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_FLAGS, RTF_LLINFO};
+    size_t needed = 0;
+    if (sysctl(mib, 6, nullptr, &needed, nullptr, 0) != 0 || needed == 0) return "";
+    std::vector<char> buffer(needed);
+    if (sysctl(mib, 6, buffer.data(), &needed, nullptr, 0) != 0) return "";
+    for (size_t offset = 0; offset + sizeof(rt_msghdr) <= needed;) {
+        const rt_msghdr *message = (const rt_msghdr *)(buffer.data() + offset);
+        if (message->rtm_msglen == 0) break;
+        const sockaddr_in *inet = (const sockaddr_in *)(message + 1);
+        if (inet->sin_family == AF_INET && inet->sin_addr.s_addr == address) {
+            const size_t inetLength = inet->sin_len ? ((inet->sin_len + sizeof(uint32_t) - 1) & ~(sizeof(uint32_t) - 1)) : sizeof(uint32_t);
+            const sockaddr_dl *link = (const sockaddr_dl *)((const char *)inet + inetLength);
+            if (link->sdl_family == AF_LINK && link->sdl_alen == 6) {
+                const unsigned char *bytes = (const unsigned char *)LLADDR(link);
+                char text[18];
+                snprintf(text, sizeof(text), "%02x:%02x:%02x:%02x:%02x:%02x", bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]);
+                return text;
+            }
+            return "";
+        }
+        offset += message->rtm_msglen;
+    }
+    return "";
+}
+
+// The routers of the path, "address@hardware" where the hardware address is known, else "address".
+static std::string NuvioPathGateways(nw_path_t path) {
+    __block std::string gateways;
+    nw_path_enumerate_gateways(path, ^bool(nw_endpoint_t endpoint) {
+        std::string entry;
+        if (nw_endpoint_get_type(endpoint) == nw_endpoint_type_address) {
+            const sockaddr *address = nw_endpoint_get_address(endpoint);
+            char text[INET6_ADDRSTRLEN] = {0};
+            if (address && address->sa_family == AF_INET) {
+                const in_addr ipv4 = ((const sockaddr_in *)address)->sin_addr;
+                if (inet_ntop(AF_INET, &ipv4, text, sizeof(text))) {
+                    entry = text;
+                    const std::string hardware = NuvioRouterHardwareAddress(ipv4.s_addr);
+                    if (!hardware.empty()) entry += "@" + hardware;
+                }
+            } else if (address && address->sa_family == AF_INET6) {
+                if (inet_ntop(AF_INET6, &((const sockaddr_in6 *)address)->sin6_addr, text, sizeof(text))) entry = text;
+            }
+        } else {
+            const char *host = nw_endpoint_get_hostname(endpoint);
+            if (host) entry = host;
+        }
+        if (!entry.empty()) {
+            if (!gateways.empty()) gateways += ",";
+            gateways += entry;
+        }
+        return true;
+    });
+    return gateways;
+}
+
 static void NuvioReportPath(nw_path_t path) {
     const bool satisfied = nw_path_get_status(path) == nw_path_status_satisfied;
     const bool expensive = nw_path_is_expensive(path);
@@ -3997,6 +4064,7 @@ static void NuvioReportPath(nw_path_t path) {
         interfaces += NuvioInterfaceKind(nw_interface_get_type(interface));
         return true;
     });
+    const std::string gateways = NuvioPathGateways(path);
 
     std::lock_guard<std::mutex> guard(gPathMonitorMutex);
     if (!gPathJavaVm || !gPathListener || !gPathListenerMethod) return;
@@ -4010,13 +4078,13 @@ static void NuvioReportPath(nw_path_t path) {
         return;
     }
     jstring names = env->NewStringUTF(interfaces.c_str());
-    if (names) {
-        env->CallVoidMethod(gPathListener, gPathListenerMethod, (jboolean)satisfied, (jboolean)expensive, (jboolean)constrained, names);
-        if (env->ExceptionCheck()) env->ExceptionClear();
-        env->DeleteLocalRef(names);
-    } else if (env->ExceptionCheck()) {
-        env->ExceptionClear();
+    jstring routers = names ? env->NewStringUTF(gateways.c_str()) : nullptr;
+    if (names && routers) {
+        env->CallVoidMethod(gPathListener, gPathListenerMethod, (jboolean)satisfied, (jboolean)expensive, (jboolean)constrained, names, routers);
     }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    if (routers) env->DeleteLocalRef(routers);
+    if (names) env->DeleteLocalRef(names);
     if (didAttach) gPathJavaVm->DetachCurrentThread();
 }
 
@@ -4037,7 +4105,7 @@ Java_com_nuvio_app_features_downloads_MacNetworkPathNative_startMonitor(JNIEnv *
     if (!listener) return JNI_FALSE;
     jclass listenerClass = env->GetObjectClass(listener);
     if (!listenerClass) return JNI_FALSE;
-    jmethodID method = env->GetMethodID(listenerClass, "onPath", "(ZZZLjava/lang/String;)V");
+    jmethodID method = env->GetMethodID(listenerClass, "onPath", "(ZZZLjava/lang/String;Ljava/lang/String;)V");
     env->DeleteLocalRef(listenerClass);
     if (!method) {
         if (env->ExceptionCheck()) env->ExceptionClear();

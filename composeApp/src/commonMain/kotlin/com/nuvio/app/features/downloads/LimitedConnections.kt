@@ -27,8 +27,9 @@ internal sealed interface NetworkPathReport {
         val expensive: Boolean,
         val constrained: Boolean,
         /**
-         * Names the network the path goes over (its interfaces and their kinds). Another value means
-         * another network, which ends a "Download anyway" given for the one before.
+         * Names the network the path goes over: "interfaces|routers", each list sorted, a router as
+         * "address@hardware address" or "address" when its hardware address is not known. Compared
+         * with [sameNetwork]; another network ends a "Download anyway" given for the one before.
          */
         val networkKey: String,
     ) : NetworkPathReport
@@ -43,6 +44,29 @@ internal interface NetworkPathDetector {
     fun start(onReport: (NetworkPathReport) -> Unit): Boolean
 
     fun stop()
+}
+
+/**
+ * Whether two network keys name the same network: the same interfaces and the same router addresses,
+ * and no router whose hardware address is known in both differs. A hardware address that is known in
+ * one only (the router was not in the address table yet) is no difference.
+ */
+internal fun sameNetwork(first: String, second: String): Boolean {
+    if (first == second) return true
+    fun parse(key: String): Pair<String, Map<String, String?>> {
+        val interfaces = key.substringBefore('|')
+        val routers = key.substringAfter('|', "").split(',').filter(String::isNotEmpty).associate { router ->
+            router.substringBefore('@') to router.substringAfter('@', "").ifEmpty { null }
+        }
+        return interfaces to routers
+    }
+    val (firstInterfaces, firstRouters) = parse(first)
+    val (secondInterfaces, secondRouters) = parse(second)
+    if (firstInterfaces != secondInterfaces || firstRouters.keys != secondRouters.keys) return false
+    return firstRouters.all { (address, hardware) ->
+        val other = secondRouters[address]
+        hardware == null || other == null || hardware == other
+    }
 }
 
 /** The limited reason of [report], whatever the setting. Hotspot first: it is the one people recognise. */
@@ -107,7 +131,14 @@ internal class ConnectionHold(
         this.report = report
         val key = (report as? NetworkPathReport.Known)?.networkKey
         // Another network, or one that is not limited, ends a "Download anyway".
-        if (overrideKey != null && (key != overrideKey || limitedReasonOf(report) == null)) overrideKey = null
+        val chosen = overrideKey
+        overrideKey = when {
+            chosen == null -> null
+            key == null || !sameNetwork(key, chosen) || limitedReasonOf(report) == null -> null
+            // The same network, maybe now with a router's hardware address that was not known before: kept, so a
+            // network with the same addresses but another router is told apart from then on.
+            else -> key
+        }
     }
 
     fun setEnabled(value: Boolean) = change {
@@ -129,7 +160,7 @@ internal class ConnectionHold(
         return ConnectionHoldState(
             reason = limitedReasonOf(report),
             enabled = enabledLocked(),
-            overridden = known != null && overrideKey != null && overrideKey == known.networkKey,
+            overridden = known != null && overrideKey?.let { sameNetwork(it, known.networkKey) } == true,
         )
     }
 

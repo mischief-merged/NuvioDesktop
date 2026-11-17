@@ -18,10 +18,11 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-private val hotspot = NetworkPathReport.Known(expensive = true, constrained = false, networkKey = "en0/wifi:iphone")
-private val otherHotspot = NetworkPathReport.Known(expensive = true, constrained = false, networkKey = "en7/wired:usb-phone")
-private val lowData = NetworkPathReport.Known(expensive = false, constrained = true, networkKey = "en0/wifi:cafe")
-private val home = NetworkPathReport.Known(expensive = false, constrained = false, networkKey = "en0/wifi:home")
+// Keys of the shape the native monitor produces: interfaces | routers.
+private val hotspot = NetworkPathReport.Known(expensive = true, constrained = false, networkKey = pathKey("en0/wifi", "172.20.10.1@aa:bb:cc:00:00:01"))
+private val otherHotspot = NetworkPathReport.Known(expensive = true, constrained = false, networkKey = pathKey("en7/wired", "172.20.10.1@aa:bb:cc:00:00:09"))
+private val lowData = NetworkPathReport.Known(expensive = false, constrained = true, networkKey = pathKey("en0/wifi", "10.0.0.1@aa:bb:cc:00:00:03"))
+private val home = NetworkPathReport.Known(expensive = false, constrained = false, networkKey = pathKey("en0/wifi", "192.168.1.1@aa:bb:cc:00:00:05"))
 
 /** The rule alone: when the connection hold holds, and what ends a "Download anyway". */
 class ConnectionHoldRuleTest {
@@ -48,7 +49,7 @@ class ConnectionHoldRuleTest {
     @Test
     fun a_hotspot_with_low_data_mode_is_called_a_hotspot() {
         val hold = ConnectionHold()
-        hold.report(NetworkPathReport.Known(expensive = true, constrained = true, networkKey = "en0/wifi"))
+        hold.report(NetworkPathReport.Known(expensive = true, constrained = true, networkKey = pathKey("en0/wifi", "172.20.10.1")))
         assertEquals(LimitedConnectionReason.Hotspot, hold.holdReason)
     }
 
@@ -128,12 +129,12 @@ class ConnectionHoldRuleTest {
 
     @Test
     fun the_native_report_is_read_as_a_path_with_a_stable_network_key() {
-        val first = pathReport(satisfied = true, expensive = true, constrained = false, interfaces = "en0/wifi,utun3/other")
-        val second = pathReport(satisfied = true, expensive = true, constrained = false, interfaces = "utun3/other,en0/wifi")
+        val first = pathReport(satisfied = true, expensive = true, constrained = false, interfaces = "en0/wifi,utun3/other", gateways = "172.20.10.1")
+        val second = pathReport(satisfied = true, expensive = true, constrained = false, interfaces = "utun3/other,en0/wifi", gateways = "172.20.10.1")
         assertEquals(first, second)
         assertTrue(first.expensive)
         // A path that carries nothing is not limited: downloads wait for the internet in their own way.
-        val down = pathReport(satisfied = false, expensive = true, constrained = true, interfaces = "en0/wifi")
+        val down = pathReport(satisfied = false, expensive = true, constrained = true, interfaces = "en0/wifi", gateways = "")
         assertNull(limitedReasonOf(down))
     }
 
@@ -175,7 +176,7 @@ class ConnectionHoldRuleTest {
         )
         val got = java.util.concurrent.LinkedBlockingQueue<Pair<NetworkPathReport, String>>()
         assertTrue(detector.start { got.put(it to Thread.currentThread().name) })
-        nativeListener!!.onPath(true, false, true, "en0/wifi")
+        nativeListener!!.onPath(true, false, true, "en0/wifi", "192.168.1.1@aa:bb:cc:00:00:05")
         val (report, thread) = got.poll(5, java.util.concurrent.TimeUnit.SECONDS)!!
         assertEquals(LimitedConnectionReason.LowDataMode, limitedReasonOf(report))
         assertEquals("nuvio-network-path", thread)
@@ -410,6 +411,28 @@ class LimitedConnectionDownloadsTest {
 
         assertTrue(backend.cancelled.isEmpty(), "a finished file was stopped while it was checked")
         assertEquals(DownloadStatus.Completed, item(id).status)
+    }
+
+    @Test
+    fun once_publication_is_allowed_a_hold_leaves_the_transfer_to_finish() {
+        val id = enqueue(1)
+        assertTrue(backend.started.single().mayPublish(), "a transfer that owns its download was refused")
+
+        hold.report(hotspot)
+
+        assertTrue(backend.cancelled.isEmpty(), "a transfer that was publishing its file was stopped")
+        assertEquals(DownloadStatus.Downloading, item(id).status)
+        backend.success.getValue(id)("file:/tmp/e1.mkv", 10L)
+        assertEquals(DownloadStatus.Completed, item(id).status)
+    }
+
+    @Test
+    fun a_hold_that_comes_before_publication_keeps_the_partial_file_unpublished() {
+        val id = enqueue(1)
+        hold.report(hotspot)
+
+        assertFalse(backend.started.single().mayPublish(), "a paused transfer was allowed to publish")
+        assertTrue(item(id).pausedByConnection)
     }
 
     @Test
