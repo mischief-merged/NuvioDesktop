@@ -271,6 +271,8 @@ object DownloadsRepository {
 
         var replacedExisting = false
         val currentItems = _uiState.value.items.toMutableList()
+        // The sources this title had, and how many the app started by itself, go on with the new download.
+        val history = sourceHistoryFor(currentItems.filter { it.logicalContentKey == logicalKey }, stream, userChoseReplacement)
         // What is replaced: a download that has no finished file. A finished file, marked as not the
         // real video or not, is a stored file of the user: it is replaced only when the user chose
         // to ([userChoseReplacement]), and then a marked one goes to the trash. Anything automatic
@@ -335,6 +337,8 @@ object DownloadsRepository {
             updatedAtEpochMs = now,
             expectedVideoHash = stream.behaviorHints.videoHash.asVideoHash(),
             autoDownloadRuleKey = autoDownloadRuleKey,
+            triedSources = history.triedSources,
+            autoSourceAttempts = history.autoSourceAttempts,
         )
 
         // The size the source claims for the selected file, where that is established (see SourceSizeClaim).
@@ -364,6 +368,23 @@ object DownloadsRepository {
         } else {
             DownloadEnqueueResult.Started
         }
+    }
+
+    /**
+     * The app found no working source for the title [titleKey] ([DownloadItem.logicalContentKey]): its
+     * downloads with a bad source are marked, so that the app does not look again and the user is
+     * offered to pick one. Nothing else about them changes; a file stays where it is.
+     */
+    internal fun markNoWorkingSourceFound(titleKey: String): Unit = synchronized(stateLock) {
+        ensureLoaded()
+        val items = _uiState.value.items
+        if (items.none { it.logicalContentKey == titleKey && it.hasBadSource && !it.noWorkingSourceFound }) return
+        publish(
+            items.map { item ->
+                if (item.logicalContentKey == titleKey && item.hasBadSource) item.copy(noWorkingSourceFound = true) else item
+            },
+        )
+        persist()
     }
 
     fun pauseDownload(downloadId: String): Unit = synchronized(stateLock) {
