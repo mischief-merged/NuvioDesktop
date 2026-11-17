@@ -10,10 +10,13 @@ import com.nuvio.app.features.debrid.DebridSettingsRepository
 import com.nuvio.app.features.debrid.DirectDebridPlayableResult
 import com.nuvio.app.features.debrid.DirectDebridPlaybackResolver
 import com.nuvio.app.features.details.MetaDetailsRepository
+import com.nuvio.app.features.details.runtimeMinutesFor
 import com.nuvio.app.features.streams.StreamAutoPlayMode
 import com.nuvio.app.features.streams.StreamAutoPlayPolicy
 import com.nuvio.app.features.streams.StreamAutoPlaySelector
 import com.nuvio.app.features.streams.StreamItem
+import com.nuvio.app.features.streams.cachedFirst
+import com.nuvio.app.features.streams.saysNotCached
 import com.nuvio.app.isDesktop
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -83,6 +86,21 @@ internal fun PlayerScreenRuntime.playReplacementSource(
     currentStreamInfoHash = stream.infoHash
     showSourcesPanel = false
     controlsVisible = true
+}
+
+/** Where moving on to another source looks for sources. */
+internal interface FailoverSourceSearch {
+    fun start(type: String, videoId: String, season: Int?, episode: Int?)
+    fun state(): com.nuvio.app.features.streams.StreamsUiState
+    fun stop()
+
+    /** The player's own source search, which joins the one the stream screen ran. */
+    object Player : FailoverSourceSearch {
+        override fun start(type: String, videoId: String, season: Int?, episode: Int?) =
+            PlayerStreamsRepository.loadSources(type = type, videoId = videoId, season = season, episode = episode)
+        override fun state() = PlayerStreamsRepository.sourceState.value
+        override fun stop() = PlayerStreamsRepository.stopSourcesLoading()
+    }
 }
 
 /** Shows [message] as the playback error unless the next source is tried instead. */
@@ -162,6 +180,14 @@ internal fun PlayerScreenRuntime.checkForPlaceholderSource(snapshot: PlayerPlayb
     val videoId = activeVideoId
     if (url.isBlank() || videoId == null || placeholderCheckedUrl == url) return
     val nowMs = placeholderClock.elapsedNow().inWholeMilliseconds
+    // A file that has played to its end has its final length: no need to wait for it to settle. A clip
+    // shorter than the check's settling time ends before the check could decide otherwise.
+    if (snapshot.isEnded && snapshot.durationMs > 0L) {
+        placeholderCheckedUrl = url
+        placeholderCheckState = null
+        judgePlaceholderLength(url, videoId, snapshot.durationMs, ended = true)
+        return
+    }
     // The window starts at the first frame; before it there is nothing to look at.
     val state = placeholderCheckState?.takeIf { placeholderCheckStateUrl == url }
         ?: if (snapshot.isLoading) return else PlaceholderCheckState(nowMs, snapshot.positionMs)
@@ -188,8 +214,13 @@ internal fun PlayerScreenRuntime.checkForPlaceholderSource(snapshot: PlayerPlayb
     }
     placeholderCheckedUrl = url
     placeholderCheckState = null
-    val expectedMinutes = MetaDetailsRepository.runtimeMinutesFor(parentMetaId, videoId, activeSeasonNumber, activeEpisodeNumber)
-    // A link or name that made the source a suspect needs only a short stable length to be confirmed.
+    judgePlaceholderLength(url, videoId, durationMs, ended = false)
+}
+
+/** Judges the final length of the source at [url]; a placeholder is moved on from. */
+private fun PlayerScreenRuntime.judgePlaceholderLength(url: String, videoId: String, durationMs: Long, ended: Boolean) {
+    val expectedMinutes = expectedRuntimeMinutes(videoId, activeSeasonNumber, activeEpisodeNumber)
+    // A link, name or label that made the source a suspect needs only a short stable length to be confirmed.
     val suspect = placeholderSuspectUrl == url
     val confirmed = isPlaceholderConfirmed(
         suspect = suspect,
@@ -198,9 +229,18 @@ internal fun PlayerScreenRuntime.checkForPlaceholderSource(snapshot: PlayerPlayb
         resumeMs = activeInitialPositionMs,
     )
     if (!confirmed) return
-    log.i { "Source looks like a placeholder: $durationMs ms against $expectedMinutes minutes expected (suspect=$suspect)" }
+    log.i { "Source looks like a placeholder: $durationMs ms against $expectedMinutes minutes expected (suspect=$suspect, ended=$ended)" }
     handleDetectedPlaceholder(url)
 }
+
+/**
+ * The running time of a video of the title playing: from the details screen when it is open on that title,
+ * otherwise from the details the player loaded itself (playing from Continue Watching, Home or the next
+ * episode). Null when neither knows it.
+ */
+internal fun PlayerScreenRuntime.expectedRuntimeMinutes(videoId: String, season: Int?, episode: Int?): Int? =
+    MetaDetailsRepository.runtimeMinutesFor(parentMetaId, videoId, season, episode)
+        ?: playerMeta?.takeIf { it.id == parentMetaId }?.runtimeMinutesFor(videoId, season, episode)
 
 /**
  * Looks at the resolved link and the file names of a source that was just handed to the player. A known status
@@ -211,7 +251,15 @@ internal fun PlayerScreenRuntime.checkForPlaceholderBySourceSignals() {
     if (!isDesktop || sourceFailoverCancelled || activeTorrentInfoHash != null) return
     val url = activeSourceUrl
     if (url.isBlank() || activeVideoId == null) return
-    val assessment = assessSourceLink(url, listOf(activeSourceFilename, activeStreamFilename)) ?: return
+    val assessment = assessSourceLink(url, listOf(activeSourceFilename, activeStreamFilename))
+    if (assessment == null) {
+        // The add-on says the debrid service does not have the file yet: it plays the service's notice.
+        if (activeStream?.saysNotCached == true) {
+            log.i { "Source is suspect of being a placeholder: its label says it is not cached" }
+            placeholderSuspectUrl = url
+        }
+        return
+    }
     if (!assessment.decisive) {
         // Only a suspect: the length the player reports has to confirm it.
         log.i { "Source is suspect of being a placeholder: ${assessment.signal.name}" }
@@ -311,15 +359,10 @@ internal fun PlayerScreenRuntime.tryFallbackToNextSourceAfterError(
         var stopReason = SourceFailoverStop.Exhausted
         try {
             // Joins the shared source search, so results the stream screen already found are reused.
-            PlayerStreamsRepository.loadSources(
-                type = contentType ?: parentMetaType,
-                videoId = videoId,
-                season = season,
-                episode = episode,
-            )
+            failoverSourceSearch.start(contentType ?: parentMetaType, videoId, season, episode)
             val preferences = StreamAutoPlayPolicy.preferencesFor(settings.streamAutoPlayMode)
             val runtimeMinutes = if (settings.streamAutoPlayMode == StreamAutoPlayMode.PREFERRED) {
-                MetaDetailsRepository.runtimeMinutesFor(parentMetaId, videoId, season, episode)
+                expectedRuntimeMinutes(videoId, season, episode)
             } else {
                 null
             }
@@ -330,7 +373,7 @@ internal fun PlayerScreenRuntime.tryFallbackToNextSourceAfterError(
             }
             var polls = 0
             while (true) {
-                val state = PlayerStreamsRepository.sourceState.value
+                val state = failoverSourceSearch.state()
                 val ranked = rankedSourceFailoverCandidates(
                     streams = state.groups.flatMap { it.streams },
                     settings = playerSettingsUiState,
@@ -392,11 +435,13 @@ internal fun PlayerScreenRuntime.tryFallbackToNextSourceAfterError(
                 }
                 log.i { "Source failed (${failure.name}), moving on to ${playable.streamLabel} from ${playable.addonName}" }
                 playReplacementSource(playable, url, videoId, resumePositionMs = resumeMs, byFailover = true)
+                // A placeholder may have played to its end, which stops playback: the real video is to play.
+                if (failure == SourceFailure.PlaceholderClip) shouldPlay = true
                 sourceFailoverPlayingName = next.failoverDisplayName()
                 return@launch
             }
         } finally {
-            PlayerStreamsRepository.stopSourcesLoading()
+            failoverSourceSearch.stop()
         }
         if (sourceFailoverCancelled) return@launch
         finishSourceFailover(message, stopReason)
@@ -457,7 +502,10 @@ internal fun rankedSourceFailoverCandidates(
             stream.p2pInfoHash.equals(failedInfoHash, ignoreCase = true)
     }
     if (settings.streamAutoPlayMode == StreamAutoPlayMode.MANUAL) {
-        return candidates.filter { StreamAutoPlaySelector.canStartInPlayer(it, debridEnabled, activeResolverProviderId) }
+        // The order of the list, except that sources the debrid service does not have yet come last.
+        return candidates
+            .filter { StreamAutoPlaySelector.canStartInPlayer(it, debridEnabled, activeResolverProviderId) }
+            .cachedFirst { it.saysNotCached }
     }
     return StreamAutoPlaySelector.evaluateAutoPlayStream(
         streams = candidates,
