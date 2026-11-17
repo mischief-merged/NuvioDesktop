@@ -358,7 +358,7 @@ object DownloadsRepository {
                 backend.ownershipOf(existing, oldUri).let { it == FileOwnership.Owned || it == FileOwnership.Unknown }
             if (!keep) {
                 if (existing.isPlaceholder) oldUri?.let(backend::trashFile) else backend.discardFile(oldUri)
-                backend.removePartialOf(existing)
+                // Each source has its own destination. Leave the previous partial file for the user.
             }
         }
         startDownload(queued)
@@ -509,6 +509,27 @@ object DownloadsRepository {
         replaceItem(restored)
         persist()
         if (restored.status == DownloadStatus.Downloading) startDownload(restored)
+    }
+
+    /**
+     * Rejects a batch source without removing its record or anything it wrote. Its history is still
+     * on disk if the app stops before the next source is queued. Finished files stay beside the
+     * replacement; unfinished transfers stop, leaving their partial files intact. A folder hold
+     * protects those files, but must not prevent recording the rejection or stopping the transfer.
+     */
+    internal fun rejectBatchSource(downloadId: String): Unit = synchronized(stateLock) {
+        ensureLoaded()
+        val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return
+        if (item.status != DownloadStatus.Completed && item.status != DownloadStatus.Downloading) return
+        activeTransfers.remove(downloadId)?.cancel()
+        mutateItem(downloadId) { current ->
+            current.copy(
+                status = if (current.status == DownloadStatus.Completed) DownloadStatus.Completed else DownloadStatus.Failed,
+                failureKind = DownloadFailureKind.BadFile,
+                errorMessage = current.errorMessage ?: runBlocking { getString(Res.string.downloads_source_rejected) },
+                updatedAtEpochMs = DownloadsClock.nowEpochMs(),
+            )
+        }
     }
 
     fun cancelDownload(downloadId: String): Unit = synchronized(stateLock) {

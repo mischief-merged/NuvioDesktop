@@ -1,5 +1,6 @@
 package com.nuvio.app.features.downloads
 
+import com.nuvio.app.features.debrid.DebridStreamLanguage
 import com.nuvio.app.features.streams.StreamItem
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -33,12 +34,23 @@ class SourceReplacementTest {
         val started = CopyOnWriteArrayList<String>()
         val trashed = CopyOnWriteArrayList<String>()
         val removed = CopyOnWriteArrayList<String?>()
+        val removedPartials = CopyOnWriteArrayList<String>()
+        val cancelled = CopyOnWriteArrayList<String>()
+        val fileAccesses = CopyOnWriteArrayList<String>()
+        val disconnected = mutableSetOf<String>()
+        val lateReports = mutableMapOf<String, () -> Unit>()
+
+        override fun isConnected(item: DownloadItem): Boolean = item.sourceUrl !in disconnected
+        override fun heldByFolder(item: DownloadItem): Boolean = ItemLocks.isHeld(item.id) || !isConnected(item)
 
         /** Addresses whose server announces a short clip in place of the file. */
         val placeholders = mutableSetOf<String>()
 
         /** Addresses whose transfer starts and then sends nothing. */
         val silent = mutableSetOf<String>()
+        val failures = mutableMapOf<String, String>()
+        val pendingFailures = mutableMapOf<String, (String) -> Unit>()
+        val audioLanguages = mutableMapOf<String, List<String>>()
 
         override fun loadPayload(): String? = payload
         override fun savePayload(payload: String) { this.payload = payload }
@@ -53,17 +65,27 @@ class SourceReplacementTest {
         ): DownloadsTaskHandle {
             val url = request.item.sourceUrl
             started += url
+            lateReports[url] = {
+                onProgress(FilmBytes, FilmBytes)
+                onSuccess("file:/new/late.mkv", FilmBytes)
+                onFailure("HTTP 403")
+                onPaused()
+            }
             when (url) {
-                in silent -> Unit
+                in silent -> pendingFailures[url] = onFailure
+                in failures -> onFailure(failures.getValue(url))
                 in placeholders -> onProgress(0L, ClipBytes)
                 else -> {
                     val uri = "file:/new/" + url.substringAfterLast('/')
-                    files[uri] = DownloadedFileFacts(exists = true, sizeBytes = FilmBytes, isVideoContainer = true)
+                    files[uri] = DownloadedFileFacts(exists = true, sizeBytes = FilmBytes, isVideoContainer = true, audioLanguages = audioLanguages[url])
                     onSuccess(uri, FilmBytes)
                 }
             }
             return object : DownloadsTaskHandle {
-                override fun cancel() = Unit
+                override fun cancel() {
+                    cancelled += url
+                    onPaused()
+                }
             }
         }
 
@@ -72,9 +94,18 @@ class SourceReplacementTest {
             return true
         }
 
-        override fun removePartialFile(destinationFileName: String): Boolean = true
-        override fun resolveLocalFileUri(localFileUri: String?, destinationFileName: String): String? = localFileUri?.takeIf { it in files }
-        override fun inspectFile(localFileUri: String): DownloadedFileFacts = files[localFileUri] ?: DownloadedFileFacts(exists = false)
+        override fun removePartialFile(destinationFileName: String): Boolean {
+            removedPartials += destinationFileName
+            return true
+        }
+        override fun resolveLocalFileUri(localFileUri: String?, destinationFileName: String): String? {
+            fileAccesses += "resolve:$destinationFileName"
+            return localFileUri?.takeIf { it in files }
+        }
+        override fun inspectFile(localFileUri: String): DownloadedFileFacts {
+            fileAccesses += "inspect:$localFileUri"
+            return files[localFileUri] ?: DownloadedFileFacts(exists = false)
+        }
 
         override fun trashFile(localFileUri: String): Boolean {
             trashed += localFileUri
@@ -164,6 +195,7 @@ class SourceReplacementTest {
         var available: List<StreamItem>,
         val canSearch: MutableStateFlow<Boolean> = MutableStateFlow(true),
         var online: Boolean = true,
+        val audioLanguage: DebridStreamLanguage? = null,
     ) {
         val finished = CopyOnWriteArrayList<SeasonBatchEpisodeResult>()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
@@ -187,6 +219,8 @@ class SourceReplacementTest {
                     finished += result
                 }
             },
+            discard = SeasonBatchDownloads::discardSource,
+            inspect = DownloadsRepository::inspectCompletedDownload,
             onSourceTried = { request, episode, attempt -> replacer.onSourceTried(request.titleKey(episode), attempt) },
         )
 
@@ -198,7 +232,7 @@ class SourceReplacementTest {
                 isOnline = { online },
                 isAway = { false },
                 startSearch = { step ->
-                    batches.start(replacementRequest(step.bad, step.skip, step.attemptsUsed, SeasonDownloadDefaults(), null)) ==
+                    batches.start(replacementRequest(step.bad, step.skip, step.attemptsUsed, SeasonDownloadDefaults(audioLanguage = audioLanguage), null)) ==
                         SeasonBatchStart.Started
                 },
                 giveUp = DownloadsRepository::markNoWorkingSourceFound,
@@ -321,6 +355,155 @@ class SourceReplacementTest {
 
         assertEquals(listOf(url("c"), url("b")), newStarts(), "a source tried before the restart was fetched again")
         assertEquals(2, items().single { it.sourceUrl == url("b") }.autoSourceAttempts)
+    }
+
+    @Test
+    fun discarded_replacements_keep_the_history_and_limit_after_a_restart() {
+        load(refusedRecord)
+        backend.audioLanguages[url("b")] = listOf("rus")
+        backend.silent += url("c")
+        val first = Search(listOf(source("b"), source("c")), audioLanguage = DebridStreamLanguage.EN)
+        first.watch()
+        awaitItems { list -> list.any { it.sourceUrl == url("c") && it.status == DownloadStatus.Downloading } }
+
+        val running = items().single { it.sourceUrl == url("c") }
+        assertEquals(2, running.autoSourceAttempts)
+        assertTrue(running.triedSources.containsAll(source("a").sourceIdentityKeys + source("b").sourceIdentityKeys))
+
+        restart()
+        assertEquals(2, items().single { it.sourceUrl == url("c") }.autoSourceAttempts)
+        backend.pendingFailures.getValue(url("c"))("HTTP 403")
+        backend.placeholders += url("d")
+        val second = Search(listOf("a", "b", "c", "d", "e").map { source(it) })
+        second.watch()
+        second.awaitSearches(1)
+
+        assertEquals(listOf(url("b"), url("c"), url("c"), url("d")), newStarts(), "only the interrupted transfer resumes; old sources stay skipped")
+        assertEquals(3, items().maxOf { it.autoSourceAttempts })
+        assertTrue(items().any { it.noWorkingSourceFound })
+        assertTrue(backend.removed.filterNotNull().isEmpty(), "rejected files must not be permanently removed")
+    }
+
+    @Test
+    fun a_restart_between_discarding_and_queueing_keeps_the_rejected_source_history() {
+        load(refusedRecord)
+        val bad = items().single()
+        val request = replacementRequest(bad, bad.sourceIdentityKeys.toSet(), 0, SeasonDownloadDefaults(), null)
+        SeasonBatchDownloads.enqueueEpisode(request, request.episodes.single(), source("b"))
+        val finished = items().single()
+        SeasonBatchDownloads.discardSource(finished)
+        // Looking at the file again must not erase a rejection of its audio or download choices.
+        DownloadsRepository.recheckCompleted(finished.id)
+        assertTrue(items().single().hasBadSource)
+
+        restart()
+        val step = assertIs<SourceReplacementStep.Search>(sourceReplacementSteps(items(), emptySet()).single())
+        assertEquals(1, step.attemptsUsed)
+        assertTrue(step.skip.containsAll(source("a").sourceIdentityKeys + source("b").sourceIdentityKeys))
+        val second = Search(listOf(source("a"), source("b"), source("c")))
+        second.watch()
+        awaitItems { list -> list.any { it.sourceUrl == url("c") && it.status == DownloadStatus.Completed } }
+        second.awaitSearches(1)
+
+        assertEquals(listOf(url("b"), url("c")), newStarts())
+        assertEquals(2, items().single { it.sourceUrl == url("c") }.autoSourceAttempts)
+        assertTrue(backend.removed.filterNotNull().isEmpty())
+        assertTrue(backend.removedPartials.isEmpty())
+    }
+
+    @Test
+    fun a_downloading_source_is_rejected_while_a_folder_move_holds_it() =
+        rejectHeldSource(completed = false, moving = true)
+
+    @Test
+    fun a_completed_source_is_rejected_while_a_folder_move_holds_it() =
+        rejectHeldSource(completed = true, moving = true)
+
+    @Test
+    fun a_downloading_source_is_rejected_while_its_drive_is_disconnected() =
+        rejectHeldSource(completed = false, moving = false)
+
+    @Test
+    fun a_completed_source_is_rejected_while_its_drive_is_disconnected() =
+        rejectHeldSource(completed = true, moving = false)
+
+    private fun rejectHeldSource(completed: Boolean, moving: Boolean) {
+        load(refusedRecord)
+        if (!completed) backend.silent += url("b")
+        val bad = items().single()
+        val request = replacementRequest(bad, bad.sourceIdentityKeys.toSet(), 0, SeasonDownloadDefaults(), null)
+        SeasonBatchDownloads.enqueueEpisode(request, request.episodes.single(), source("b"))
+        val rejected = items().single()
+        assertEquals(if (completed) DownloadStatus.Completed else DownloadStatus.Downloading, rejected.status)
+        assertFalse(rejected.hasBadSource)
+        val accesses = backend.fileAccesses.toList()
+        val files = backend.files.toMap()
+        val removed = backend.removed.toList()
+        val partials = backend.removedPartials.toList()
+        val trashed = backend.trashed.toList()
+        val cancellations = backend.cancelled.size
+        if (moving) assertTrue(ItemLocks.tryAcquire(rejected.id)) else backend.disconnected += url("b")
+        try {
+            assertTrue(DownloadsRepository.isBusyOrAway(rejected))
+            SeasonBatchDownloads.discardSource(rejected)
+
+            val saved = items().single()
+            assertEquals(DownloadFailureKind.BadFile, saved.failureKind)
+            assertEquals(if (completed) DownloadStatus.Completed else DownloadStatus.Failed, saved.status)
+            assertTrue(saved.hasBadSource)
+            assertFalse(saved.isPlayable)
+            assertEquals(rejected.localFileUri, saved.localFileUri)
+            assertEquals(rejected.triedSources, saved.triedSources)
+            assertEquals(rejected.autoSourceAttempts, saved.autoSourceAttempts)
+            assertEquals(cancellations + if (completed) 0 else 1, backend.cancelled.size)
+            assertEquals(saved, DownloadsCodec.decode(backend.payload!!)!!.items.single())
+
+            // Reports already in flight, including a pause from cancel(), cannot undo rejection.
+            backend.lateReports.getValue(url("b"))()
+            assertEquals(saved, items().single())
+            assertEquals(accesses, backend.fileAccesses.toList(), "rejection accessed a held download's files")
+            assertEquals(files, backend.files.toMap())
+            assertEquals(removed, backend.removed.toList())
+            assertEquals(partials, backend.removedPartials.toList())
+            assertEquals(trashed, backend.trashed.toList())
+            if (moving) assertTrue(ItemLocks.isHeld(rejected.id))
+        } finally {
+            if (moving) ItemLocks.release(rejected.id) else backend.disconnected -= url("b")
+        }
+
+        restart()
+        val search = Search(listOf(source("b"), source("c")))
+        search.watch()
+        search.awaitSearches(1)
+        assertEquals(listOf(url("b"), url("c")), newStarts())
+        val replacement = items().single { it.sourceUrl == url("c") }
+        assertEquals(DownloadStatus.Completed, replacement.status)
+        assertEquals(2, replacement.autoSourceAttempts)
+        assertTrue(replacement.triedSources.containsAll(source("a").sourceIdentityKeys + source("b").sourceIdentityKeys))
+    }
+
+    @Test
+    fun a_transient_failure_keeps_the_automatic_count_after_a_restart() {
+        load(refusedRecord)
+        backend.failures[url("b")] = "Connection reset"
+        backend.silent += url("c")
+        val first = Search(listOf(source("b"), source("c")))
+        first.watch()
+        awaitItems { list -> list.any { it.sourceUrl == url("c") && it.status == DownloadStatus.Downloading } }
+
+        assertEquals(2, items().single().autoSourceAttempts)
+        assertTrue(backend.removedPartials.isEmpty(), "changing sources must keep any partial download")
+        restart()
+        assertEquals(2, items().single().autoSourceAttempts)
+        backend.pendingFailures.getValue(url("c"))("HTTP 403")
+        backend.placeholders += url("d")
+        val second = Search(listOf("a", "b", "c", "d", "e").map { source(it) })
+        second.watch()
+        second.awaitSearches(1)
+
+        assertEquals(listOf(url("c"), url("c"), url("d")), newStarts().filterNot { it == url("b") })
+        assertEquals(3, items().single().autoSourceAttempts)
+        assertTrue(items().single().noWorkingSourceFound)
     }
 
     @Test

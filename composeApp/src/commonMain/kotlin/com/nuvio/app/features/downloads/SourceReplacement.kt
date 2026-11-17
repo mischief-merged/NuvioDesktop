@@ -66,15 +66,16 @@ internal class SourceHistory(val triedSources: List<String>, val autoSourceAttem
 /**
  * The history a new download from [stream] starts with, given the downloads of the same title that
  * are there now ([sameTitle]): every source they tried and their own, and this one. A download the
- * app starts after a bad source counts as one more of its attempts. One the user chose starts the count
- * again: the user has made a new choice, so the app may look again if that one is bad too.
+ * app starts after a bad source, including after a later transfer failure, counts as one more of its
+ * attempts. One the user chose starts the count again: the user has made a new choice, so the app may
+ * look again if that one is bad too.
  */
 internal fun sourceHistoryFor(sameTitle: List<DownloadItem>, stream: StreamItem, userChose: Boolean): SourceHistory {
     val tried = (sameTitle.flatMap { it.triedSources + it.sourceIdentityKeys } + stream.sourceIdentityKeys)
         .distinct()
         .takeLast(MaxRememberedSources)
     val attempts = when {
-        userChose || sameTitle.none { it.hasBadSource } -> 0
+        userChose || sameTitle.none { it.hasBadSource || it.autoSourceAttempts > 0 } -> 0
         else -> sameTitle.maxOf { it.autoSourceAttempts } + 1
     }
     return SourceHistory(tried, attempts)

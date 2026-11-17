@@ -414,7 +414,7 @@ internal class SeasonBatchDownloader(
     private val enqueue: (SeasonBatchRequest, SeasonBatchEpisode, StreamItem) -> DownloadEnqueueResult,
     private val onFinished: suspend (SeasonBatchRequest, SeasonBatchSummary) -> Unit = { _, _ -> },
     private val maxConcurrent: Int = DefaultMaxConcurrent,
-    /** Removes a download this batch queued, with its file, because it is not the video. */
+    /** Rejects a source this batch queued, keeping its history and any file it wrote. */
     private val discard: (DownloadItem) -> Unit = {},
     /** Looks at the file of a finished download, for the duration and the audio tracks its container states. */
     private val inspect: (DownloadItem) -> DownloadedFileFacts? = { null },
@@ -590,6 +590,7 @@ internal class SeasonBatchDownloader(
 
         // Every source that is prepared counts, whether or not it could be queued, so an episode with
         // many unusable sources does not trigger a lookup for each of them.
+        val tried = request.skipSources.toMutableSet()
         var attempts = 0
         var started = 0
         var sourceFailed = false
@@ -615,9 +616,11 @@ internal class SeasonBatchDownloader(
             for (candidate in candidates) {
                 if (attempts >= maxSources) break
                 // A source that was downloaded already for this title is not fetched again.
-                if (candidate.wasTried(request.skipSources)) continue
+                if (candidate.wasTried(tried)) continue
                 // A source that says itself that its file is tiny is not worth a lookup or a transfer.
                 if (candidate.announcedSizeBytes()?.let { it < minBytes } == true) continue
+                val previouslyTried = tried.toSet()
+                tried += candidate.sourceIdentityKeys
                 attempts++
                 onSourceTried(request, episode, attempts)
                 val prepared = try {
@@ -628,6 +631,12 @@ internal class SeasonBatchDownloader(
                     sourceFailed = true
                     null
                 } ?: continue
+
+                // A resolver can give different listings the same final address. Remember both
+                // spellings, and do not transfer an address another candidate already used.
+                val alreadyTried = prepared.wasTried(previouslyTried)
+                tried += prepared.sourceIdentityKeys
+                if (alreadyTried) continue
 
                 currentCoroutineContext().ensureActive()
                 when (queueIfStillWanted(request, episode, prepared, batch)) {

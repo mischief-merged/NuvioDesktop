@@ -3241,4 +3241,5 @@
     <string name="downloads_held_detail">They carry on by themselves when you're back on a regular connection.</string>
     <string name="downloads_held_download_anyway">Download anyway</string>
     <string name="downloads_held_download_anyway_description">Download anyway on this network until it changes or the app is closed</string>
+    <string name="downloads_source_rejected">This source did not pass the download checks.</string>
 </resources>

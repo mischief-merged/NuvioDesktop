@@ -68,7 +68,7 @@ internal object SeasonBatchDownloads {
                 AutoDownloads.onBatchFinished(request, summary)
             }
         },
-        discard = { item -> DownloadsRepository.cancelDownload(item.id) },
+        discard = ::discardSource,
         verifyCompleted = { item -> DownloadsRepository.verifyCompletedDownload(item.id) },
         inspect = DownloadsRepository::inspectCompletedDownload,
         preferAudioLanguage = { item, language -> DownloadsRepository.setPreferredAudioLanguage(item.id, language) },
@@ -76,6 +76,8 @@ internal object SeasonBatchDownloads {
             if (request.replacesBadSource) SourceReplacements.onSourceTried(request.titleKey(episode), attempt)
         },
     )
+
+    internal fun discardSource(item: DownloadItem) = DownloadsRepository.rejectBatchSource(item.id)
 
     /** The titles a running season download, or a search for another source, is working on. */
     val titlesInFlight: StateFlow<Set<String>> get() = downloader.titlesInFlight
