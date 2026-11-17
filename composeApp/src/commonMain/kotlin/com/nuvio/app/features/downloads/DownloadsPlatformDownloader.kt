@@ -10,6 +10,12 @@ internal data class DownloadPlatformRequest(
     val onPartialCreated: (String) -> Unit = {},
     /** Told the new file name when the old one was taken by a file that is not this download's. */
     val onFileNameChanged: (String) -> Unit = {},
+    /**
+     * Asked once the whole body is in, before the file is published under its final name. True: the
+     * download is still this transfer's and nothing may stop it now. False: it was paused meanwhile;
+     * the partial file is kept as it is and the transfer ends as paused.
+     */
+    val mayPublish: () -> Boolean = { true },
 ) {
     val sourceUrl: String get() = item.sourceUrl
     val sourceHeaders: Map<String, String> get() = item.sourceHeaders

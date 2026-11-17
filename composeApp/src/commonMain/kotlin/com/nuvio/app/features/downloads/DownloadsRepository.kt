@@ -699,6 +699,13 @@ object DownloadsRepository {
                 limits = autoTransferLimits(item, transfer),
                 onPartialCreated = { key -> ifCurrent(item.id, transfer) { mutateItem(item.id) { it.copy(partialFileKey = key) } } },
                 onFileNameChanged = { name -> ifCurrent(item.id, transfer) { mutateItem(item.id) { it.copy(fileName = name, partialFileKey = null) } } },
+                // Decided under the state lock, so a connection hold either came first (the transfer
+                // ends as paused, its partial file intact) or sees the transfer finishing and leaves it.
+                mayPublish = {
+                    synchronized(stateLock) {
+                        (activeTransfers[item.id] === transfer).also { if (it) transfer.finishing = true }
+                    }
+                },
             ),
             { downloadedBytes, totalBytes ->
                 ifCurrent(item.id, transfer) {
