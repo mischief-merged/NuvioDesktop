@@ -1,0 +1,14 @@
+package com.nuvio.app.features.downloads
+
+import com.nuvio.app.core.storage.DesktopStorage
+
+internal actual object LimitedConnectionStorage {
+    private val store by lazy { DesktopStorage.store("nuvio_limited_connections") }
+
+    actual fun loadPauseOnLimited(): Boolean? =
+        store.getString("pause_on_limited")?.toBooleanStrictOrNull()
+
+    actual fun savePauseOnLimited(value: Boolean) {
+        store.putString("pause_on_limited", value.toString())
+    }
+}

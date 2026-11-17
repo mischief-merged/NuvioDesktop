@@ -83,6 +83,8 @@ fun main(args: Array<String>) {
     ProfileRepository.loadCachedProfiles()
     // Settles a folder move that was cut short, before the list of downloads is read.
     runCatching { com.nuvio.app.features.downloads.DesktopDownloads.install() }
+    // Watches for hotspots and Low Data Mode networks, on which downloads wait (when the setting is on).
+    runCatching { com.nuvio.app.features.downloads.DesktopLimitedConnections.install() }
     AppIconRepository.ensureLoaded()
     AutoSyncPreferencesDesktop.initialize()
     DiscordPresenceManager.start()

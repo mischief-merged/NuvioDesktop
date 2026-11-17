@@ -22,6 +22,12 @@ import nuvio.composeapp.generated.resources.downloads_announce_paused_low_disk
 import nuvio.composeapp.generated.resources.downloads_announce_paused_storage_limit
 import nuvio.composeapp.generated.resources.downloads_announce_reconnecting
 import nuvio.composeapp.generated.resources.downloads_announce_waiting_network
+import nuvio.composeapp.generated.resources.downloads_announce_waiting_connection
+import nuvio.composeapp.generated.resources.downloads_announce_waiting_hotspot
+import nuvio.composeapp.generated.resources.downloads_announce_waiting_low_data
+import nuvio.composeapp.generated.resources.downloads_status_waiting_connection
+import nuvio.composeapp.generated.resources.downloads_status_waiting_hotspot
+import nuvio.composeapp.generated.resources.downloads_status_waiting_low_data
 import nuvio.composeapp.generated.resources.downloads_result_basic
 import nuvio.composeapp.generated.resources.downloads_result_could_not_compare
 import nuvio.composeapp.generated.resources.downloads_status_not_real_video
@@ -92,6 +98,22 @@ internal enum class DownloadPhase(
 
     /** Paused because its location is away or being moved. It goes on by itself. */
     WaitingForDrive(Res.string.downloads_status_waiting_drive, showsSize = true, Res.string.downloads_announce_waiting_drive),
+
+    /** Waiting because the Mac is on a hotspot or tethered. It goes on by itself when that ends. */
+    WaitingOnHotspot(Res.string.downloads_status_waiting_hotspot, showsSize = true, Res.string.downloads_announce_waiting_hotspot),
+
+    /** Waiting because the network uses Low Data Mode. It goes on by itself when that ends. */
+    WaitingOnLowDataMode(Res.string.downloads_status_waiting_low_data, showsSize = true, Res.string.downloads_announce_waiting_low_data),
+
+    /** Waiting for a better connection, at a moment when the reason is not known (it is just ending). */
+    WaitingForConnection(Res.string.downloads_status_waiting_connection, showsSize = true, Res.string.downloads_announce_waiting_connection),
+}
+
+/** The row phase of a download that waits because the connection is limited for [reason]. */
+internal fun waitingPhaseFor(reason: LimitedConnectionReason?): DownloadPhase = when (reason) {
+    LimitedConnectionReason.Hotspot -> DownloadPhase.WaitingOnHotspot
+    LimitedConnectionReason.LowDataMode -> DownloadPhase.WaitingOnLowDataMode
+    null -> DownloadPhase.WaitingForConnection
 }
 
 /** What was checked about a finished file, in the words the row shows. */
@@ -147,6 +169,8 @@ internal fun downloadRowStatus(
     /** Where locations are handled: a finished item without a recorded file shows as not found, never as found by name. */
     addressRequired: Boolean = false,
     runtimeMinutes: ((DownloadItem) -> Int?)? = null,
+    /** Why the connection is limited now, or null. Says why a download that waits for a better connection waits. */
+    limitedBy: LimitedConnectionReason? = null,
 ): DownloadRowStatus {
     val isAuto = item.autoDownloadRuleKey != null
     if (moving) return DownloadRowStatus(DownloadPhase.Moving, isAuto = isAuto)
@@ -164,6 +188,9 @@ internal fun downloadRowStatus(
     }
     if (item.status == DownloadStatus.Paused && item.pausedByFolder) {
         return DownloadRowStatus(DownloadPhase.WaitingForDrive, isAuto = isAuto)
+    }
+    if (item.status == DownloadStatus.Paused && item.pausedByConnection) {
+        return DownloadRowStatus(waitingPhaseFor(limitedBy), isAuto = isAuto)
     }
     return when (item.status) {
         DownloadStatus.Downloading -> {
