@@ -107,6 +107,15 @@ data class DownloadItem(
      * this download's. Null before a partial file was created.
      */
     val partialFileKey: String? = null,
+    /**
+     * Every source already downloaded for this title, as [sourceIdentityKeys] write them, this one's and
+     * those of the downloads it replaced or sits beside. A source the app picks by itself is never one of them.
+     */
+    val triedSources: List<String> = emptyList(),
+    /** How many sources the app has started by itself for this title, each after a source that was bad. */
+    val autoSourceAttempts: Int = 0,
+    /** The app looked for a working source by itself and found none. Only the user picks one now. */
+    val noWorkingSourceFound: Boolean = false,
 ) {
     val isEpisode: Boolean
         get() = seasonNumber != null && episodeNumber != null
@@ -123,6 +132,10 @@ data class DownloadItem(
      */
     val isPlaceholder: Boolean
         get() = status == DownloadStatus.Completed && framesCheck == DownloadFramesCheck.NotTheRealVideo
+
+    /** Its source is the problem: a file that is not the video, or a source that failed in a way trying it again cannot fix. */
+    val hasBadSource: Boolean
+        get() = needsAnotherSource || isPlaceholder
 
     val isPlayable: Boolean
         get() = status == DownloadStatus.Completed && !localFileUri.isNullOrBlank() && !isPlaceholder

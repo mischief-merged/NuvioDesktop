@@ -2187,6 +2187,11 @@
     <string name="downloads_status_not_real_video">Not the real video</string>
     <string name="downloads_status_problem_reason">Problem: %1$s</string>
     <string name="downloads_placeholder_next_step">The source sent a short clip in place of the video. It is not counted as downloaded. Choose another source, or delete it.</string>
+    <string name="downloads_source_search_trying">Trying another source (%1$d of %2$d)…</string>
+    <string name="downloads_source_search_waiting">This one is not counted as downloaded. Another source will be tried soon.</string>
+    <string name="downloads_source_search_none_found">No working source could be found. Pick a source yourself, or delete this.</string>
+    <string name="downloads_pick_source_myself">Pick a source myself</string>
+    <string name="downloads_pick_source_myself_description">Pick a source myself for %1$s</string>
     <string name="downloads_placeholder_next_step_new_copy">A new copy of this is downloaded. This one is not the real video and is not counted. Replace it with the new copy, which moves it to the trash, or keep it for now.</string>
     <string name="downloads_replace_with_new_copy">Replace with the new copy</string>
     <string name="downloads_replace_with_new_copy_description">Replace %1$s with the new copy</string>

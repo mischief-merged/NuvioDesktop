@@ -111,6 +111,7 @@ import com.nuvio.app.features.downloads.DownloadSubtitles
 import com.nuvio.app.features.downloads.DownloadsRepository
 import com.nuvio.app.features.downloads.DownloadCompanions
 import com.nuvio.app.features.downloads.DownloadRechecks
+import com.nuvio.app.features.downloads.SourceReplacements
 import com.nuvio.app.features.downloads.backfillWhenIdle
 import com.nuvio.app.features.home.HomeCatalogSection
 import com.nuvio.app.features.home.HomeCatalogSettingsRepository
@@ -581,6 +582,12 @@ internal fun MainAppContent(
     LaunchedEffect(appContentGeneration) {
         if (!ownsAppRuntime || !AppFeaturePolicy.downloadsEnabled) return@LaunchedEffect
         DownloadRechecks.app.recheckWhenIdle()
+    }
+
+    // When a download is not the real video or its source stopped working, another source is looked for and downloaded.
+    LaunchedEffect(appContentGeneration) {
+        if (!ownsAppRuntime || !AppFeaturePolicy.downloadsEnabled) return@LaunchedEffect
+        SourceReplacements.watch()
     }
 
     LaunchedEffect(networkStatusUiState.condition) {
