@@ -1,5 +1,7 @@
 package com.nuvio.app.features.downloads
 
+import com.nuvio.app.features.player.PLACEHOLDER_SUSPECT_MAX_DURATION_MS
+import com.nuvio.app.features.player.lengthMatchesRuntime
 import com.nuvio.app.features.player.looksLikePlaceholder
 
 /*
@@ -20,6 +22,10 @@ import com.nuvio.app.features.player.looksLikePlaceholder
  *    title, the same rule playback uses ([looksLikePlaceholder]), here on the duration the file
  *    states. Weak, because a runtime can be wrong.
  *  - picture: the frames are one still picture or blank. Weak, because a title card can be long.
+ *  - not cached: the source's own label said the debrid service did not have the file yet, and the
+ *    file runs under five minutes (the player's limit for a suspect source), unless its length matches the
+ *    known running time (the service had the file by the time it was fetched). Decisive: such a source
+ *    serves the service's "not cached yet" clip.
  *
  * One decisive signal, or two weak ones, make the verdict. Anything less never flags: a short film
  * and a trailer-length extra carry their own short running time, a small file of low quality has
@@ -60,6 +66,8 @@ internal class PlaceholderEvidence(
     val runtimeMinutes: Int?,
     /** What a look at decoded frames found, when one was taken. Only a still or blank picture counts here. */
     val frames: DownloadedFramesProblem? = null,
+    /** The source's label said the debrid service did not have the file yet (see sourceLabelSaysNotCached). */
+    val sourceSaysNotCached: Boolean = false,
 )
 
 /** Why a file is taken for a placeholder. */
@@ -72,6 +80,9 @@ internal sealed interface PlaceholderReason {
 
     /** The file runs [durationMs] where the title runs about [runtimeMinutes], and its picture does not change either. */
     data class ShortForRuntime(val durationMs: Long, val runtimeMinutes: Int) : PlaceholderReason
+
+    /** The file runs [durationMs], and its source said the debrid service did not have the file yet. */
+    data class NotCachedClip(val durationMs: Long) : PlaceholderReason
 }
 
 internal sealed interface PlaceholderVerdict {
@@ -123,6 +134,11 @@ internal fun placeholderVerdict(evidence: PlaceholderEvidence): PlaceholderVerdi
     }
 
     val duration = evidence.durationMs?.takeIf { it > 0L }
+    if (evidence.sourceSaysNotCached && duration != null && duration < PLACEHOLDER_SUSPECT_MAX_DURATION_MS &&
+        !lengthMatchesRuntime(duration, evidence.runtimeMinutes)
+    ) {
+        return PlaceholderVerdict.NotTheRealVideo(PlaceholderReason.NotCachedClip(duration))
+    }
     val runtime = evidence.runtimeMinutes?.takeIf { it > 0 }
     val canJudgeLength = duration != null && runtime != null
     // The file's own length is far short of the title's, or close to it (then the file is complete).

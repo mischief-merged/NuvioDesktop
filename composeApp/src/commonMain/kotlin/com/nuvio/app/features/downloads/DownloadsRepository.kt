@@ -4,6 +4,7 @@ import com.nuvio.app.features.player.SubtitleRequestExtras
 import com.nuvio.app.features.player.looksLikePlaceholder
 import com.nuvio.app.features.player.addonSubtitleRequests
 import com.nuvio.app.features.streams.StreamItem
+import com.nuvio.app.features.streams.sourceLabelSaysNotCached
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.runBlocking
@@ -808,6 +809,7 @@ object DownloadsRepository {
                     claimedBytes = item.claimedSizeBytes(runtimeMinutesOf(item)),
                     durationMs = facts.durationMs ?: samples?.durationMs,
                     runtimeMinutes = runtimeMinutesOf(item),
+                    sourceSaysNotCached = sourceLabelSaysNotCached(item.streamTitle),
                 ),
             ) as? PlaceholderVerdict.NotTheRealVideo)?.reason
         } else {
@@ -932,7 +934,7 @@ object DownloadsRepository {
         val runtime = runtimeMinutesOfDownload(item)
         val claimed = item.claimedSizeBytes(runtime)
         fun evidence(durationMs: Long?, frames: DownloadedFramesProblem?) =
-            PlaceholderEvidence(facts.sizeBytes, claimed, durationMs, runtime, frames)
+            PlaceholderEvidence(facts.sizeBytes, claimed, durationMs, runtime, frames, sourceLabelSaysNotCached(item.streamTitle))
 
         var verdict = placeholderVerdict(evidence(facts.durationMs, null))
         var picturePassed = false

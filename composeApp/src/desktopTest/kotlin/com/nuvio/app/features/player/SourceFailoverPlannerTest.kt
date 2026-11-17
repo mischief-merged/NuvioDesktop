@@ -285,9 +285,14 @@ class SourceFailoverPlannerTest {
     @Test
     fun aPlaceholderObeysTheSettingTheLimitAndTheFailedSet() {
         assertEquals(stop(SourceFailoverStop.Disabled), decide(failure = SourceFailure.PlaceholderClip, settingEnabled = false))
+        // A placeholder does not use up the number of sources set for failures: only the most the setting allows.
+        assertEquals(
+            SourceFailoverDecision.TryNext("b"),
+            decide(failure = SourceFailure.PlaceholderClip, attempts = 3, maxAttempts = 3),
+        )
         assertEquals(
             stop(SourceFailoverStop.LimitReached),
-            decide(failure = SourceFailure.PlaceholderClip, attempts = 3, maxAttempts = 3),
+            decide(failure = SourceFailure.PlaceholderClip, attempts = SOURCE_FALLBACK_MAX_SOURCES_RANGE.last, maxAttempts = 3),
         )
         assertEquals(
             SourceFailoverDecision.TryNext("c"),
