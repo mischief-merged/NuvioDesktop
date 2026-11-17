@@ -1382,6 +1382,7 @@
     <string name="player_failover_trying_after_placeholder">That source was only a placeholder, not the video. Trying another source: %1$s</string>
     <string name="player_failover_trying_after_stall">That source stopped responding. Trying another source: %1$s</string>
     <string name="player_failover_placeholder_exhausted">That source was only a placeholder, not the video, and no other source played. Choose a different source.</string>
+    <string name="player_failover_placeholder_last_source">No other source played, so this one keeps playing. It may be a short notice instead of the video.</string>
     <string name="player_failover_placeholder_warning">This source looks like a placeholder, not the video.</string>
     <string name="player_failover_exhausted">The sources we tried did not play. Choose a different source.</string>
     <string name="player_error_source_stalled">The source stopped responding.</string>
@@ -2179,6 +2180,7 @@
     <string name="downloads_error_frames_still">The downloaded video never changes: it shows one image</string>
     <string name="downloads_error_placeholder_size">Not the real video: %1$s arrived, the source said %2$s</string>
     <string name="downloads_error_placeholder_length_film">Not the real video: it is %1$s long, the film runs about %2$s</string>
+    <string name="downloads_error_placeholder_not_cached">Not the real video: it is %1$s long, and the source said the file wasn't ready on the debrid service yet</string>
     <string name="downloads_error_placeholder_length_episode">Not the real video: it is %1$s long, the episode runs about %2$s</string>
     <string name="downloads_error_placeholder_small_film">Not the real video: %1$s is far too small for a film of about %2$s</string>
     <string name="downloads_error_placeholder_small_episode">Not the real video: %1$s is far too small for an episode of about %2$s</string>
