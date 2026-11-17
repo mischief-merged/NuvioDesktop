@@ -78,6 +78,8 @@ internal class DownloadRechecks(
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
     private val running = Mutex()
+    private val _isRunning = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val isRunning: kotlinx.coroutines.flow.StateFlow<Boolean> = _isRunning
     private val lookedAt = HashMap<String, Long>()
     private val lookedAtLock = kotlinx.atomicfu.locks.SynchronizedObject()
 
@@ -91,7 +93,14 @@ internal class DownloadRechecks(
         maxItems: Int = MaxPerPass,
         force: Boolean = false,
         pauseMs: Long = DownloadCompanions.BackfillPauseMs,
-    ): RecheckSummary = running.withLock { withContext(io) { runPass(candidates, maxItems, force, pauseMs) } }
+    ): RecheckSummary = running.withLock {
+        _isRunning.value = true
+        try {
+            withContext(io) { runPass(candidates, maxItems, force, pauseMs) }
+        } finally {
+            _isRunning.value = false
+        }
+    }
 
     private suspend fun runPass(candidates: List<DownloadItem>, maxItems: Int, force: Boolean, pauseMs: Long): RecheckSummary {
         var summary = RecheckSummary()

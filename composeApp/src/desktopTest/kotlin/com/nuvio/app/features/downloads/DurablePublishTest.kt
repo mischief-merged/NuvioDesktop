@@ -70,6 +70,23 @@ class DurablePublishTest {
     }
 
     @Test
+    fun a_final_address_that_cannot_be_saved_keeps_both_the_finished_and_partial_file() {
+        val part = part("the film")
+        val destination = dir.resolve("film.mp4")
+        assertFailsWith<DownloadNotDurable> {
+            publishDurably(
+                part, destination, flushFolder = { true },
+                recordPublished = {
+                    assertTrue(part.exists())
+                    throw DownloadNotDurable("save did not finish")
+                },
+            )
+        }
+        assertEquals("the film", Files.readString(destination))
+        assertEquals("the film", Files.readString(part))
+    }
+
+    @Test
     fun an_existing_file_at_the_final_name_is_never_replaced() {
         val existing = dir.resolve("film.mp4").also { Files.writeString(it, "someone's") }
         val published = publishDurably(part("new"), existing, flushFolder = { true })
