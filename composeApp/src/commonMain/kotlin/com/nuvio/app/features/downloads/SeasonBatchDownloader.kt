@@ -8,6 +8,7 @@ import com.nuvio.app.features.debrid.DebridStreamResolution
 import com.nuvio.app.features.details.MetaDetails
 import com.nuvio.app.features.streams.StreamIdentity
 import com.nuvio.app.features.streams.StreamItem
+import com.nuvio.app.features.streams.saysNotCached
 import com.nuvio.app.features.streams.WantedContent
 import com.nuvio.app.features.watched.releasedEpisodesForSeason
 import com.nuvio.app.features.watching.domain.WatchingContentRef
@@ -325,6 +326,8 @@ internal fun rankStreamsByPreferences(
     return candidates
         .sortedWith(
             compareBy<BatchCandidate> { it.otherContent }
+                // A source the debrid service does not have yet gives its "not cached" clip, not the video.
+                .thenBy { it.stream.saysNotCached }
                 .thenBy { it.language == LanguageMatch.LooksForeign }
                 .thenBy { maxBitrateMbps != null && it.sizeBytes == null }
                 .thenByDescending { it.resolution.value }

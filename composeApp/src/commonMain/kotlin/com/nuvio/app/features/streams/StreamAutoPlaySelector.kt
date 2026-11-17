@@ -122,9 +122,11 @@ object StreamAutoPlaySelector {
         } else {
             emptyList()
         }
-        val preferredReadyStream = bingeGroupCandidates.firstOrNull { stream ->
-            stream.isAutoPlayable(debridEnabled, activeResolverProviderId)
-        }
+        // A cached copy in the binge group goes before one the debrid service does not have yet.
+        val preferredReadyStream = bingeGroupCandidates
+            .filter { stream -> stream.isAutoPlayable(debridEnabled, activeResolverProviderId) }
+            .cachedFirst { it.saysNotCached }
+            .firstOrNull()
         if (bingeGroupOnly) {
             val readyStreams = preferredReadyStream?.let(::listOf).orEmpty()
             return StreamAutoPlayEvaluation(
@@ -140,10 +142,7 @@ object StreamAutoPlaySelector {
             return StreamAutoPlayEvaluation()
         }
         val preferredStream = if (preferBingeGroupInSelection && targetBingeGroup.isNotEmpty()) {
-            candidateStreams.firstOrNull { stream ->
-                stream.behaviorHints.bingeGroup == targetBingeGroup &&
-                    stream.isAutoPlayable(debridEnabled, activeResolverProviderId)
-            }
+            preferredReadyStream
         } else {
             null
         }
@@ -212,12 +211,13 @@ object StreamAutoPlaySelector {
                     )
                 }
             }
+        // A source the debrid service does not have yet plays its "not cached" clip: every cached one goes first.
         val readyStreams = buildList {
             preferredStream?.let(::add)
             readyMatchingStreams
                 .filterNot { it == preferredStream }
                 .forEach(::add)
-        }
+        }.cachedFirst { it.saysNotCached }
         val selected = readyStreams.firstOrNull()
         if (selected != null) {
             return StreamAutoPlayEvaluation(

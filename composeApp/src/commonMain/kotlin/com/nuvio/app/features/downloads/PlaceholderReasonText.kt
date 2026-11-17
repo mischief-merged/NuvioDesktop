@@ -6,6 +6,7 @@ import kotlinx.coroutines.runBlocking
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.downloads_error_placeholder_length_episode
 import nuvio.composeapp.generated.resources.downloads_error_placeholder_length_film
+import nuvio.composeapp.generated.resources.downloads_error_placeholder_not_cached
 import nuvio.composeapp.generated.resources.downloads_error_placeholder_size
 import nuvio.composeapp.generated.resources.downloads_error_placeholder_small_episode
 import nuvio.composeapp.generated.resources.downloads_error_placeholder_small_film
@@ -40,6 +41,10 @@ internal fun placeholderReasonText(reason: PlaceholderReason, item: DownloadItem
             },
             formatFileLength(reason.durationMs),
             formatRunLength(reason.runtimeMinutes),
+        )
+        is PlaceholderReason.NotCachedClip -> getString(
+            Res.string.downloads_error_placeholder_not_cached,
+            formatFileLength(reason.durationMs),
         )
     }
 }

@@ -94,7 +94,13 @@ internal fun <T> decideSourceFailover(
     if (network == NetworkCondition.NoInternet || network == NetworkCondition.ServersUnreachable) {
         return SourceFailoverDecision.Stop(SourceFailoverStop.Offline)
     }
-    val limit = maxAttempts.coerceIn(1, SOURCE_FALLBACK_MAX_SOURCES_RANGE.last)
+    // A placeholder is recognised for certain and costs no wait, so moving on from one is bounded only by
+    // the most sources the setting allows, not by the number the user set for failures.
+    val limit = if (failure == SourceFailure.PlaceholderClip) {
+        SOURCE_FALLBACK_MAX_SOURCES_RANGE.last
+    } else {
+        maxAttempts.coerceIn(1, SOURCE_FALLBACK_MAX_SOURCES_RANGE.last)
+    }
     if (attempts >= limit) return SourceFailoverDecision.Stop(SourceFailoverStop.LimitReached)
     val next = ranked.firstOrNull { candidate ->
         val key = keyOf(candidate)
@@ -144,6 +150,26 @@ internal const val PLACEHOLDER_MAX_FRACTION_OF_RUNTIME = 0.20
  * suspect source does not need to have.
  */
 internal const val PLACEHOLDER_SUSPECT_MAX_DURATION_MS = 5L * 60_000L
+
+/**
+ * A file shorter than this is a placeholder for a film or an episode whatever its running time is said
+ * to be, so it needs no running time. One minute: the debrid notices seen run from about 5 to 30 seconds
+ * (TorBox's "not cached yet" clip is 8), while the shortest episodes of regular series, anime shorts
+ * included, run a couple of minutes. The two minute "being prepared" clip and the five minute one are
+ * left to the rules made for them. A title whose known running time is short ([PLACEHOLDER_FLOOR_MIN_RUNTIME_MINUTES])
+ * is not judged by this floor, so a one minute short with its running time in the metadata still plays.
+ */
+internal const val PLACEHOLDER_FLOOR_MS = 60_000L
+
+/** The floor above applies when the running time is unknown, or known to be at least this many minutes. */
+internal const val PLACEHOLDER_FLOOR_MIN_RUNTIME_MINUTES = 5
+
+/** Whether a file of [durationMs] is too short to be any film or episode, by [PLACEHOLDER_FLOOR_MS]. */
+internal fun isBelowPlaceholderFloor(durationMs: Long, expectedRuntimeMinutes: Int?): Boolean {
+    if (durationMs !in 1 until PLACEHOLDER_FLOOR_MS) return false
+    val runtime = expectedRuntimeMinutes?.takeIf { it > 0 } ?: return true
+    return runtime >= PLACEHOLDER_FLOOR_MIN_RUNTIME_MINUTES
+}
 
 /** The placeholder check stops this long after the first frame of a source, whatever the position does. */
 internal const val PLACEHOLDER_CHECK_WINDOW_MS = 30_000L
