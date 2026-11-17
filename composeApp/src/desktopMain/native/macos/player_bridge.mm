@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import <IOKit/hidsystem/ev_keymap.h>
 #import <MediaPlayer/MediaPlayer.h>
+#import <Network/Network.h>
 #define GL_SILENCE_DEPRECATION
 #import <OpenGL/OpenGL.h>
 #import <OpenGL/gl3.h>
@@ -13,6 +14,7 @@
 #include <mpv/render_gl.h>
 
 #include <atomic>
+#include <memory>
 #include <chrono>
 #include <clocale>
 #include <cmath>
@@ -3957,4 +3959,123 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_sampleFrames(
         env->DeleteLocalRef(bytes);
     }
     return result;
+}
+
+// ---- Network path monitor (limited connections) ----
+// Reports whether the path traffic takes is expensive (a phone's hotspot, tethering, cellular) or
+// constrained (Low Data Mode), now and on every change, to a listener on the JVM side. It runs on a
+// queue of its own and never touches the player.
+
+namespace {
+std::mutex gPathMonitorMutex;
+nw_path_monitor_t gPathMonitor = nil;
+JavaVM *gPathJavaVm = nullptr;
+jobject gPathListener = nullptr;
+jmethodID gPathListenerMethod = nullptr;
+}
+
+static const char *NuvioInterfaceKind(nw_interface_type_t type) {
+    switch (type) {
+        case nw_interface_type_wifi: return "wifi";
+        case nw_interface_type_cellular: return "cellular";
+        case nw_interface_type_wired: return "wired";
+        case nw_interface_type_loopback: return "loopback";
+        default: return "other";
+    }
+}
+
+static void NuvioReportPath(nw_path_t path) {
+    const bool satisfied = nw_path_get_status(path) == nw_path_status_satisfied;
+    const bool expensive = nw_path_is_expensive(path);
+    const bool constrained = nw_path_is_constrained(path);
+    __block std::string interfaces;
+    nw_path_enumerate_interfaces(path, ^bool(nw_interface_t interface) {
+        if (!interfaces.empty()) interfaces += ",";
+        const char *name = nw_interface_get_name(interface);
+        interfaces += name ? name : "?";
+        interfaces += "/";
+        interfaces += NuvioInterfaceKind(nw_interface_get_type(interface));
+        return true;
+    });
+
+    std::lock_guard<std::mutex> guard(gPathMonitorMutex);
+    if (!gPathJavaVm || !gPathListener || !gPathListenerMethod) return;
+    JNIEnv *env = nullptr;
+    bool didAttach = false;
+    jint status = gPathJavaVm->GetEnv((void **)&env, JNI_VERSION_1_6);
+    if (status == JNI_EDETACHED) {
+        if (gPathJavaVm->AttachCurrentThreadAsDaemon((void **)&env, nullptr) != JNI_OK) return;
+        didAttach = true;
+    } else if (status != JNI_OK) {
+        return;
+    }
+    jstring names = env->NewStringUTF(interfaces.c_str());
+    if (names) {
+        env->CallVoidMethod(gPathListener, gPathListenerMethod, (jboolean)satisfied, (jboolean)expensive, (jboolean)constrained, names);
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        env->DeleteLocalRef(names);
+    } else if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+    }
+    if (didAttach) gPathJavaVm->DetachCurrentThread();
+}
+
+static void NuvioStopPathMonitorLocked(JNIEnv *env) {
+    if (gPathMonitor) {
+        nw_path_monitor_cancel(gPathMonitor);
+        gPathMonitor = nil;
+    }
+    if (gPathListener && env) env->DeleteGlobalRef(gPathListener);
+    gPathListener = nullptr;
+    gPathListenerMethod = nullptr;
+}
+
+// Starts the monitor, replacing one that runs. Waits up to a second for the first report, so the
+// listener knows the path before this returns. False when it could not be started.
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_nuvio_app_features_downloads_MacNetworkPathNative_startMonitor(JNIEnv *env, jobject, jobject listener) {
+    if (!listener) return JNI_FALSE;
+    jclass listenerClass = env->GetObjectClass(listener);
+    if (!listenerClass) return JNI_FALSE;
+    jmethodID method = env->GetMethodID(listenerClass, "onPath", "(ZZZLjava/lang/String;)V");
+    env->DeleteLocalRef(listenerClass);
+    if (!method) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return JNI_FALSE;
+    }
+    JavaVM *javaVm = nullptr;
+    if (env->GetJavaVM(&javaVm) != JNI_OK || !javaVm) return JNI_FALSE;
+    jobject globalListener = env->NewGlobalRef(listener);
+    if (!globalListener) return JNI_FALSE;
+
+    dispatch_semaphore_t firstReport = dispatch_semaphore_create(0);
+    auto reported = std::make_shared<std::atomic<bool>>(false);
+    {
+        std::lock_guard<std::mutex> guard(gPathMonitorMutex);
+        NuvioStopPathMonitorLocked(env);
+        nw_path_monitor_t monitor = nw_path_monitor_create();
+        if (!monitor) {
+            env->DeleteGlobalRef(globalListener);
+            return JNI_FALSE;
+        }
+        gPathJavaVm = javaVm;
+        gPathListener = globalListener;
+        gPathListenerMethod = method;
+        dispatch_queue_t queue = dispatch_queue_create("com.nuvio.network-path", DISPATCH_QUEUE_SERIAL);
+        nw_path_monitor_set_queue(monitor, queue);
+        nw_path_monitor_set_update_handler(monitor, ^(nw_path_t path) {
+            NuvioReportPath(path);
+            if (!reported->exchange(true)) dispatch_semaphore_signal(firstReport);
+        });
+        gPathMonitor = monitor;
+        nw_path_monitor_start(monitor);
+    }
+    dispatch_semaphore_wait(firstReport, dispatch_time(DISPATCH_TIME_NOW, (int64_t)NSEC_PER_SEC));
+    return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_downloads_MacNetworkPathNative_stopMonitor(JNIEnv *env, jobject) {
+    std::lock_guard<std::mutex> guard(gPathMonitorMutex);
+    NuvioStopPathMonitorLocked(env);
 }
