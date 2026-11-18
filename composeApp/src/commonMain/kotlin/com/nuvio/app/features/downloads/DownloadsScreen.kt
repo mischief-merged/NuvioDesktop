@@ -144,6 +144,8 @@ internal fun DownloadsScreenContent(
     rechecks: DownloadRechecks? = null,
     /** Whether downloads wait because the connection is limited. */
     connectionHold: ConnectionHold = LimitedConnections.hold,
+    /** Whether downloads are slowed down to leave the connection to other apps. */
+    politeState: kotlinx.coroutines.flow.StateFlow<PoliteState> = PoliteDownloadsHost.state,
 ) {
     val uiState by remember {
         DownloadsRepository.ensureLoaded()
@@ -212,6 +214,7 @@ internal fun DownloadsScreenContent(
         null
     }
     val holdState by connectionHold.state.collectAsStateWithLifecycle()
+    val polite by politeState.collectAsStateWithLifecycle()
     val clock = RowClock(nowEpochMs = now, offline = network.isOfflineLike, extras = extras, limitedBy = holdState.reason)
     // What the list builder needs is read here, in composition, once. A list builder that reads state
     // itself is run again whenever that state changes, also in the middle of a layout pass, which the
@@ -336,6 +339,17 @@ internal fun DownloadsScreenContent(
             holdState.holdReason?.let { reason ->
                 item(key = "connection-hold") {
                     ConnectionHoldLine(reason = reason, onDownloadAnyway = connectionHold::downloadAnyway)
+                }
+            }
+            if (polite.yielding && holdState.holdReason == null && anyDownloading) {
+                item(key = "yielding") {
+                    Text(
+                        text = stringResource(Res.string.downloads_yielding_line),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp)
+                            .semantics { liveRegion = LiveRegionMode.Polite },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
             speedLimitBytes?.let { limit ->
@@ -1436,6 +1450,8 @@ private fun ConnectionHoldLine(reason: LimitedConnectionReason, onDownloadAnyway
 internal fun connectionHoldTitle(reason: LimitedConnectionReason): StringResource = when (reason) {
     LimitedConnectionReason.Hotspot -> Res.string.downloads_held_hotspot
     LimitedConnectionReason.LowDataMode -> Res.string.downloads_held_low_data
+    LimitedConnectionReason.SlowConnection -> Res.string.downloads_held_slow
+    LimitedConnectionReason.NetworkBlocksDownloads -> Res.string.downloads_held_blocked
 }
 
 /** The empty list: what to do to get a download, and where to start. */
