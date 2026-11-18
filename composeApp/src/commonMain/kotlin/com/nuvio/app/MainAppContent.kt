@@ -111,6 +111,8 @@ import com.nuvio.app.features.downloads.DownloadSubtitles
 import com.nuvio.app.features.downloads.DownloadsRepository
 import com.nuvio.app.features.downloads.DownloadCompanions
 import com.nuvio.app.features.downloads.DownloadRechecks
+import com.nuvio.app.features.downloads.SourceReplacements
+import com.nuvio.app.features.streams.StreamPickPurpose
 import com.nuvio.app.features.downloads.backfillWhenIdle
 import com.nuvio.app.features.home.HomeCatalogSection
 import com.nuvio.app.features.home.HomeCatalogSettingsRepository
@@ -583,6 +585,12 @@ internal fun MainAppContent(
         DownloadRechecks.app.recheckWhenIdle()
     }
 
+    // When a download is not the real video or its source stopped working, another source is looked for and downloaded.
+    LaunchedEffect(appContentGeneration) {
+        if (!ownsAppRuntime || !AppFeaturePolicy.downloadsEnabled) return@LaunchedEffect
+        SourceReplacements.watch()
+    }
+
     LaunchedEffect(networkStatusUiState.condition) {
         if (!ownsAppRuntime) return@LaunchedEffect
         val condition = networkStatusUiState.condition
@@ -1001,6 +1009,7 @@ internal fun MainAppContent(
             resumeProgressFraction: Float?,
             manualSelection: Boolean,
             startFromBeginning: Boolean,
+            pickPurpose: StreamPickPurpose = StreamPickPurpose.Play,
         ) {
             val targetResumePositionMs = if (startFromBeginning) 0L else (resumePositionMs ?: 0L)
             val targetResumeProgressFraction = if (startFromBeginning) null else resumeProgressFraction
@@ -1075,6 +1084,7 @@ internal fun MainAppContent(
                     resumeProgressFraction = targetResumeProgressFraction,
                     manualSelection = manualSelection,
                     startFromBeginning = startFromBeginning,
+                    pickPurpose = pickPurpose,
                 ),
             )
             navController.navigate(
@@ -1082,8 +1092,8 @@ internal fun MainAppContent(
             )
         }
 
-        // Opens the list of sources of the title of a failed download, where a download button sits
-        // beside every source. Picking one replaces the failed entry.
+        // Opens the list of sources of the title of a download that needs another source, in download
+        // mode: a tap on a source downloads it in place of that download, and nothing plays.
         fun chooseAnotherSourceForDownload(item: DownloadItem) {
             launchPlaybackWithDownloadPreference(
                 type = item.contentType,
@@ -1103,6 +1113,7 @@ internal fun MainAppContent(
                 resumeProgressFraction = null,
                 manualSelection = true,
                 startFromBeginning = true,
+                pickPurpose = StreamPickPurpose.Download,
             )
         }
 
