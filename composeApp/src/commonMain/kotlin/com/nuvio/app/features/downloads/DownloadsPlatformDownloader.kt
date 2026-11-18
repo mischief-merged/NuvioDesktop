@@ -16,6 +16,10 @@ internal data class DownloadPlatformRequest(
      * the partial file is kept as it is and the transfer ends as paused.
      */
     val mayPublish: () -> Boolean = { true },
+    /** Records and flushes the actual final address before the partial name is removed. */
+    val onPublished: (localFileUri: String, sizeBytes: Long) -> Boolean = { _, _ -> true },
+    /** Releases the publishing wait even if platform work ends before it can report a result. */
+    val onFinished: () -> Unit = {},
 ) {
     val sourceUrl: String get() = item.sourceUrl
     val sourceHeaders: Map<String, String> get() = item.sourceHeaders
