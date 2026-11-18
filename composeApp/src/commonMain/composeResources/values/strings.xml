@@ -3250,4 +3250,6 @@
     <string name="downloads_held_detail">They carry on by themselves when the connection is better.</string>
     <string name="downloads_held_download_anyway">Download anyway</string>
     <string name="downloads_held_download_anyway_description">Download anyway on this network until it changes or the app is closed</string>
+    <string name="profile_pin_storage_unavailable">Your PIN could not be checked. Please try again.</string>
+    <string name="secure_storage_unavailable">Saved credentials are unavailable. Unlock your Mac’s Keychain and allow access, then try again.</string>
 </resources>
