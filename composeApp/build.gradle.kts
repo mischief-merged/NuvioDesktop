@@ -242,6 +242,24 @@ abstract class GenerateRuntimeConfigsTask : DefaultTask() {
                 """.trimMargin()
             )
         }
+
+        val rawUpdateFeed = props.getProperty("NUVIOROID_UPDATE_FEED", "").trim()
+        val escapedUpdateFeed = rawUpdateFeed
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("$", "\\$")
+        outDir.resolve("com/nuvio/app/features/updater").apply {
+            mkdirs()
+            resolve("NuvioRoidUpdateConfig.kt").writeText(
+                """
+                |package com.nuvio.app.features.updater
+                |
+                |object NuvioRoidUpdateConfig {
+                |    const val FEED_LOCATION = "$escapedUpdateFeed"
+                |}
+                """.trimMargin()
+            )
+        }
     }
 }
 
@@ -478,6 +496,12 @@ val desktopReleaseVersionCode = (
     ?.toIntOrNull()
     ?: 1
 val desktopReleasePackageVersion = jpackageCompatibleVersion(desktopReleaseVersionName)
+val nuvioRoidForkBuild = project.file("src/commonMain/kotlin/com/nuvio/app/features/settings/ForkAttribution.kt")
+    .takeIf(File::exists)
+    ?.readText()
+    ?.let { text -> Regex("""const val BUILD\s*=\s*(\d+)""").find(text)?.groupValues?.get(1)?.toIntOrNull() }
+    ?: 1
+val nuvioRoidForkVersion = "${desktopReleaseVersionName.substringBefore('-')}.$nuvioRoidForkBuild"
 val windowsMsiUpgradeUuid = "395990ee-9b8a-3548-922c-e7a23a495b8d"
 val iosDistribution = (
     providers.gradleProperty("nuvio.ios.distribution").orNull
@@ -1307,6 +1331,8 @@ compose.desktop {
                 iconFile.set(project.file("src/desktopMain/resources/icons/nuvioroid.icns"))
                 infoPlist {
                     extraKeysRawXml = """
+                        <key>NuvioRoidVersion</key>
+                        <string>$nuvioRoidForkVersion</string>
                         <key>CFBundleURLTypes</key>
                         <array>
                             <dict>

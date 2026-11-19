@@ -178,6 +178,7 @@ import com.nuvio.app.features.tracking.TrackingProviderId
 import com.nuvio.app.features.tracking.toggleTrackingLibraryMembership
 import com.nuvio.app.features.updater.AppUpdaterHost
 import com.nuvio.app.features.updater.AppUpdaterPlatform
+import com.nuvio.app.features.updater.LocalAppUpdaterController
 import com.nuvio.app.features.updater.rememberAppUpdaterController
 import com.nuvio.app.features.watched.WatchedRepository
 import com.nuvio.app.features.watching.application.WatchingActions
@@ -1384,10 +1385,13 @@ internal fun MainAppContent(
             }
         }
 
+        val appUpdaterUiState by appUpdaterController.uiState.collectAsStateWithLifecycle()
         AppUpdaterHost(
             controller = appUpdaterController,
             modifier = Modifier.fillMaxSize(),
+            canShowWhatsNew = rootContentReady && currentRoute !is PlayerRoute,
         ) {
+            CompositionLocalProvider(LocalAppUpdaterController provides appUpdaterController) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -1568,7 +1572,9 @@ internal fun MainAppContent(
                                 onLicensesAttributionsSettingsClick = {
                                     navController.navigate(LicensesAttributionsSettingsRoute(licensesSettingsTitle))
                                 },
-                                onCheckForUpdatesClick = if (AppFeaturePolicy.inAppUpdaterEnabled) {
+                                onCheckForUpdatesClick = if (
+                                    AppFeaturePolicy.inAppUpdaterEnabled && AppUpdaterPlatform.isSupported
+                                ) {
                                     {
                                         appUpdaterController.checkForUpdates(
                                             force = true,
@@ -1757,7 +1763,9 @@ internal fun MainAppContent(
                         navController = navController,
                         useNativeNavigation = useNativeNavigation,
                         collectionsTitle = collectionsTitle,
-                        onCheckForUpdates = if (AppFeaturePolicy.inAppUpdaterEnabled) {
+                        onCheckForUpdates = if (
+                            AppFeaturePolicy.inAppUpdaterEnabled && AppUpdaterPlatform.isSupported
+                        ) {
                             { appUpdaterController.checkForUpdates(force = true, showNoUpdateFeedback = true) }
                         } else null,
                         onTestUpdateBanner = if (
@@ -2291,7 +2299,8 @@ internal fun MainAppContent(
                         !profileSwitchLoading &&
                         currentRoute is TabsRoute &&
                         pendingDeepLink == null &&
-                        resumePromptItem == null,
+                        resumePromptItem == null &&
+                        !appUpdaterUiState.showWhatsNew,
                     playMode = playerSettingsUiState.streamAutoPlayMode,
                     onPlayModeChange = PlayerSettingsRepository::setStreamAutoPlayMode,
                     playbackAudioLanguage = playerSettingsUiState.preferredAudioLanguage,
@@ -2304,6 +2313,7 @@ internal fun MainAppContent(
                     .zIndex(20f),
             )
 
+            }
             }
         }
 }

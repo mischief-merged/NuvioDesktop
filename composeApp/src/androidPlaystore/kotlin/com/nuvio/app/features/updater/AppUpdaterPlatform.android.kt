@@ -10,6 +10,7 @@ actual object AppUpdaterPlatform {
     actual val isSupported: Boolean = false
     actual val isDebugBuild: Boolean = false
     actual val hasSingleUpdateChannel: Boolean = false
+    actual val usesForkUpdateFeed: Boolean = false
 
     actual val releaseSource: AppUpdateReleaseSource = AppUpdateReleaseSource(
         owner = "NuvioMedia",
@@ -24,17 +25,41 @@ actual object AppUpdaterPlatform {
 
     actual val currentVersionName: String = AppVersionConfig.VERSION_NAME
 
+    actual val currentBuildNumber: Int = AppVersionConfig.VERSION_CODE
+
     actual fun getSupportedAbis(): List<String> = emptyList()
+
+    actual fun currentHostArch(): String = ""
 
     actual fun getIgnoredTag(): String? = null
 
     actual fun setIgnoredTag(tag: String?) = Unit
+
+    actual fun getAutoDailyCheckEnabled(): Boolean = false
+
+    actual fun setAutoDailyCheckEnabled(enabled: Boolean) = Unit
+
+    actual fun getLastCheckEpochMs(): Long? = null
+
+    actual fun setLastCheckEpochMs(epochMs: Long) = Unit
+
+    actual fun getLastWhatsNewVersion(): String? = null
+
+    actual fun setLastWhatsNewVersion(version: String?) = Unit
+
+    actual fun nowEpochMs(): Long = System.currentTimeMillis()
+
+    actual suspend fun readLocalFeedText(location: String): Result<String> =
+        Result.failure(IllegalStateException(getString(Res.string.updates_not_available)))
 
     actual suspend fun downloadUpdateAsset(
         assetUrl: String,
         assetName: String,
         onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
     ): Result<String> = Result.failure(IllegalStateException(getString(Res.string.updates_not_available)))
+
+    actual suspend fun verifyDownloadedUpdate(path: String, expectedSha256: String?): Result<Unit> =
+        Result.failure(IllegalStateException(getString(Res.string.updates_not_available)))
 
     actual fun getUpdateChannel(): String? = null
 
@@ -48,4 +73,12 @@ actual object AppUpdaterPlatform {
 
     actual fun installDownloadedUpdate(path: String): Result<Unit> =
         Result.failure(IllegalStateException(runBlocking { getString(Res.string.updates_not_available) }))
+
+    actual suspend fun installVerifiedUpdate(
+        path: String,
+        expectedSha256: String?,
+        expectedVersion: String?,
+        ensureCanCommitInstall: () -> Unit,
+    ): Result<Unit> =
+        Result.failure(IllegalStateException(getString(Res.string.updates_not_available)))
 }

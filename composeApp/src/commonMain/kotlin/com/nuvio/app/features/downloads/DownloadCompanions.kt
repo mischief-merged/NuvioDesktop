@@ -12,6 +12,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -118,23 +121,55 @@ internal class DownloadCompanions(
     private val lock = SynchronizedObject()
     private val failedAt = mutableMapOf<String, Long>()
     private var backfillRunning = false
+    private var activePostDownloadSaves = 0
+    private var activeEnsureCount = 0
+    private val _hasActiveSaves = MutableStateFlow(false)
+    val hasActiveSaves: StateFlow<Boolean> = _hasActiveSaves.asStateFlow()
 
     /** Starts saving what a download that just finished lacks. Returns at once. */
-    fun saveAfterDownload(item: DownloadItem, localVideoUri: String): Job =
-        scope.launch { ensure(item, localVideoUri) }
+    fun saveAfterDownload(item: DownloadItem, localVideoUri: String): Job {
+        synchronized(lock) {
+            activePostDownloadSaves += 1
+            _hasActiveSaves.value = true
+        }
+        return scope.launch {
+            ensure(item, localVideoUri)
+        }.also { job ->
+            // Completion also runs when cancellation prevents the coroutine body from starting.
+            job.invokeOnCompletion {
+                synchronized(lock) {
+                    activePostDownloadSaves = (activePostDownloadSaves - 1).coerceAtLeast(0)
+                    _hasActiveSaves.value = activePostDownloadSaves > 0 || activeEnsureCount > 0
+                }
+            }
+        }
+    }
 
     /** Saves what this video lacks, one kind after another. Does nothing offline. Returns the outcome of each that was due. */
-    suspend fun ensure(item: DownloadItem, localVideoUri: String): Map<String, CompanionOutcome> = withContext(io) {
-        if (!isOnline()) return@withContext emptyMap()
-        val outcomes = linkedMapOf<String, CompanionOutcome>()
-        for (companion in companions) {
-            if (!isOnline()) break
-            if (!companion.isDue(item, localVideoUri)) continue
-            outcomes[companion.name] = runCatching { companion.run(item, localVideoUri) }
-                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
-                .getOrDefault(CompanionOutcome.Failed)
+    suspend fun ensure(item: DownloadItem, localVideoUri: String): Map<String, CompanionOutcome> {
+        synchronized(lock) {
+            activeEnsureCount += 1
+            _hasActiveSaves.value = true
         }
-        outcomes
+        return try {
+            withContext(io) {
+                if (!isOnline()) return@withContext emptyMap()
+                val outcomes = linkedMapOf<String, CompanionOutcome>()
+                for (companion in companions) {
+                    if (!isOnline()) break
+                    if (!companion.isDue(item, localVideoUri)) continue
+                    outcomes[companion.name] = runCatching { companion.run(item, localVideoUri) }
+                        .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+                        .getOrDefault(CompanionOutcome.Failed)
+                }
+                outcomes
+            }
+        } finally {
+            synchronized(lock) {
+                activeEnsureCount = (activeEnsureCount - 1).coerceAtLeast(0)
+                _hasActiveSaves.value = activePostDownloadSaves > 0 || activeEnsureCount > 0
+            }
+        }
     }
 
     /**

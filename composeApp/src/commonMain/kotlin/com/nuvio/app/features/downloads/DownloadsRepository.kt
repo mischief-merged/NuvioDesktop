@@ -98,6 +98,15 @@ object DownloadsRepository {
     /** Runs [block] inside the state lock. Tests only: proves what must not need it. */
     internal fun holdStateLockForTest(block: () -> Unit) = synchronized(stateLock) { block() }
 
+    /** Whether any download is currently transferring, checking, or finishing its file or companions. */
+    fun hasActiveOrFinishingDownloads(): Boolean = synchronized(stateLock) {
+        activeTransfers.isNotEmpty() ||
+            _uiState.value.items.any { it.status == DownloadStatus.Downloading } ||
+            companions().hasActiveSaves.value
+    }
+
+    internal fun activeCompanionSavesFlow(): StateFlow<Boolean> = companions().hasActiveSaves
+
     fun ensureLoaded(): Unit = synchronized(stateLock) {
         if (hasLoaded) return
         loadFromDisk()

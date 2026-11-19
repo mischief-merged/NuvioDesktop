@@ -197,6 +197,11 @@ internal enum class SettingsPage(
         category = SettingsCategory.System,
         parentPage = Root,
     ),
+    ReleaseNotes(
+        titleRes = Res.string.updates_release_notes,
+        category = SettingsCategory.System,
+        parentPage = Root,
+    ),
     ContinueWatching(
         titleRes = Res.string.compose_settings_page_continue_watching,
         category = SettingsCategory.Look,
@@ -295,6 +300,7 @@ internal val SettingsPage.icon: ImageVector
         SettingsPage.Streams -> Icons.AutoMirrored.Filled.ViewList
         SettingsPage.Advanced -> Icons.Default.Build
         SettingsPage.Notifications -> Icons.Rounded.Notifications
+        SettingsPage.ReleaseNotes -> Icons.Default.Description
         SettingsPage.ContinueWatching -> Icons.Default.History
         SettingsPage.PosterCustomization -> Icons.Default.RoundedCorner
         SettingsPage.ContentDiscovery -> Icons.Default.Explore

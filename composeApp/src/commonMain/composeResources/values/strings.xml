@@ -2771,6 +2771,38 @@
     <string name="updates_channel_all_releases_description">Every published release, including previews.</string>
     <string name="updates_waiting_for_stable">You’ll receive the next stable release when it becomes available</string>
     <string name="updates_release_missing_title">Release has no tag or name</string>
+    <string name="updates_section_title">Updates</string>
+    <string name="updates_auto_daily_check_title">Check for updates automatically</string>
+    <string name="updates_auto_daily_check_description">Check once a day for new NuvioRoid releases.</string>
+    <string name="updates_action_restart_to_update">Restart to update</string>
+    <string name="updates_verifying_download">Verifying update…</string>
+    <string name="updates_installing">Installing update…</string>
+    <string name="updates_waiting_for_playback_and_downloads">Update ready — waiting until playback and downloads finish.</string>
+    <string name="updates_waiting_for_playback">Update ready — waiting until the video stops.</string>
+    <string name="updates_waiting_for_downloads">Update ready — waiting until downloads finish.</string>
+    <string name="updates_ready_to_restart">Update ready — restart when you’re ready.</string>
+    <string name="updates_channel_public">Public (GitHub Releases)</string>
+    <string name="updates_channel_private">Private (%1$s)</string>
+    <string name="updates_last_checked_never">Last checked: never</string>
+    <string name="updates_last_checked_just_now">Last checked: just now</string>
+    <string name="updates_last_checked_at">Last checked: %1$s</string>
+    <string name="updates_settings_summary">Version %1$s (build %2$d) • %3$s\n%4$s</string>
+    <string name="updates_settings_checking">Checking…</string>
+    <string name="updates_settings_update_available">Update %1$s available</string>
+    <string name="updates_settings_up_to_date">Up to date</string>
+    <string name="updates_quarantine_hint">This build isn’t signed with an Apple developer certificate. If macOS blocks opening it, open NuvioRoid from Applications once, then choose Open Anyway in System Settings &gt; Privacy &amp; Security.</string>
+    <string name="updates_details_title">Update details</string>
+    <string name="updates_details_version_range">Updating from %1$s to %2$s</string>
+    <string name="updates_details_channel_label">Channel: %1$s</string>
+    <string name="updates_details_size_label">Size: %1$s</string>
+    <string name="updates_channel_short_public">Public</string>
+    <string name="updates_channel_short_private">Private</string>
+    <string name="updates_whats_new_title">What&apos;s new in NuvioRoid %1$s</string>
+    <string name="updates_whats_new_subtitle">Here is what changed in this update.</string>
+    <string name="updates_whats_new_dismiss">Got it</string>
+    <string name="updates_release_notes_description">View the full offline history of NuvioRoid versions.</string>
+    <string name="updates_release_notes_current_badge">Installed</string>
+    <string name="updates_release_notes_version_header">NuvioRoid %1$s</string>
     <!-- Continue Watching air date display -->
     <string name="cw_airs_date">Airs %1$s</string>
     <string name="cw_airs_today">Airs today</string>
@@ -3240,4 +3272,7 @@
     <string name="downloads_held_detail">They carry on by themselves when you're back on a regular connection.</string>
     <string name="downloads_held_download_anyway">Download anyway</string>
     <string name="downloads_held_download_anyway_description">Download anyway on this network until it changes or the app is closed</string>
+    <string name="updates_secure_feed_required">Online update feeds and their redirects must use HTTPS. Use a local manifest file for a private server without HTTPS.</string>
+    <string name="updates_staged_bytes_changed">The update files changed while being prepared, so the update stopped. Download the update again.</string>
+    <string name="updates_payload_build_missing">This app package is missing its full version and build number, so it was not installed.</string>
 </resources>

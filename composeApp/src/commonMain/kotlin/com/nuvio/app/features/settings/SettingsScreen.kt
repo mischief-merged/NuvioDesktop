@@ -122,6 +122,7 @@ private fun SettingsPage.isEnabledByPolicy(): Boolean =
         SettingsPage.PlaybackP2p -> P2pSettingsRepository.isVisible
         SettingsPage.PlaybackBuffer -> !isIos && !isDesktop
         SettingsPage.Notifications -> AppFeaturePolicy.notificationsEnabled
+        SettingsPage.ReleaseNotes -> com.nuvio.app.features.updater.AppUpdaterPlatform.usesForkUpdateFeed
         else -> true
     }
 
@@ -656,6 +657,7 @@ private fun MobileSettingsScreen(
                             onSwitchProfileClick = onSwitchProfile,
                             onWatchPartyClick = watchPartyRowClick,
                             showNotificationsEntry = AppFeaturePolicy.notificationsEnabled,
+                            onCheckForUpdatesClick = onCheckForUpdatesClick,
                         )
                     }
                 }
@@ -731,6 +733,9 @@ private fun MobileSettingsScreen(
                 SettingsPage.Notifications -> notificationsSettingsContent(
                     isTablet = false,
                     uiState = episodeReleaseNotificationsUiState,
+                )
+                SettingsPage.ReleaseNotes -> releaseNotesSettingsContent(
+                    isTablet = false,
                 )
                 SettingsPage.ContinueWatching -> continueWatchingSettingsContent(
                     isTablet = false,
@@ -1069,6 +1074,7 @@ private fun TabletSettingsScreen(
                                     onWatchPartyClick = watchPartyRowClick,
                                     showNotificationsEntry = AppFeaturePolicy.notificationsEnabled,
                                     category = activeCategory,
+                                    onCheckForUpdatesClick = onCheckForUpdatesClick,
                                 )
                             }
                         }
@@ -1144,6 +1150,9 @@ private fun TabletSettingsScreen(
                         SettingsPage.Notifications -> notificationsSettingsContent(
                             isTablet = true,
                             uiState = episodeReleaseNotificationsUiState,
+                        )
+                        SettingsPage.ReleaseNotes -> releaseNotesSettingsContent(
+                            isTablet = true,
                         )
                         SettingsPage.ContinueWatching -> continueWatchingSettingsContent(
                             isTablet = true,

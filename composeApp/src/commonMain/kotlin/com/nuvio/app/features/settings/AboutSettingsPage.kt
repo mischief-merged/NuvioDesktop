@@ -15,6 +15,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.nuvio.app.core.build.AppVersionPolicy
+import com.nuvio.app.features.updater.AppUpdaterPlatform
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.about_licenses_attributions_subtitle
 import nuvio.composeapp.generated.resources.about_supporters_contributors_subtitle
@@ -74,7 +75,7 @@ internal fun LazyListScope.aboutSettingsContent(
                     isTablet = isTablet,
                     onClick = onLicensesAttributionsClick,
                 )
-                if (onCheckForUpdatesClick != null) {
+                if (onCheckForUpdatesClick != null && !AppUpdaterPlatform.usesForkUpdateFeed) {
                     SettingsGroupDivider(isTablet = isTablet)
                     UpdateChannelSettingsRow(isTablet = isTablet)
                     SettingsGroupDivider(isTablet = isTablet)

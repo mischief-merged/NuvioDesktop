@@ -357,6 +357,15 @@ internal fun settingsSearchEntries(
             target = SettingsSearchTarget.CheckForUpdates,
         )
     }
+    if (com.nuvio.app.features.updater.AppUpdaterPlatform.usesForkUpdateFeed) {
+        addPage(
+            page = SettingsPage.ReleaseNotes,
+            key = "release-notes",
+            title = pageTitles.getValue(SettingsPage.ReleaseNotes),
+            description = stringResource(Res.string.updates_release_notes_description),
+            category = aboutCategory,
+        )
+    }
 
     addRow(
         page = SettingsPage.Account,
