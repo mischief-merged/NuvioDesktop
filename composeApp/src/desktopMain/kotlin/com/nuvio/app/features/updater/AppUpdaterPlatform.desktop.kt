@@ -1,7 +1,7 @@
 package com.nuvio.app.features.updater
 
-import com.nuvio.app.core.build.AppVersionConfig
 import com.nuvio.app.core.storage.DesktopStorage
+import com.nuvio.app.features.settings.ForkIdentity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -17,16 +17,21 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Path
+import java.nio.file.Paths
 import java.time.Duration
 import java.util.Locale
 import java.util.concurrent.TimeUnit
-import kotlin.concurrent.thread
-import kotlin.io.path.createDirectories
-import kotlin.system.exitProcess
+import kotlin.io.path.exists
 
 private const val desktopUpdaterPreferencesName = "nuvio_updater"
 private const val ignoredTagKey = "ignored_release_tag"
 private const val updateChannelKey = "update_channel"
+private const val autoDailyCheckKey = "auto_daily_check_enabled"
+private const val lastCheckEpochMsKey = "last_check_epoch_ms"
+private const val lastWhatsNewVersionKey = "last_seen_whats_new_version"
 
 private val desktopUpdaterHttpClient: HttpClient = HttpClient.newBuilder()
     .connectTimeout(Duration.ofSeconds(60))
@@ -38,34 +43,40 @@ actual object AppUpdaterPlatform {
     private val store = DesktopStorage.store(desktopUpdaterPreferencesName)
     actual val isDebugBuild: Boolean = false
     actual val hasSingleUpdateChannel: Boolean = true
+    actual val usesForkUpdateFeed: Boolean = true
 
-    // Linux ships four package formats and the running app is the only place
-    // that can tell which one it was installed from, so the format is resolved
-    // once and then drives both the asset choice and the install command.
     private val linuxInstallMethod: LinuxInstallMethod by lazy {
         if (currentOs == DesktopUpdaterOs.LINUX) detectLinuxInstallMethod() else LinuxInstallMethod.UNKNOWN
     }
 
-    // A Flatpak cannot install anything for itself: the sandbox has no write
-    // access to /app and the manifest grants no talk-name for the host Flatpak
-    // service, so the update belongs to the user's store, not to this dialog.
     actual val isSupported: Boolean
-        get() = currentOs != DesktopUpdaterOs.UNKNOWN && linuxInstallMethod != LinuxInstallMethod.FLATPAK
+        get() = currentOs == DesktopUpdaterOs.MACOS
 
     actual val releaseSource: AppUpdateReleaseSource = AppUpdateReleaseSource(
-        owner = "NuvioMedia",
-        repo = "NuvioDesktop",
+        owner = UpdateFeedSelector.PUBLIC_OWNER,
+        repo = UpdateFeedSelector.PUBLIC_REPO,
         channelBranch = null,
         includePrereleases = true,
-        userAgent = "NuvioDesktop",
+        userAgent = "NuvioRoid",
     )
 
     actual val assetSelector: AppUpdateAssetSelector
         get() = currentOs.assetSelector(linuxInstallMethod)
 
-    actual val currentVersionName: String = AppVersionConfig.DESKTOP_VERSION_NAME
+    actual val currentVersionName: String = NuvioRoidVersion.fromForkIdentity().format()
+
+    actual val currentBuildNumber: Int = ForkIdentity.BUILD
 
     actual fun getSupportedAbis(): List<String> = emptyList()
+
+    actual fun currentHostArch(): String {
+        val arch = System.getProperty("os.arch").orEmpty().lowercase(Locale.ROOT)
+        return when {
+            arch == "aarch64" || arch == "arm64" -> "arm64"
+            arch.contains("64") -> "x86_64"
+            else -> arch
+        }
+    }
 
     actual fun getIgnoredTag(): String? = store.getString(ignoredTagKey)
 
@@ -79,8 +90,47 @@ actual object AppUpdaterPlatform {
         store.putString(updateChannelKey, channel)
     }
 
+    actual fun getAutoDailyCheckEnabled(): Boolean =
+        store.getBoolean(autoDailyCheckKey) ?: true
+
+    actual fun setAutoDailyCheckEnabled(enabled: Boolean) {
+        store.putBoolean(autoDailyCheckKey, enabled)
+    }
+
+    actual fun getLastCheckEpochMs(): Long? =
+        store.getString(lastCheckEpochMsKey)?.toLongOrNull()?.takeIf { it > 0L }
+
+    actual fun setLastCheckEpochMs(epochMs: Long) {
+        store.putString(lastCheckEpochMsKey, epochMs.toString())
+    }
+
+    actual fun getLastWhatsNewVersion(): String? = store.getString(lastWhatsNewVersionKey)
+
+    actual fun setLastWhatsNewVersion(version: String?) {
+        store.putString(lastWhatsNewVersionKey, version)
+    }
+
+    actual fun nowEpochMs(): Long = System.currentTimeMillis()
+
     actual fun deleteDownloadedUpdate(path: String) {
-        File(path).delete()
+        val tempRoot = MacOsUpdateInstaller.tempUpdatesDir().toAbsolutePath().normalize()
+        if (Files.isSymbolicLink(tempRoot) || !Files.isDirectory(tempRoot, LinkOption.NOFOLLOW_LINKS)) return
+        val realRoot = runCatching { tempRoot.toRealPath() }.getOrNull() ?: return
+        val target = runCatching { Path.of(path).toAbsolutePath().normalize() }.getOrNull() ?: return
+        if (!target.startsWith(tempRoot) || target == tempRoot) return
+        val realParent = runCatching { target.parent?.toRealPath() }.getOrNull() ?: return
+        if (!realParent.startsWith(realRoot)) return
+        runCatching { MacOsUpdateInstaller.deletePathWithoutFollowingSymlinks(target) }
+    }
+
+    actual suspend fun readLocalFeedText(location: String): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val path = resolveLocalPath(location)
+            require(Files.isRegularFile(path)) {
+                "Update manifest file was not found at $location"
+            }
+            Files.readString(path, Charsets.UTF_8)
+        }
     }
 
     actual suspend fun downloadUpdateAsset(
@@ -89,13 +139,31 @@ actual object AppUpdaterPlatform {
         onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
     ): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
-            clearDir(updatesDir())
+            val tempDir = MacOsUpdateInstaller.tempUpdatesDir()
+            MacOsUpdateInstaller.clearTempUpdatesDir(tempDir)
+            val normalizedTempDir = tempDir.toAbsolutePath().normalize()
             val safeName = assetName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
-            val destination = File(updatesDir(), safeName)
-            val tempFile = File(updatesDir(), "$safeName.part")
+            val destinationPath = normalizedTempDir.resolve(safeName).normalize()
+            require(
+                safeName.isNotBlank() &&
+                    safeName != "." &&
+                    safeName != ".." &&
+                    destinationPath.parent == normalizedTempDir,
+            ) { "Invalid update file name: $assetName" }
+            val destination = destinationPath.toFile()
 
+            if (!PrivateManifestUpdateFeed.isHttpLocation(assetUrl)) {
+                return@runCatching stageLocalAsset(
+                    source = resolveLocalPath(assetUrl),
+                    destination = destination,
+                    onProgress = onProgress,
+                )
+            }
+
+            val tempFile = tempDir.resolve("$safeName.part").toFile()
             val request = HttpRequest.newBuilder()
                 .uri(URI(assetUrl))
+                .header("User-Agent", "NuvioRoid")
                 .GET()
                 .build()
             val response = desktopUpdaterHttpClient.send(request, HttpResponse.BodyHandlers.ofInputStream())
@@ -138,49 +206,94 @@ actual object AppUpdaterPlatform {
         }
     }
 
-    actual fun canInstallDownloadedUpdate(): Boolean = true
+    actual suspend fun verifyDownloadedUpdate(path: String, expectedSha256: String?): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                when (val result = MacOsUpdateInstaller.verifyFileSha256(Path.of(path), expectedSha256)) {
+                    is Sha256VerificationResult.Verified -> Unit
+                    is Sha256VerificationResult.Refused -> error(result.message)
+                }
+            }
+        }
+
+    actual fun canInstallDownloadedUpdate(): Boolean = currentOs == DesktopUpdaterOs.MACOS
 
     actual fun openInstallPermissionSettings() = Unit
 
-    actual fun installDownloadedUpdate(path: String): Result<Unit> = runCatching {
-        val updateFile = File(path)
-        check(updateFile.exists()) { runBlocking { getString(Res.string.updates_downloaded_file_missing) } }
-
-        launchInstaller(updateFile)
-        scheduleAppExit()
+    actual fun installDownloadedUpdate(path: String): Result<Unit> = runBlocking {
+        installVerifiedUpdate(path, expectedSha256 = null)
     }
 
-    private fun updatesDir(): File =
-        File(DesktopStorage.rootDir.resolve("updates").also { it.createDirectories() }.toUri())
-
-    private fun clearDir(dirPath: File) {
-        if (dirPath.exists() and dirPath.isDirectory) {
-            dirPath.listFiles()?.forEach { file ->
-                file.deleteRecursively()
+    actual suspend fun installVerifiedUpdate(
+        path: String,
+        expectedSha256: String?,
+        expectedVersion: String?,
+        ensureCanCommitInstall: () -> Unit,
+    ): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            if (currentOs != DesktopUpdaterOs.MACOS) {
+                return@withContext Result.failure(
+                    IllegalStateException("In-app updates are only supported on macOS."),
+                )
             }
-        }
-    }
-
-    private fun launchInstaller(updateFile: File) {
-        val command = when (currentOs) {
-            DesktopUpdaterOs.WINDOWS -> windowsInstallerCommand(updateFile)
-            DesktopUpdaterOs.MACOS -> listOf("open", updateFile.absolutePath)
-            DesktopUpdaterOs.LINUX -> linuxInstallerCommand(
-                method = linuxInstallMethod,
-                updateFile = updateFile,
-                appImagePath = System.getenv(appImageEnvName),
-                currentPid = ProcessHandle.current().pid(),
+            MacOsUpdateInstaller.installVerifiedArtifact(
+                stagedArtifact = Path.of(path),
+                expectedSha256 = expectedSha256,
+                expectedVersion = expectedVersion?.let { NuvioRoidVersion.parse(it) },
+                canCommitInstall = {
+                    ensureCanCommitInstall()
+                    null
+                },
             )
-            DesktopUpdaterOs.UNKNOWN -> error("Desktop updates are not supported on this operating system.")
         }
-        ProcessBuilder(command).start()
+
+    private fun stageLocalAsset(
+        source: Path,
+        destination: File,
+        onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
+    ): String {
+        check(source.exists()) { runBlocking { getString(Res.string.updates_downloaded_file_missing) } }
+        if (Files.isDirectory(source, LinkOption.NOFOLLOW_LINKS) || Files.isDirectory(source)) {
+            error(
+                "Uncompressed app folders can't be verified with a SHA-256 code. " +
+                    "Package the update as a .dmg file with a sha256 checksum instead.",
+            )
+        }
+        val totalBytes = runCatching { Files.size(source) }.getOrNull()?.takeIf { it > 0L }
+        val tempFile = File(destination.parentFile, "${destination.name}.part")
+        var copiedBytes = 0L
+        try {
+            Files.newInputStream(source).use { input ->
+                FileOutputStream(tempFile).use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read <= 0) break
+                        output.write(buffer, 0, read)
+                        copiedBytes += read.toLong()
+                        onProgress(copiedBytes, totalBytes)
+                    }
+                    output.flush()
+                }
+            }
+            if (!tempFile.renameTo(destination)) {
+                tempFile.copyTo(destination, overwrite = true)
+                tempFile.delete()
+            }
+            return destination.absolutePath
+        } catch (t: Throwable) {
+            if (tempFile.exists()) tempFile.delete()
+            throw t
+        }
     }
 
-    private fun scheduleAppExit() {
-        thread(name = "nuvio-updater-exit", isDaemon = true) {
-            Thread.sleep(500)
-            exitProcess(0)
-        }
+    private fun resolveLocalPath(location: String): Path {
+        val trimmed = location.trim()
+        return when {
+            trimmed.startsWith("file://", ignoreCase = true) -> Paths.get(URI(trimmed))
+            trimmed.startsWith("~/") -> Path.of(System.getProperty("user.home"), trimmed.substring(2))
+            else -> Path.of(trimmed)
+        }.toAbsolutePath().normalize()
     }
 }
 
@@ -199,7 +312,7 @@ private enum class DesktopUpdaterOs {
                 fallbackNameFragments = listOf("universal", "all"),
             )
             MACOS -> AppUpdateAssetSelector(
-                fileExtensions = listOf(".dmg", ".pkg"),
+                fileExtensions = listOf(".dmg"),
                 preferredNameFragments = archFragments + listOf("macos", "mac", "darwin"),
                 fallbackNameFragments = listOf("universal", "all"),
             )
@@ -259,9 +372,6 @@ private const val javaExecutableName = "java"
 private const val packageQueryTimeoutSeconds = 3L
 private const val appImageExitWaitTicks = 100
 
-// A release carries every Linux format at once, so the extension list has to be
-// the one the running install can actually consume. An unresolved install keeps
-// the previous list, leaving source and tarball builds no worse off than before.
 internal fun linuxUpdateFileExtensions(method: LinuxInstallMethod): List<String> = when (method) {
     LinuxInstallMethod.APP_IMAGE -> listOf(".AppImage")
     LinuxInstallMethod.RPM -> listOf(".rpm")
@@ -306,11 +416,6 @@ private fun linuxLauncherPath(): String? = linuxLauncherPathFrom(
     processCommand = ProcessHandle.current().info().command().orElse(null),
 )
 
-// jpackage records the launcher it started, which is the only path that belongs
-// to this app's package. Without it the process command is the JVM itself, and
-// the JVM belongs to the distribution's own java package -- asking rpm or dpkg
-// who owns that would report a packaged install that is not Nuvio, so a source
-// or tarball run is left unresolved instead.
 internal fun linuxLauncherPathFrom(
     jpackageAppPath: String?,
     processCommand: String?,
@@ -345,11 +450,6 @@ internal fun linuxInstallerCommand(
     return listOf("xdg-open", updateFile.absolutePath)
 }
 
-// An AppImage has no installer: updating one means replacing the file that is
-// running. The copy waits for this process to exit first, both because the
-// running image is still mounted from that file and because a half-written one
-// would leave nothing to start. When the image sits somewhere this user cannot
-// write, the download is handed to the desktop rather than failing in silence.
 internal fun appImageReplaceScript(
     downloadedPath: String,
     appImagePath: String,
