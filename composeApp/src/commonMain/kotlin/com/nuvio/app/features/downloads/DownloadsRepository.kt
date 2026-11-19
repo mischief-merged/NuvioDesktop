@@ -49,6 +49,7 @@ object DownloadsRepository {
     // The transfer that currently owns each download. A transfer that was paused, replaced or removed
     // is no longer in this map, so whatever it reports afterwards is ignored.
     private val activeTransfers = mutableMapOf<String, ActiveTransfer>()
+    internal val rateTracker = DownloadRateTracker()
     @kotlin.concurrent.Volatile
     private var hasLoaded = false
 
@@ -103,6 +104,8 @@ object DownloadsRepository {
         loadFromDisk()
     }
 
+    internal fun selectProfileForDownloads(select: () -> Unit) = synchronized(stateLock) { select() }
+
     fun onProfileChanged() {
         loadFromDisk()
     }
@@ -114,6 +117,7 @@ object DownloadsRepository {
     fun clearLocalState(): Unit = synchronized(stateLock) {
         val transfers = activeTransfers.values.toList()
         activeTransfers.clear()
+        rateTracker.clearAll()
         transfers.forEach(ActiveTransfer::cancel)
         hasLoaded = false
         loadedProfileId = null
@@ -245,8 +249,16 @@ object DownloadsRepository {
         autoDownloadRuleKey: String? = null,
         /** The user picked this source for a title that has a finished download: it replaces that download's file. */
         userChoseReplacement: Boolean = false,
+        tripFill: Boolean = false,
+        expectedProfileId: Int? = null,
+        onlyIfAbsent: Boolean = false,
+        allowedExistingIds: Set<String> = emptySet(),
     ): DownloadEnqueueResult = synchronized(stateLock) {
         ensureLoaded()
+        if (expectedProfileId != null && (loadedProfileId != expectedProfileId ||
+                com.nuvio.app.features.profiles.ProfileRepository.activeProfileId != expectedProfileId)) {
+            return DownloadEnqueueResult.MissingUrl
+        }
 
         val sourceUrl = stream.playableDirectUrl
             ?.trim()
@@ -269,8 +281,16 @@ object DownloadsRepository {
             episodeNumber = episodeNumber,
         )
 
+        if (onlyIfAbsent && _uiState.value.items.any { item ->
+                item.logicalContentKey == logicalKey && !item.isPlaceholder && (
+                    item.id !in allowedExistingIds || item.hasTripPartial ||
+                        item.status == DownloadStatus.Downloading || item.status == DownloadStatus.Paused
+                    )
+            }) return DownloadEnqueueResult.MissingUrl
+
         var replacedExisting = false
         val currentItems = _uiState.value.items.toMutableList()
+        val destinationLocationId = backend.placementFor(currentItems, parentMetaId, seasonNumber != null && episodeNumber != null)
         // The sources this title had, and how many the app started by itself, go on with the new download.
         val history = sourceHistoryFor(currentItems.filter { it.logicalContentKey == logicalKey }, stream, userChoseReplacement)
         // What is replaced: a download that has no finished file. A finished file, marked as not the
@@ -328,7 +348,7 @@ object DownloadsRepository {
             localFileUri = null,
             fileName = fileName,
             // A show stays where its downloaded episodes are; a movie goes to the default location.
-            locationId = backend.placementFor(currentItems, parentMetaId, seasonNumber != null && episodeNumber != null),
+            locationId = destinationLocationId,
             status = DownloadStatus.Downloading,
             downloadedBytes = 0L,
             totalBytes = null,
@@ -337,6 +357,7 @@ object DownloadsRepository {
             updatedAtEpochMs = now,
             expectedVideoHash = stream.behaviorHints.videoHash.asVideoHash(),
             autoDownloadRuleKey = autoDownloadRuleKey,
+            tripFill = tripFill,
             triedSources = history.triedSources,
             autoSourceAttempts = history.autoSourceAttempts,
         )
@@ -370,6 +391,39 @@ object DownloadsRepository {
         }
     }
 
+    internal fun enqueueTripEpisode(
+        show: TripShowCandidate,
+        episode: SeasonBatchEpisode,
+        stream: StreamItem,
+        profileId: Int?,
+        allowedExistingIds: Set<String>,
+    ): String? = synchronized(stateLock) {
+        val result = enqueueFromStream(
+            show.parentMetaType, episode.videoId, show.parentMetaId, show.parentMetaType, show.title,
+            show.logo, show.poster, show.background, episode.seasonNumber, episode.episodeNumber,
+            episode.title, episode.thumbnail, stream, tripFill = true, expectedProfileId = profileId,
+            onlyIfAbsent = true, allowedExistingIds = allowedExistingIds,
+        )
+        if (result != DownloadEnqueueResult.Started && result != DownloadEnqueueResult.Replaced) return null
+        _uiState.value.items.firstOrNull { it.parentMetaId == show.parentMetaId &&
+            it.seasonNumber == episode.seasonNumber && it.episodeNumber == episode.episodeNumber }?.id
+    }
+
+    internal fun resumeTripEpisode(item: DownloadItem, profileId: Int?): Unit = synchronized(stateLock) {
+        if (loadedProfileId != profileId || com.nuvio.app.features.profiles.ProfileRepository.activeProfileId != profileId) return
+        if (_uiState.value.items.any { it.id == item.id && it.hasTripPartial }) {
+            mutateItem(item.id) { it.copy(tripFill = true) }
+            resumeDownload(item.id)
+        }
+    }
+
+    internal fun tripDestination(parentMetaId: String): TripDestination {
+        val state = DownloadFolders.controller.state.value
+        val locationId = backend.placementFor(_uiState.value.items, parentMetaId, true)
+        val location = state.location(locationId)
+        return TripDestination(location?.volumeKey ?: locationId.orEmpty(), location?.freeBytes)
+    }
+
     /**
      * The app found no working source for the title [titleKey] ([DownloadItem.logicalContentKey]): its
      * downloads with a bad source are marked, so that the app does not look again and the user is
@@ -398,6 +452,7 @@ object DownloadsRepository {
         if (item.status != DownloadStatus.Downloading) return
 
         activeTransfers.remove(downloadId)?.cancel()
+        rateTracker.clear(downloadId)
         mutateItem(downloadId) { current ->
             current.copy(
                 status = DownloadStatus.Paused,
@@ -426,6 +481,7 @@ object DownloadsRepository {
             ensureLoaded()
             val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return true
             if (item.status != DownloadStatus.Downloading) return true
+            rateTracker.clear(downloadId)
             activeTransfers.remove(downloadId).also {
                 mutateItem(downloadId) { current ->
                     current.copy(
@@ -505,6 +561,7 @@ object DownloadsRepository {
         if (!hasLoaded) return
         val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return
         activeTransfers.remove(downloadId)?.cancel()
+        rateTracker.clear(downloadId)
         val restored = backend.restoreItem(item)
         replaceItem(restored)
         persist()
@@ -523,6 +580,7 @@ object DownloadsRepository {
                 val used = fileUri?.let { usedByAnother(item, _uiState.value.items, it) } ?: false
                 if (used == null) return@withListLock
                 activeTransfers.remove(downloadId)?.cancel()
+                rateTracker.clear(downloadId)
                 // The record goes first, durably; then the file. A failure after that leaves a file, never a dangling record.
                 if (!removeRecordDurably(item)) return@withListLock
                 if (fileUri != null && !used && !backend.discardFile(fileUri)) {
@@ -586,6 +644,7 @@ object DownloadsRepository {
         if (fileUri != null) {
             val usedByAnother = usedByAnother(item, items, fileUri) ?: return DownloadDeleteResult.NotMoved
             activeTransfers.remove(downloadId)?.cancel()
+            rateTracker.clear(downloadId)
             // The record goes first, durably; then the file. A failure after that leaves a file, never a dangling record.
             if (!removeRecordDurably(item)) return DownloadDeleteResult.NotMoved
             if (!usedByAnother) {
@@ -599,6 +658,7 @@ object DownloadsRepository {
             return DownloadDeleteResult.Removed
         }
         activeTransfers.remove(downloadId)?.cancel()
+        rateTracker.clear(downloadId)
         if (!removeRecordDurably(item)) return DownloadDeleteResult.NotMoved
         backend.removePartialOf(item)
         return DownloadDeleteResult.Removed
@@ -638,6 +698,7 @@ object DownloadsRepository {
         if (decoded == null) {
             _uiState.value = DownloadsUiState(storeProblem = storeProblem)
             notifyLiveStatusPlatform()
+            if (backend === PlatformDownloadsBackend) TripFillHost.onProfileLoaded(loadedProfileId!!)
             return
         }
         loadedPayload = decoded
@@ -666,6 +727,7 @@ object DownloadsRepository {
         resumed.forEach(::startDownload)
         // Downloads that waited for a better connection when the app quit go on when it is no longer limited.
         applyConnectionHold()
+        if (backend === PlatformDownloadsBackend) TripFillHost.onProfileLoaded(loadedProfileId!!)
     }
 
     /**
@@ -681,6 +743,7 @@ object DownloadsRepository {
             .filter { activeTransfers[it.id]?.finishing != true }
             .forEach { item ->
                 activeTransfers.remove(item.id)?.cancel()
+                rateTracker.clear(item.id)
                 mutateItem(item.id) { it.waitingForConnection() }
             }
         _uiState.value.items
@@ -707,6 +770,7 @@ object DownloadsRepository {
     private fun startDownload(item: DownloadItem, attempt: Int = 1): Unit = synchronized(stateLock) {
         // On a limited connection a download waits instead of starting, and goes on when that ends.
         if (item.connectionHoldReason() != null) {
+            rateTracker.clear(item.id)
             mutateItem(item.id) { it.waitingForConnection() }
             return
         }
@@ -714,6 +778,7 @@ object DownloadsRepository {
         // Registered before the downloader is asked to start, so a report made before start returns
         // already finds this transfer.
         activeTransfers[item.id] = transfer
+        rateTracker.recordStart(item.id, item.downloadedBytes, DownloadsClock.nowEpochMs())
 
         val handle = backend.start(
             DownloadPlatformRequest(
@@ -733,6 +798,8 @@ object DownloadsRepository {
             { downloadedBytes, totalBytes ->
                 ifCurrent(item.id, transfer) {
                     if (failIfAnnouncedAsPlaceholder(item, totalBytes)) return@ifCurrent
+                    val now = DownloadsClock.nowEpochMs()
+                    rateTracker.recordProgress(item.id, downloadedBytes, now)
                     mutateItem(item.id) { current ->
                         if (current.status != DownloadStatus.Downloading) {
                             current
@@ -740,7 +807,7 @@ object DownloadsRepository {
                             current.copy(
                                 downloadedBytes = downloadedBytes.coerceAtLeast(0L),
                                 totalBytes = totalBytes?.takeIf { it > 0L },
-                                updatedAtEpochMs = DownloadsClock.nowEpochMs(),
+                                updatedAtEpochMs = now,
                                 errorMessage = null,
                             )
                         }
@@ -751,6 +818,7 @@ object DownloadsRepository {
             { message ->
                 ifCurrent(item.id, transfer) {
                     activeTransfers.remove(item.id)
+                    rateTracker.clear(item.id)
                     val current = _uiState.value.items.firstOrNull { it.id == item.id }
                     val kind = classifyDownloadFailure(message)
                     // A bad file, a refusal or a full disk comes again on every attempt.
@@ -776,6 +844,7 @@ object DownloadsRepository {
             {
                 ifCurrent(item.id, transfer) {
                     activeTransfers.remove(item.id)
+                    rateTracker.clear(item.id)
                     mutateItem(item.id) { current ->
                         if (current.status != DownloadStatus.Downloading) return@mutateItem current
                         // A transfer that could not run because its location is away or being moved
@@ -840,6 +909,7 @@ object DownloadsRepository {
 
         ifCurrent(item.id, transfer) {
             activeTransfers.remove(item.id)
+            rateTracker.clear(item.id)
             // Only the file this transfer just published, proven by its identity; anything else stays.
             if (problem != null || framesProblem != null || placeholder != null) backend.removeJustPublished(localFileUri)
             mutateItem(item.id) { current ->
@@ -896,13 +966,17 @@ object DownloadsRepository {
             else -> return false
         }
         activeTransfers.remove(item.id)?.cancel()
-        backend.removePartialOf(item)
+        rateTracker.clear(item.id)
+        if (!item.tripFill) backend.removePartialOf(item)
         mutateItem(item.id) { current ->
             if (current.status != DownloadStatus.Downloading) {
                 current
             } else {
                 current.failedAsPlaceholder(reason)
-                    .copy(totalBytes = announcedBytes, downloadedBytes = 0L)
+                    .copy(
+                        totalBytes = if (current.tripFill && current.downloadedBytes > 0L) current.totalBytes else announcedBytes,
+                        downloadedBytes = if (current.tripFill) current.downloadedBytes else 0L,
+                    )
             }
         }
         return true
@@ -1095,6 +1169,13 @@ object DownloadsRepository {
         updatedAtEpochMs = DownloadsClock.nowEpochMs(),
     )
 
+    internal fun transferBytesPerSecond(downloadId: String, nowEpochMs: Long = DownloadsClock.nowEpochMs()): Long? =
+        rateTracker.bytesPerSecond(downloadId, nowEpochMs)
+
+    internal fun autoDownloadStorageLimitBytes(): Long? = autoDownloadLimits.storageLimitBytes()
+
+    internal fun autoDownloadMinFreeBytes(): Long = autoDownloadLimits.minFreeBytes
+
     /**
      * The bytes automatic downloads take: what each has recorded as downloaded, and for a running
      * transfer the full size once the server announced it.
@@ -1102,17 +1183,17 @@ object DownloadsRepository {
     internal fun autoDownloadBytes(exceptDownloadId: String? = null): Long =
         _uiState.value.items
             // Locations that are away are not counted; nothing is ever deleted to make room because of them.
-            .filter { it.autoDownloadRuleKey != null && it.id != exceptDownloadId && backend.isConnected(it) }
+            .filter { (it.autoDownloadRuleKey != null || it.tripFill) && it.id != exceptDownloadId && backend.isConnected(it) }
             .sumOf { item ->
-                if (item.status == DownloadStatus.Downloading) {
-                    maxOf(item.totalBytes ?: 0L, item.downloadedBytes)
+                if (item.status == DownloadStatus.Downloading || (item.tripFill && item.status == DownloadStatus.Paused)) {
+                    maxOf(item.totalBytes ?: (item.expectedSizeBytes.takeIf { item.tripFill }) ?: 0L, item.downloadedBytes)
                 } else {
                     item.downloadedBytes
                 }
             }
 
     private fun autoTransferLimits(item: DownloadItem, transfer: ActiveTransfer): DownloadTransferLimits? {
-        if (item.autoDownloadRuleKey == null) return null
+        if (item.autoDownloadRuleKey == null && !item.tripFill) return null
         val limits = autoDownloadLimits
         return DownloadTransferLimits(
             maxTotalBytes = { limits.storageLimitBytes()?.let { it - autoDownloadBytes(exceptDownloadId = item.id) } },
@@ -1134,6 +1215,7 @@ object DownloadsRepository {
             onStopped = { reason ->
                 ifCurrent(item.id, transfer) {
                     activeTransfers.remove(item.id)
+                    rateTracker.clear(item.id)
                     mutateItem(item.id) { current ->
                         if (current.status != DownloadStatus.Downloading) return@mutateItem current
                         current.copy(
