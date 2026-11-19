@@ -150,6 +150,7 @@ import com.nuvio.app.features.player.PlayerLaunch
 import com.nuvio.app.features.player.PlayerLaunchStore
 import com.nuvio.app.features.player.PlayerSettingsRepository
 import com.nuvio.app.features.player.SubtitleLanguageOption
+import com.nuvio.app.features.player.SubtitleStartupCoordinator
 import com.nuvio.app.features.player.prepareExternalPlayerLaunch
 import com.nuvio.app.features.player.LockPlayerToLandscape
 import com.nuvio.app.features.player.HidePlayerSystemBars
@@ -900,38 +901,46 @@ internal fun MainAppContent(
                 ?.let(WatchProgressRepository::progressForVideo)
                 ?.takeIf { it.isResumable }
 
-            val playerLaunch = PlayerLaunch(
-                profileId = activePlaybackProfileId,
-                title = item.title,
-                sourceUrl = sourceUrl,
-                sourceHeaders = emptyMap(),
-                sourceResponseHeaders = emptyMap(),
-                externalSubtitles = DownloadSubtitles.localSubtitles(sourceUrl),
-                streamType = null,
-                logo = item.logo,
-                poster = item.poster,
-                background = item.background,
-                seasonNumber = item.seasonNumber,
-                episodeNumber = item.episodeNumber,
-                episodeTitle = item.episodeTitle,
-                episodeThumbnail = item.episodeThumbnail,
-                streamTitle = item.streamTitle,
-                streamSubtitle = item.streamSubtitle,
-                providerName = item.providerName,
-                providerAddonId = item.providerAddonId,
-                contentType = item.contentType,
-                videoId = item.videoId,
-                parentMetaId = item.parentMetaId,
-                parentMetaType = item.parentMetaType,
-                initialPositionMs = resumeEntry?.lastPositionMs?.takeIf { it > 0L } ?: 0L,
-                initialProgressFraction = resumeEntry?.progressFraction?.takeIf { it > 0f },
-            )
-            if (playerSettingsUiState.externalPlayerEnabled) {
-                coroutineScope.launch { openExternalPlayback(playerLaunch) }
-                return
+            coroutineScope.launch {
+                val preparedSubtitles = SubtitleStartupCoordinator.prepareDownloadedSubtitles(
+                    localSubtitles = DownloadSubtitles.localSubtitles(sourceUrl),
+                    settings = playerSettingsUiState,
+                    parentMetaId = item.parentMetaId,
+                )
+                val playerLaunch = PlayerLaunch(
+                    profileId = activePlaybackProfileId,
+                    title = item.title,
+                    sourceUrl = sourceUrl,
+                    sourceHeaders = emptyMap(),
+                    sourceResponseHeaders = emptyMap(),
+                    externalSubtitles = preparedSubtitles.subtitles,
+                    startupSubtitleSelection = preparedSubtitles.selection,
+                    streamType = null,
+                    logo = item.logo,
+                    poster = item.poster,
+                    background = item.background,
+                    seasonNumber = item.seasonNumber,
+                    episodeNumber = item.episodeNumber,
+                    episodeTitle = item.episodeTitle,
+                    episodeThumbnail = item.episodeThumbnail,
+                    streamTitle = item.streamTitle,
+                    streamSubtitle = item.streamSubtitle,
+                    providerName = item.providerName,
+                    providerAddonId = item.providerAddonId,
+                    contentType = item.contentType,
+                    videoId = item.videoId,
+                    parentMetaId = item.parentMetaId,
+                    parentMetaType = item.parentMetaType,
+                    initialPositionMs = resumeEntry?.lastPositionMs?.takeIf { it > 0L } ?: 0L,
+                    initialProgressFraction = resumeEntry?.progressFraction?.takeIf { it > 0f },
+                )
+                if (playerSettingsUiState.externalPlayerEnabled) {
+                    openExternalPlayback(playerLaunch)
+                    return@launch
+                }
+                val launchId = PlayerLaunchStore.put(playerLaunch)
+                navController.navigate(PlayerRoute(launchId = launchId, title = playerLaunch.title))
             }
-            val launchId = PlayerLaunchStore.put(playerLaunch)
-            navController.navigate(PlayerRoute(launchId = launchId, title = playerLaunch.title))
         }
 
         fun openExternalStreamUrl(url: String): Boolean {
@@ -951,12 +960,23 @@ internal fun MainAppContent(
             resumeProgressFraction: Float? = null,
             startFromBeginning: Boolean = false,
         ): Boolean {
-            return when (
-                val resolved = CloudLibraryRepository.resolvePlayback(
-                    item = item,
-                    file = file,
-                )
-            ) {
+            val cloudVideoId = item.playbackVideoId(file)
+            val (resolved, preparedSubtitles) = SubtitleStartupCoordinator.prepareStreamInParallelWithSource(
+                request = com.nuvio.app.features.player.StartupSubtitleRequest(
+                    type = CloudLibraryContentType,
+                    videoId = cloudVideoId,
+                    parentMetaId = item.stableKey,
+                    settings = playerSettingsUiState,
+                    filename = file.name,
+                ),
+                resolveSource = {
+                    CloudLibraryRepository.resolvePlayback(
+                        item = item,
+                        file = file,
+                    )
+                },
+            )
+            return when (resolved) {
                 is CloudLibraryPlaybackResult.Success -> {
                     val playbackTitle = resolved.filename
                         ?.takeIf { it.isNotBlank() }
@@ -965,6 +985,8 @@ internal fun MainAppContent(
                         profileId = activePlaybackProfileId,
                         title = playbackTitle,
                         sourceUrl = resolved.url,
+                        externalSubtitles = preparedSubtitles.subtitles,
+                        startupSubtitleSelection = preparedSubtitles.selection,
                         streamTitle = playbackTitle,
                         streamSubtitle = item.name.takeIf { it != playbackTitle },
                         providerName = item.providerName,
@@ -1023,38 +1045,46 @@ internal fun MainAppContent(
                 )
                 val localSourceUrl = downloadedItem?.let(DownloadsRepository::playableLocalFileUri)
                 if (!localSourceUrl.isNullOrBlank()) {
-                    val playerLaunch = PlayerLaunch(
-                        profileId = activePlaybackProfileId,
-                        title = title,
-                        sourceUrl = localSourceUrl,
-                        sourceHeaders = emptyMap(),
-                        sourceResponseHeaders = emptyMap(),
-                        externalSubtitles = DownloadSubtitles.localSubtitles(localSourceUrl),
-                        logo = logo,
-                        poster = poster,
-                        background = background,
-                        seasonNumber = seasonNumber,
-                        episodeNumber = episodeNumber,
-                        episodeTitle = episodeTitle,
-                        episodeThumbnail = episodeThumbnail,
-                        streamTitle = downloadedItem.streamTitle.ifBlank { title },
-                        streamSubtitle = downloadedItem.streamSubtitle,
-                        pauseDescription = pauseDescription,
-                        providerName = downloadedItem.providerName.ifBlank { downloadedProviderLabel },
-                        providerAddonId = downloadedItem.providerAddonId,
-                        contentType = type,
-                        videoId = videoId,
-                        parentMetaId = parentMetaId,
-                        parentMetaType = parentMetaType,
-                        initialPositionMs = targetResumePositionMs,
-                        initialProgressFraction = targetResumeProgressFraction,
-                    )
-                    if (externalPlayerSupported && playerSettingsUiState.externalPlayerEnabled) {
-                        coroutineScope.launch { openExternalPlayback(playerLaunch) }
-                        return
+                    coroutineScope.launch {
+                        val preparedSubtitles = SubtitleStartupCoordinator.prepareDownloadedSubtitles(
+                            localSubtitles = DownloadSubtitles.localSubtitles(localSourceUrl),
+                            settings = playerSettingsUiState,
+                            parentMetaId = parentMetaId,
+                        )
+                        val playerLaunch = PlayerLaunch(
+                            profileId = activePlaybackProfileId,
+                            title = title,
+                            sourceUrl = localSourceUrl,
+                            sourceHeaders = emptyMap(),
+                            sourceResponseHeaders = emptyMap(),
+                            externalSubtitles = preparedSubtitles.subtitles,
+                            startupSubtitleSelection = preparedSubtitles.selection,
+                            logo = logo,
+                            poster = poster,
+                            background = background,
+                            seasonNumber = seasonNumber,
+                            episodeNumber = episodeNumber,
+                            episodeTitle = episodeTitle,
+                            episodeThumbnail = episodeThumbnail,
+                            streamTitle = downloadedItem.streamTitle.ifBlank { title },
+                            streamSubtitle = downloadedItem.streamSubtitle,
+                            pauseDescription = pauseDescription,
+                            providerName = downloadedItem.providerName.ifBlank { downloadedProviderLabel },
+                            providerAddonId = downloadedItem.providerAddonId,
+                            contentType = type,
+                            videoId = videoId,
+                            parentMetaId = parentMetaId,
+                            parentMetaType = parentMetaType,
+                            initialPositionMs = targetResumePositionMs,
+                            initialProgressFraction = targetResumeProgressFraction,
+                        )
+                        if (externalPlayerSupported && playerSettingsUiState.externalPlayerEnabled) {
+                            openExternalPlayback(playerLaunch)
+                            return@launch
+                        }
+                        val launchId = PlayerLaunchStore.put(playerLaunch)
+                        navController.navigate(PlayerRoute(launchId = launchId, title = playerLaunch.title))
                     }
-                    val launchId = PlayerLaunchStore.put(playerLaunch)
-                    navController.navigate(PlayerRoute(launchId = launchId, title = playerLaunch.title))
                     return
                 }
             }
