@@ -21,6 +21,11 @@ import androidx.compose.ui.test.performClick
 import com.nuvio.app.core.ui.NuvioTheme
 import com.nuvio.app.core.ui.NuvioToastController
 import kotlinx.coroutines.runBlocking
+import nuvio.composeapp.generated.resources.downloads_held_download_anyway
+import nuvio.composeapp.generated.resources.travel_mode_off
+import nuvio.composeapp.generated.resources.travel_mode_on
+import nuvio.composeapp.generated.resources.travel_status
+import nuvio.composeapp.generated.resources.downloads_checking_network
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.action_cancel
 import nuvio.composeapp.generated.resources.downloads_announce_checking
@@ -163,6 +168,7 @@ class DownloadsScreenTest {
 
     private val backend = FakeBackend()
     private val realBackend = DownloadsRepository.backend
+    private val connection = ConnectionHold()
 
     private fun clearBatchRuns() {
         SeasonDownloadDefaultsStorage.saveBatchRunsPayload(com.nuvio.app.features.profiles.ProfileRepository.activeProfileId, "")
@@ -226,10 +232,13 @@ class DownloadsScreenTest {
     private fun showPayload(withChooseSource: Boolean = true) {
         compose.setContent {
             NuvioTheme {
-                DownloadsScreen(
+                DownloadsScreenContent(
                     onBack = {},
                     onOpenDownload = {},
                     showAutoDownloads = false,
+                    connectionHold = connection,
+                    rechecks = DownloadRechecks.app,
+                    sourceSearches = SourceReplacements.progress,
                     onChooseAnotherSource = if (withChooseSource) ({ chooseSourceFor = it }) else null,
                     openDownloadsFolder = {
                         folderOpened++
@@ -240,6 +249,42 @@ class DownloadsScreenTest {
                 )
             }
         }
+    }
+
+    @Test
+    fun the_travel_header_applies_download_changes_off_the_ui_thread() {
+        val clickThread = Thread.currentThread()
+        val updates = java.util.concurrent.LinkedBlockingQueue<Thread>()
+        connection.listen { updates.put(Thread.currentThread()) }
+        show()
+        var uiThread: Thread? = null
+        compose.runOnIdle { uiThread = Thread.currentThread() }
+        compose.onNodeWithText(text(Res.string.travel_mode_off)).performClick()
+        val appliedOn = updates.poll(5, java.util.concurrent.TimeUnit.SECONDS)
+        kotlin.test.assertNotNull(appliedOn)
+        kotlin.test.assertNotEquals(clickThread, appliedOn)
+        kotlin.test.assertNotEquals(uiThread, appliedOn)
+    }
+
+    @Test
+    fun travel_toggle_and_active_rules_are_visible_in_downloads() {
+        show()
+        compose.onNodeWithText(text(Res.string.travel_mode_off)).performClick()
+        compose.waitUntil(5000) { connection.state.value.travel.enabled }
+        compose.onNodeWithText(text(Res.string.travel_mode_on)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.travel_status, 1000)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.travel_mode_on)).performClick()
+        compose.waitUntil(5000) { !connection.state.value.travel.enabled }
+        compose.onNodeWithText(text(Res.string.travel_mode_off)).assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.travel_status, 1000)).assertDoesNotExist()
+    }
+
+    @Test
+    fun the_sleep_hold_is_visible_and_cannot_offer_download_anyway() {
+        connection.beginNetworkRecheck()
+        show()
+        compose.onAllNodesWithText(text(Res.string.downloads_checking_network)).onFirst().assertIsDisplayed()
+        compose.onNodeWithText(text(Res.string.downloads_held_download_anyway)).assertDoesNotExist()
     }
 
     private fun failedRow(
