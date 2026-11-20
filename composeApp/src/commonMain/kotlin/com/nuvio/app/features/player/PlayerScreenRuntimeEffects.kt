@@ -20,7 +20,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.nuvio.app.features.details.MetaDetailsRepository
-import com.nuvio.app.features.downloads.AutoDownloads
 import com.nuvio.app.features.downloads.SidecarIo
 import com.nuvio.app.features.downloads.savedEpisodeVideosFor
 import com.nuvio.app.features.p2p.P2pSettingsRepository
@@ -465,13 +464,6 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
     DisposableEffect(activeSourceUrl) {
         val effectSourceUrl = activeSourceUrl
         onDispose { ServerPlayback.stop(effectSourceUrl) }
-    }
-
-    // A downloaded file that is open is not removed after watching.
-    DisposableEffect(activeSourceUrl) {
-        val openFileUrl = activeSourceUrl.takeIf { it.startsWith("file:") }
-        if (openFileUrl != null) AutoDownloads.onLocalFileOpened(openFileUrl)
-        onDispose { if (openFileUrl != null) AutoDownloads.onLocalFileClosed(openFileUrl) }
     }
 
     DisposableEffect(playbackSession.videoId, activeSourceUrl, activeSourceAudioUrl) {
